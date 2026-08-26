@@ -64,6 +64,11 @@ const BILLING_SECTIONS = [
           PreConsumedQuota: settings.PreConsumedQuota,
           QuotaForInviter: settings.QuotaForInviter,
           QuotaForInvitee: settings.QuotaForInvitee,
+          WeeklyRankReward1: settings.WeeklyRankReward1 ?? 0,
+          WeeklyRankReward2: settings.WeeklyRankReward2 ?? 0,
+          WeeklyRankReward3: settings.WeeklyRankReward3 ?? 0,
+          ProcessingLogTimeoutMinutes:
+            settings.ProcessingLogTimeoutMinutes ?? 15,
           AffTopupRate: settings.AffTopupRate ?? 0.05,
           TopUpLink: settings.TopUpLink,
           general_setting: {

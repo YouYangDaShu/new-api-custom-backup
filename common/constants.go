@@ -148,6 +148,14 @@ var TelegramBotName = ""
 var QuotaForNewUser = 0
 var QuotaForInviter = 0
 var QuotaForInvitee = 0
+
+// WeeklyRankReward* are balance amounts shown to operators/users. They are
+// converted to internal quota with QuotaPerUnit only when a completed week is settled.
+var WeeklyRankReward1 = 0.0
+var WeeklyRankReward2 = 0.0
+var WeeklyRankReward3 = 0.0
+var ProcessingLogTimeoutMinutes = 15
+
 // AffTopupRate: invitee topup/redemption rebate rate for inviter (e.g. 0.05 = 5%).
 // Registration invite gift stays controlled by QuotaForInviter/QuotaForInvitee.
 var AffTopupRate = 0.05

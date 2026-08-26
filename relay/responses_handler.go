@@ -1,6 +1,8 @@
 package relay
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -58,6 +60,16 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	request, err := common.DeepCopy(responsesReq)
 	if err != nil {
 		return types.NewError(fmt.Errorf("failed to copy request to GeneralOpenAIRequest: %w", err), types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
+	}
+
+	if info.ChannelMeta.ChannelId == 66 {
+		// Channel 66's Responses upstream rejects replayed assistant messages whose
+		// IDs use the generic item_ prefix instead of msg_. Removing only that ID
+		// preserves the message content and lets the upstream assign a valid ID.
+		request.Input, err = cleanInputItemIDs(request.Input)
+		if err != nil {
+			return types.NewError(fmt.Errorf("failed to sanitize responses input: %w", err), types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
+		}
 	}
 
 	err = helper.ModelMappedHelper(c, info, request)
@@ -163,4 +175,51 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		service.PostTextConsumeQuota(c, info, usageDto, nil)
 	}
 	return nil
+}
+
+func cleanInputItemIDs(input json.RawMessage) (json.RawMessage, error) {
+	trimmed := bytes.TrimSpace(input)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return input, nil
+	}
+
+	var items []map[string]json.RawMessage
+	if err := common.Unmarshal(trimmed, &items); err != nil {
+		return nil, err
+	}
+
+	changed := false
+	for _, item := range items {
+		var itemType string
+		if rawType, ok := item["type"]; ok {
+			if err := common.Unmarshal(rawType, &itemType); err != nil {
+				return nil, err
+			}
+		}
+		if itemType != "message" {
+			continue
+		}
+
+		var id string
+		rawID, ok := item["id"]
+		if !ok {
+			continue
+		}
+		if err := common.Unmarshal(rawID, &id); err != nil {
+			return nil, err
+		}
+		if strings.HasPrefix(id, "item_") {
+			delete(item, "id")
+			changed = true
+		}
+	}
+
+	if !changed {
+		return input, nil
+	}
+	cleaned, err := common.Marshal(items)
+	if err != nil {
+		return nil, err
+	}
+	return cleaned, nil
 }

@@ -1,6 +1,8 @@
 package model
 
 import (
+	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -133,6 +135,10 @@ func InitOptionMap() {
 	common.OptionMap["QuotaForNewUser"] = strconv.Itoa(common.QuotaForNewUser)
 	common.OptionMap["QuotaForInviter"] = strconv.Itoa(common.QuotaForInviter)
 	common.OptionMap["QuotaForInvitee"] = strconv.Itoa(common.QuotaForInvitee)
+	common.OptionMap["WeeklyRankReward1"] = strconv.FormatFloat(common.WeeklyRankReward1, 'f', -1, 64)
+	common.OptionMap["WeeklyRankReward2"] = strconv.FormatFloat(common.WeeklyRankReward2, 'f', -1, 64)
+	common.OptionMap["WeeklyRankReward3"] = strconv.FormatFloat(common.WeeklyRankReward3, 'f', -1, 64)
+	common.OptionMap["ProcessingLogTimeoutMinutes"] = strconv.Itoa(common.ProcessingLogTimeoutMinutes)
 	common.OptionMap["AffTopupRate"] = strconv.FormatFloat(common.AffTopupRate, 'f', -1, 64)
 	common.OptionMap["QuotaRemindThreshold"] = strconv.Itoa(common.QuotaRemindThreshold)
 	common.OptionMap["PreConsumedQuota"] = strconv.Itoa(common.PreConsumedQuota)
@@ -206,19 +212,34 @@ func SyncOptions(frequency int) {
 }
 
 func UpdateOption(key string, value string) error {
-	// Save to database first
-	option := Option{
-		Key: key,
+	if err := validateCustomOptionValue(key, value); err != nil {
+		return err
 	}
-	// https://gorm.io/docs/update.html#Save-All-Fields
-	DB.FirstOrCreate(&option, Option{Key: key})
+	option := Option{Key: key}
+	if err := DB.FirstOrCreate(&option, Option{Key: key}).Error; err != nil {
+		return err
+	}
 	option.Value = value
-	// Save is a combination function.
-	// If save value does not contain primary key, it will execute Create,
-	// otherwise it will execute Update (with all fields).
-	DB.Save(&option)
-	// Update OptionMap
+	if err := DB.Save(&option).Error; err != nil {
+		return err
+	}
 	return updateOptionMap(key, value)
+}
+
+func validateCustomOptionValue(key, value string) error {
+	switch key {
+	case "WeeklyRankReward1", "WeeklyRankReward2", "WeeklyRankReward3":
+		v, err := strconv.ParseFloat(value, 64)
+		if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v*common.QuotaPerUnit > float64(common.MaxQuota) {
+			return fmt.Errorf("invalid %s reward: %q", key, value)
+		}
+	case "ProcessingLogTimeoutMinutes":
+		v, err := strconv.Atoi(value)
+		if err != nil || v < 1 || v > 10080 {
+			return fmt.Errorf("invalid processing log timeout minutes: %q", value)
+		}
+	}
+	return nil
 }
 
 // UpdateOptionsBulk persists multiple key/value pairs in a single database
@@ -507,6 +528,26 @@ func updateOptionMap(key string, value string) (err error) {
 		common.QuotaForInviter, _ = strconv.Atoi(value)
 	case "QuotaForInvitee":
 		common.QuotaForInvitee, _ = strconv.Atoi(value)
+	case "WeeklyRankReward1":
+		if err := validateCustomOptionValue(key, value); err != nil {
+			return err
+		}
+		common.WeeklyRankReward1, _ = strconv.ParseFloat(value, 64)
+	case "WeeklyRankReward2":
+		if err := validateCustomOptionValue(key, value); err != nil {
+			return err
+		}
+		common.WeeklyRankReward2, _ = strconv.ParseFloat(value, 64)
+	case "WeeklyRankReward3":
+		if err := validateCustomOptionValue(key, value); err != nil {
+			return err
+		}
+		common.WeeklyRankReward3, _ = strconv.ParseFloat(value, 64)
+	case "ProcessingLogTimeoutMinutes":
+		if err := validateCustomOptionValue(key, value); err != nil {
+			return err
+		}
+		common.ProcessingLogTimeoutMinutes, _ = strconv.Atoi(value)
 	case "AffTopupRate":
 		if v, err2 := strconv.ParseFloat(value, 64); err2 == nil {
 			if v < 0 {

@@ -83,7 +83,7 @@ export function useTopNavLinks(): TopNavLink[] {
   const rankings = modules?.rankings
   if (rankings && typeof rankings === 'object' && rankings.enabled) {
     const requiresAuth = rankings.requireAuth && !isAuthed
-    links.push({ title: t('Rankings'), href: '/rankings', requiresAuth })
+    links.push({ title: '排行榜', href: '/rankings', requiresAuth })
   }
 
   // Docs (supports external links)

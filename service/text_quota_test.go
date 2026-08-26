@@ -17,6 +17,30 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestMissingUpstreamUsageAlwaysSkipsTextBilling(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Set(string(constant.ContextKeyMissingUpstreamUsage), true)
+
+	relayInfo := &relaycommon.RelayInfo{
+		OriginModelName: "gpt-5.6-sol",
+		PriceData: types.PriceData{
+			ModelRatio:      15,
+			CompletionRatio: 6,
+			GroupRatioInfo:  types.GroupRatioInfo{GroupRatio: 0.06},
+		},
+		StartTime: time.Now(),
+	}
+
+	summary := calculateTextQuotaSummary(ctx, relayInfo, &dto.Usage{})
+
+	require.Zero(t, summary.PromptTokens)
+	require.Zero(t, summary.CompletionTokens)
+	require.Zero(t, summary.TotalTokens)
+	require.Zero(t, summary.Quota)
+	require.True(t, summary.MissingUpstreamUsage)
+}
+
 func TestCalculateTextQuotaSummaryUnifiedForClaudeSemantic(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()

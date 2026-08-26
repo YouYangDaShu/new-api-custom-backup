@@ -217,12 +217,19 @@ function BillingBreakdown(props: {
     }
   }
 
-  // Final billing ratio first; membership discount only as extra row.
+  // Show every multiplier explicitly: base pool × membership = final.
   const userGR = other.user_group_ratio
   const groupGR = other.group_ratio
+  const baseGR = other.base_group_ratio
+  if (baseGR != null && Number.isFinite(baseGR)) {
+    rows.push({
+      label: t('Base Group Ratio'),
+      value: `${formatRatio(baseGR)}x`,
+    })
+  }
   if (groupGR != null && Number.isFinite(groupGR)) {
     rows.push({
-      label: t('Group Ratio'),
+      label: t('Final Billing Ratio'),
       value: `${formatRatio(groupGR)}x`,
     })
   }

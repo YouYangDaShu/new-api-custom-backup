@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -40,9 +41,9 @@ func OaiChatToResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
-	if usage == nil || usage.TotalTokens == 0 {
-		text := service.ExtractOutputTextFromResponses(responsesResp)
-		usage = service.ResponseText2Usage(c, text, info.UpstreamModelName, info.GetEstimatePromptTokens())
+	if usage == nil || (usage.PromptTokens == 0 && usage.CompletionTokens == 0) {
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
+		usage = &dto.Usage{}
 		responsesResp.Usage = relayconvert.UsageFromChatUsage(usage)
 	}
 
@@ -116,8 +117,9 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	}
 
 	usage := state.Usage
-	if usage == nil || usage.TotalTokens == 0 {
-		usage = service.ResponseText2Usage(c, state.UsageText(), info.UpstreamModelName, info.GetEstimatePromptTokens())
+	if usage == nil || (usage.PromptTokens == 0 && usage.CompletionTokens == 0) {
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
+		usage = &dto.Usage{}
 		state.Usage = relayconvert.UsageFromChatUsage(usage)
 	}
 

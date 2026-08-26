@@ -30,6 +30,7 @@ import {
   ServerCog,
   Settings,
   Ticket,
+  Trophy,
   User,
   Users,
   Wallet,
@@ -79,6 +80,11 @@ export function useSidebarData(): SidebarData {
             title: t('Dashboard'),
             url: '/dashboard/models',
             icon: LayoutDashboard,
+          },
+          {
+            title: 'Token 排行榜',
+            url: '/token-rankings',
+            icon: Trophy,
           },
           {
             title: t('API Keys'),

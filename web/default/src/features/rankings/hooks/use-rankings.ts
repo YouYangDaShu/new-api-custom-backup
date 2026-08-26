@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
 
-import { getRankings } from '../api'
+import { getRankings, getWeeklyUserRanking } from '../api'
 import type { RankingPeriod } from '../types'
 
 export function useRankings(period: RankingPeriod) {
@@ -26,5 +26,13 @@ export function useRankings(period: RankingPeriod) {
     queryKey: ['rankings', period],
     queryFn: () => getRankings(period),
     staleTime: 5 * 60 * 1000,
+  })
+}
+
+export function useWeeklyUserRanking(period: 'day' | 'week' = 'week') {
+  return useQuery({
+    queryKey: ['weekly-user-ranking', period],
+    queryFn: () => getWeeklyUserRanking(period),
+    staleTime: 60 * 1000,
   })
 }

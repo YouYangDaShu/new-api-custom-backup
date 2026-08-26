@@ -251,6 +251,10 @@ export type BillingSettings = {
   PreConsumedQuota: number
   QuotaForInviter: number
   QuotaForInvitee: number
+  WeeklyRankReward1: number
+  WeeklyRankReward2: number
+  WeeklyRankReward3: number
+  ProcessingLogTimeoutMinutes: number
   AffTopupRate: number
   TopUpLink: string
   'general_setting.docs_link': string

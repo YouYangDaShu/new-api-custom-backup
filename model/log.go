@@ -106,6 +106,14 @@ func createLog(log *Log) error {
 
 const staleProcessingLogTimeout = 15 * time.Minute
 
+func processingLogTimeout() time.Duration {
+	minutes := common.ProcessingLogTimeoutMinutes
+	if minutes < 1 {
+		minutes = 15
+	}
+	return time.Duration(minutes) * time.Minute
+}
+
 // CloseStaleProcessingLogs marks interrupted requests as timed out. A relay can
 // be terminated outside its normal defer path (for example during a connection
 // reset), leaving its lifecycle row permanently in processing. Only pending,
@@ -114,7 +122,7 @@ func CloseStaleProcessingLogs(now time.Time) (int64, error) {
 	if LOG_DB == nil {
 		return 0, nil
 	}
-	cutoff := now.Add(-staleProcessingLogTimeout).Unix()
+	cutoff := now.Add(-processingLogTimeout()).Unix()
 	other := common.MapToJsonStr(map[string]interface{}{
 		"billing_status": "no_charge",
 		"request_status": "failed",
@@ -123,7 +131,7 @@ func CloseStaleProcessingLogs(now time.Time) (int64, error) {
 		"error_type":     "new_api_error",
 	})
 	result := LOG_DB.Model(&Log{}).
-		Where("type = ? AND quota = ? AND content = ? AND created_at < ? AND other LIKE ?", LogTypeProcessing, 0, "processing", cutoff, "%\"billing_status\":\"pending\"%").
+		Where("type = ? AND quota = ? AND content = ? AND created_at < ? AND (other LIKE ? OR other = ? OR other IS NULL)", LogTypeProcessing, 0, "processing", cutoff, "%\"billing_status\":\"pending\"%", "").
 		Updates(map[string]interface{}{
 			"type":    LogTypeError,
 			"content": "status_code=408, 请求超时已关闭（未扣费）",
@@ -338,35 +346,23 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 	requestId := c.GetString(common.RequestIdKey)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
 	otherStr := common.MapToJsonStr(other)
-	// 判断是否需要记录 IP
-	needRecordIp := false
-	if settingMap, err := GetUserSetting(userId, false); err == nil {
-		if settingMap.RecordIpLog {
-			needRecordIp = true
-		}
-	}
 	log := &Log{
-		UserId:           userId,
-		Username:         username,
-		CreatedAt:        common.GetTimestamp(),
-		Type:             LogTypeError,
-		Content:          content,
-		PromptTokens:     0,
-		CompletionTokens: 0,
-		TokenName:        tokenName,
-		ModelName:        modelName,
-		Quota:            0,
-		ChannelId:        channelId,
-		TokenId:          tokenId,
-		UseTime:          useTimeSeconds,
-		IsStream:         isStream,
-		Group:            group,
-		Ip: func() string {
-			if needRecordIp {
-				return c.ClientIP()
-			}
-			return ""
-		}(),
+		UserId:            userId,
+		Username:          username,
+		CreatedAt:         common.GetTimestamp(),
+		Type:              LogTypeError,
+		Content:           content,
+		PromptTokens:      0,
+		CompletionTokens:  0,
+		TokenName:         tokenName,
+		ModelName:         modelName,
+		Quota:             0,
+		ChannelId:         channelId,
+		TokenId:           tokenId,
+		UseTime:           useTimeSeconds,
+		IsStream:          isStream,
+		Group:             group,
+		Ip:                lifecycleClientIP(c),
 		RequestId:         requestId,
 		UpstreamRequestId: upstreamRequestId,
 		Other:             otherStr,
@@ -390,6 +386,13 @@ func asInt(v interface{}) int {
 	default:
 		return 0
 	}
+}
+
+func lifecycleClientIP(c *gin.Context) string {
+	if c == nil {
+		return ""
+	}
+	return c.ClientIP()
 }
 
 // StartRequestLog inserts a processing row for the current request_id.
@@ -439,6 +442,7 @@ func StartRequestLog(c *gin.Context, modelName string, isStream bool, group stri
 		TokenId:   tokenId,
 		IsStream:  isStream,
 		Group:     group,
+		Ip:        lifecycleClientIP(c),
 		RequestId: requestId,
 		Other:     common.MapToJsonStr(other),
 	}
@@ -564,8 +568,12 @@ func FinalizeRequestLog(c *gin.Context, params FinalizeRequestLogParams) bool {
 		updates["upstream_request_id"] = upstream
 	}
 
-	if err := LOG_DB.Model(&Log{}).Where("id = ? AND type = ?", log.Id, LogTypeProcessing).Updates(updates).Error; err != nil {
-		logger.LogError(c, "failed to finalize request log: "+err.Error())
+	result := LOG_DB.Model(&Log{}).Where("id = ? AND type = ?", log.Id, LogTypeProcessing).Updates(updates)
+	if result.Error != nil {
+		logger.LogError(c, "failed to finalize request log: "+result.Error.Error())
+		return false
+	}
+	if result.RowsAffected != 1 {
 		return false
 	}
 	c.Set("request_log_finalized", true)
@@ -643,35 +651,23 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
 	createdAt := common.GetTimestamp()
 	otherStr := common.MapToJsonStr(params.Other)
-	// 判断是否需要记录 IP
-	needRecordIp := false
-	if settingMap, err := GetUserSetting(userId, false); err == nil {
-		if settingMap.RecordIpLog {
-			needRecordIp = true
-		}
-	}
 	log := &Log{
-		UserId:           userId,
-		Username:         username,
-		CreatedAt:        createdAt,
-		Type:             LogTypeConsume,
-		Content:          params.Content,
-		PromptTokens:     params.PromptTokens,
-		CompletionTokens: params.CompletionTokens,
-		TokenName:        params.TokenName,
-		ModelName:        params.ModelName,
-		Quota:            params.Quota,
-		ChannelId:        params.ChannelId,
-		TokenId:          params.TokenId,
-		UseTime:          params.UseTimeSeconds,
-		IsStream:         params.IsStream,
-		Group:            params.Group,
-		Ip: func() string {
-			if needRecordIp {
-				return c.ClientIP()
-			}
-			return ""
-		}(),
+		UserId:            userId,
+		Username:          username,
+		CreatedAt:         createdAt,
+		Type:              LogTypeConsume,
+		Content:           params.Content,
+		PromptTokens:      params.PromptTokens,
+		CompletionTokens:  params.CompletionTokens,
+		TokenName:         params.TokenName,
+		ModelName:         params.ModelName,
+		Quota:             params.Quota,
+		ChannelId:         params.ChannelId,
+		TokenId:           params.TokenId,
+		UseTime:           params.UseTimeSeconds,
+		IsStream:          params.IsStream,
+		Group:             params.Group,
+		Ip:                lifecycleClientIP(c),
 		RequestId:         requestId,
 		UpstreamRequestId: upstreamRequestId,
 		Other:             otherStr,
@@ -1100,8 +1096,8 @@ type UsageBreakdown struct {
 func cacheTokenSelectExpr() (cacheRead string, cacheCreate string) {
 	// Prefer DB-native JSON extract. Fall back to 0 when unsupported.
 	if common.UsingLogDatabase(common.DatabaseTypeSQLite) {
-		return "COALESCE(CAST(json_extract(other, '$.cache_tokens') AS INTEGER), 0)",
-			"COALESCE(CAST(json_extract(other, '$.cache_creation_tokens') AS INTEGER), 0) + COALESCE(CAST(json_extract(other, '$.cache_write_tokens') AS INTEGER), 0)"
+		return "COALESCE(CAST(json_extract(CASE WHEN json_valid(other) THEN other ELSE '{}' END, '$.cache_tokens') AS INTEGER), 0)",
+			"COALESCE(CAST(json_extract(CASE WHEN json_valid(other) THEN other ELSE '{}' END, '$.cache_creation_tokens') AS INTEGER), 0) + COALESCE(CAST(json_extract(CASE WHEN json_valid(other) THEN other ELSE '{}' END, '$.cache_write_tokens') AS INTEGER), 0)"
 	}
 	if common.UsingLogDatabase(common.DatabaseTypeMySQL) {
 		return "COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(other, '$.cache_tokens')) AS SIGNED), 0)",

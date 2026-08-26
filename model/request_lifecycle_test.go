@@ -27,6 +27,20 @@ func newTestGinContext(requestId string, userId int) *gin.Context {
 	return c
 }
 
+func TestRequestLifecycle_RecordsIPForEveryUser(t *testing.T) {
+	require.NoError(t, LOG_DB.AutoMigrate(&Log{}))
+	const reqID = "req-life-real-ip"
+	LOG_DB.Where("request_id = ?", reqID).Delete(&Log{})
+	t.Cleanup(func() { LOG_DB.Where("request_id = ?", reqID).Delete(&Log{}) })
+
+	c := newTestGinContext(reqID, 99899)
+	c.Request.Header.Set("X-Forwarded-For", "203.0.113.9, 172.18.0.2")
+	StartRequestLog(c, "gpt-test", true, "default")
+	var log Log
+	require.NoError(t, LOG_DB.Where("request_id = ?", reqID).First(&log).Error)
+	require.Equal(t, "203.0.113.9", log.Ip)
+}
+
 func TestRequestLifecycle_StartThenFinalizeSuccess(t *testing.T) {
 	if LOG_DB == nil {
 		t.Skip("LOG_DB not initialized")
@@ -106,6 +120,92 @@ func TestRequestLifecycle_ClosesOnlyStalePendingRows(t *testing.T) {
 	assert.Contains(t, stale.Content, "408")
 	assert.Equal(t, LogTypeProcessing, fresh.Type)
 	assert.Equal(t, LogTypeProcessing, charged.Type)
+}
+
+func TestRequestLifecycle_UsesConfiguredProcessingTimeout(t *testing.T) {
+	if LOG_DB == nil {
+		t.Skip("LOG_DB not initialized")
+	}
+	require.NoError(t, LOG_DB.AutoMigrate(&Log{}))
+
+	original := common.ProcessingLogTimeoutMinutes
+	common.ProcessingLogTimeoutMinutes = 30
+	t.Cleanup(func() { common.ProcessingLogTimeoutMinutes = original })
+
+	now := time.Now().Truncate(time.Second)
+	insideID := "req-life-config-inside"
+	outsideID := "req-life-config-outside"
+	LOG_DB.Where("request_id IN ?", []string{insideID, outsideID}).Delete(&Log{})
+	pending := common.MapToJsonStr(map[string]interface{}{"billing_status": "pending"})
+	require.NoError(t, createLog(&Log{RequestId: insideID, Type: LogTypeProcessing, Content: "processing", Quota: 0, CreatedAt: now.Add(-29 * time.Minute).Unix(), Other: pending}))
+	require.NoError(t, createLog(&Log{RequestId: outsideID, Type: LogTypeProcessing, Content: "processing", Quota: 0, CreatedAt: now.Add(-31 * time.Minute).Unix(), Other: pending}))
+
+	_, err := CloseStaleProcessingLogs(now)
+	require.NoError(t, err)
+
+	var inside, outside Log
+	require.NoError(t, LOG_DB.Where("request_id = ?", insideID).First(&inside).Error)
+	require.NoError(t, LOG_DB.Where("request_id = ?", outsideID).First(&outside).Error)
+	assert.Equal(t, LogTypeProcessing, inside.Type)
+	assert.Equal(t, LogTypeError, outside.Type)
+}
+
+func TestRequestLifecycle_ClosesLegacyEmptyOtherPendingRows(t *testing.T) {
+	if LOG_DB == nil {
+		t.Skip("LOG_DB not initialized")
+	}
+	require.NoError(t, LOG_DB.AutoMigrate(&Log{}))
+
+	original := common.ProcessingLogTimeoutMinutes
+	common.ProcessingLogTimeoutMinutes = 15
+	t.Cleanup(func() { common.ProcessingLogTimeoutMinutes = original })
+
+	now := time.Now().Truncate(time.Second)
+	reqID := "req-life-legacy-empty-other"
+	LOG_DB.Where("request_id = ?", reqID).Delete(&Log{})
+	require.NoError(t, createLog(&Log{RequestId: reqID, Type: LogTypeProcessing, Content: "processing", Quota: 0, CreatedAt: now.Add(-16 * time.Minute).Unix(), Other: ""}))
+
+	_, err := CloseStaleProcessingLogs(now)
+	require.NoError(t, err)
+
+	var row Log
+	require.NoError(t, LOG_DB.Where("request_id = ?", reqID).First(&row).Error)
+	assert.Equal(t, LogTypeError, row.Type)
+	assert.Contains(t, row.Content, "408")
+}
+
+func TestRequestLifecycle_FinalizeFallsBackAfterStaleCloserWins(t *testing.T) {
+	if LOG_DB == nil {
+		t.Skip("LOG_DB not initialized")
+	}
+	require.NoError(t, LOG_DB.AutoMigrate(&Log{}))
+	common.LogConsumeEnabled = true
+
+	reqID := "req-life-stale-race"
+	LOG_DB.Where("request_id = ?", reqID).Delete(&Log{})
+	t.Cleanup(func() { LOG_DB.Where("request_id = ?", reqID).Delete(&Log{}) })
+	pending := common.MapToJsonStr(map[string]interface{}{"billing_status": "pending"})
+	require.NoError(t, createLog(&Log{
+		RequestId: reqID, UserId: 45, Username: "tester", Type: LogTypeProcessing,
+		Content: "processing", Quota: 0, CreatedAt: time.Now().Add(-time.Hour).Unix(), Other: pending,
+	}))
+
+	closed, err := CloseStaleProcessingLogs(time.Now())
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, closed, int64(1))
+
+	c := newTestGinContext(reqID, 45)
+	RecordConsumeLog(c, 45, RecordConsumeLogParams{
+		ChannelId: 1, ModelName: "gpt-test", Quota: 123, Content: "charged after slow request",
+		Group: "default", Other: map[string]interface{}{"status_code": 200},
+	})
+
+	var rows []Log
+	require.NoError(t, LOG_DB.Where("request_id = ?", reqID).Order("id asc").Find(&rows).Error)
+	require.Len(t, rows, 2)
+	assert.Equal(t, LogTypeError, rows[0].Type)
+	assert.Equal(t, LogTypeConsume, rows[1].Type)
+	assert.Equal(t, 123, rows[1].Quota)
 }
 
 func TestRequestLifecycle_FailureFinalize(t *testing.T) {

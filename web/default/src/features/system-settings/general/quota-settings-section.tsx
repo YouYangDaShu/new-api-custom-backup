@@ -54,6 +54,10 @@ const quotaSchema = z.object({
   PreConsumedQuota: z.coerce.number().min(0),
   QuotaForInviter: z.coerce.number().min(0),
   QuotaForInvitee: z.coerce.number().min(0),
+  WeeklyRankReward1: z.coerce.number().min(0),
+  WeeklyRankReward2: z.coerce.number().min(0),
+  WeeklyRankReward3: z.coerce.number().min(0),
+  ProcessingLogTimeoutMinutes: z.coerce.number().int().min(1).max(10080),
   // 0~1，如 0.05 = 5%。后台可随时改，无需重新构建镜像
   AffTopupRate: z.coerce.number().min(0).max(1),
   TopUpLink: z.string(),
@@ -244,6 +248,70 @@ export function QuotaSettingsSection({
                   <FormDescription>
                     {t(
                       'Rebate rate when invited friends top up or redeem codes. Example: 0.05 = 5%, 0.1 = 10%. Fill 0 to disable.'
+                    )}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            {(['WeeklyRankReward1', 'WeeklyRankReward2', 'WeeklyRankReward3'] as const).map(
+              (name, index) => (
+                <FormField
+                  key={name}
+                  control={form.control}
+                  name={name}
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>
+                        {t('Weekly Ranking Reward')} #{index + 1}
+                      </FormLabel>
+                      <FormControl>
+                        <Input
+                          type='number'
+                          step='0.01'
+                          min={0}
+                          value={field.value ?? ''}
+                          onChange={handleNumberChange(field.onChange)}
+                          name={field.name}
+                          onBlur={field.onBlur}
+                          ref={field.ref}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'Balance credited after the weekly ranking settles. Fill 0 to disable this rank reward.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )
+            )}
+
+            <FormField
+              control={form.control}
+              name='ProcessingLogTimeoutMinutes'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Processing Log Timeout')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      type='number'
+                      step='1'
+                      min={1}
+                      max={10080}
+                      value={field.value ?? ''}
+                      onChange={handleNumberChange(field.onChange)}
+                      name={field.name}
+                      onBlur={field.onBlur}
+                      ref={field.ref}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'Pending, uncharged processing logs older than this many minutes are marked as a no-charge 408 failure. Range: 1–10080 minutes; default: 15 minutes.'
                     )}
                   </FormDescription>
                   <FormMessage />

@@ -136,3 +136,26 @@ export type RankingsSnapshot = {
   /** 100%-stacked area history of token share by vendor over the period. */
   vendor_share_history: VendorShareSeries
 }
+
+export type WeeklyUserRankingRow = {
+  rank: number
+  is_current_user: boolean
+  reward_eligible: boolean
+  display_name: string
+  input_tokens: number
+  output_tokens: number
+  cache_tokens: number
+  total_tokens: number
+  request_count: number
+  reward_quota: number
+  reward_amount: number
+}
+
+export type WeeklyUserRankingSnapshot = {
+  timezone: string
+  week_start: number
+  week_end: number
+  rows: WeeklyUserRankingRow[]
+  current_user: WeeklyUserRankingRow | null
+  reward_amounts: number[]
+}

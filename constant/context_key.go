@@ -54,6 +54,10 @@ const (
 
 	ContextKeyLocalCountTokens ContextKey = "local_count_tokens"
 
+	// ContextKeyMissingUpstreamUsage marks relay responses that lack a usable
+	// upstream usage payload. They must be recorded and settled as no-charge.
+	ContextKeyMissingUpstreamUsage ContextKey = "missing_upstream_usage"
+
 	ContextKeySystemPromptOverride ContextKey = "system_prompt_override"
 
 	// ContextKeyFileSourcesToCleanup stores file sources that need cleanup when request ends

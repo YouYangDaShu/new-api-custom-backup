@@ -133,6 +133,43 @@ func main() {
 		}
 	}()
 
+	// Settle last week's top users at Monday 00:05 Asia/Shanghai. Startup
+	// performs catch-up only after that week's due time; the ledger keeps retries
+	// and multi-master races idempotent.
+	go func() {
+		settle := func(now time.Time) bool {
+			if _, due := model.WeeklyRewardWeekDue(now); !due {
+				return true
+			}
+			rewards := []int{
+				common.QuotaFromFloat(common.WeeklyRankReward1 * common.QuotaPerUnit),
+				common.QuotaFromFloat(common.WeeklyRankReward2 * common.QuotaPerUnit),
+				common.QuotaFromFloat(common.WeeklyRankReward3 * common.QuotaPerUnit),
+			}
+			awarded, err := model.SettleWeeklyRankingRewards(now, rewards)
+			if err != nil {
+				logger.LogWarn(context.Background(), "failed to settle weekly ranking rewards: "+err.Error())
+				return false
+			}
+			if awarded > 0 {
+				logger.LogInfo(context.Background(), fmt.Sprintf("issued %d weekly ranking rewards", awarded))
+			}
+			return true
+		}
+		now := time.Now()
+		settle(now)
+		for {
+			next := model.NextWeeklyRewardCheck(now)
+			timer := time.NewTimer(time.Until(next))
+			<-timer.C
+			now = time.Now()
+			for !settle(now) {
+				time.Sleep(10 * time.Minute)
+				now = time.Now()
+			}
+		}
+	}()
+
 	// Codex credential auto-refresh check every 10 minutes, refresh when expires within 1 day
 	service.StartCodexCredentialAutoRefreshTask()
 
@@ -183,6 +220,12 @@ func main() {
 
 	// Initialize HTTP server
 	server := gin.New()
+	trustedProxies := strings.FieldsFunc(common.GetEnvOrDefaultString("TRUSTED_PROXIES", "127.0.0.1,::1"), func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '	' || r == '\n'
+	})
+	if err := server.SetTrustedProxies(trustedProxies); err != nil {
+		common.FatalLog("invalid TRUSTED_PROXIES: " + err.Error())
+	}
 	server.Use(gin.CustomRecovery(func(c *gin.Context, err any) {
 		common.SysLog(fmt.Sprintf("panic detected: %v", err))
 		c.JSON(http.StatusInternalServerError, gin.H{

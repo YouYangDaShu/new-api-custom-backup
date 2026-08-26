@@ -55,6 +55,7 @@ type textQuotaSummary struct {
 	AudioInputPrice          float64
 	ImageGenerationCallPrice float64
 	ToolCallSurchargeQuota   decimal.Decimal
+	MissingUpstreamUsage     bool
 }
 
 func cacheWriteTokensTotal(summary textQuotaSummary) int {
@@ -190,6 +191,7 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 		CacheCreationRatio5m: relayInfo.PriceData.CacheCreation5mRatio,
 		CacheCreationRatio1h: relayInfo.PriceData.CacheCreation1hRatio,
 		UsageSemantic:        usageSemanticFromUsage(relayInfo, usage),
+		MissingUpstreamUsage: common.GetContextKeyBool(ctx, constant.ContextKeyMissingUpstreamUsage),
 	}
 	summary.IsClaudeUsageSemantic = summary.UsageSemantic == "anthropic"
 
@@ -323,7 +325,7 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 		noteQuotaClamp(relayInfo, clamp)
 	}
 
-	if summary.TotalTokens == 0 {
+	if summary.MissingUpstreamUsage || summary.TotalTokens == 0 {
 		summary.Quota = 0
 	} else if !ratio.IsZero() && summary.Quota == 0 {
 		summary.Quota = 1
@@ -367,6 +369,11 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 			tieredResult = tieredRes
 			summary.Quota = composeTieredTextQuota(relayInfo, summary, tieredQuota, tieredRes)
 		}
+	}
+	if summary.MissingUpstreamUsage {
+		// A tier expression may have calculated a non-zero quota from request-side
+		// data. Missing upstream usage is always a no-charge settlement.
+		summary.Quota = 0
 	}
 
 	if summary.WebSearchCallCount > 0 {
@@ -420,6 +427,10 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		other["usage_semantic"] = "anthropic"
 	} else {
 		other = GenerateTextOtherInfo(ctx, relayInfo, summary.ModelRatio, summary.GroupRatio, summary.CompletionRatio, summary.CacheTokens, summary.CacheRatio, summary.ModelPrice, relayInfo.PriceData.GroupRatioInfo.GroupSpecialRatio)
+	}
+	if summary.MissingUpstreamUsage {
+		other["billing_status"] = "no_charge"
+		other["usage_source"] = "missing"
 	}
 	if adminRejectReason != "" {
 		other["reject_reason"] = adminRejectReason

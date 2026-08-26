@@ -1,0 +1,3 @@
+FROM new-api-local:dashboard-today-pending-log-20260719
+COPY new-api-itemfix /new-api
+ENTRYPOINT ["/new-api"]
