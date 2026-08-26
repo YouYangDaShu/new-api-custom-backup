@@ -1,0 +1,16 @@
+.env
+.env.*
+*.db
+*.db-*
+*.sqlite*
+*.log
+*.pem
+*.key
+*.crt
+node_modules/
+web/default/dist/
+web/classic/dist/
+upload/
+uploads/
+tmp/
+cache/
