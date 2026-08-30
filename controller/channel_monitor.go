@@ -40,9 +40,10 @@ type channelMonitorInput struct {
 }
 
 type monitorPublic struct {
-	Name   string                       `json:"name"`
-	Group  string                       `json:"group"`
-	Models map[string]monitorPublicStat `json:"models"`
+	Name            string                       `json:"name"`
+	Group           string                       `json:"group"`
+	Models          map[string]monitorPublicStat `json:"models"`
+	IntervalSeconds int                          `json:"interval_seconds"`
 }
 
 type monitorAdmin struct {
@@ -135,7 +136,7 @@ func validateMonitorFields(name, group, primary string, extraModels []string, in
 		return nil, errors.New("invalid monitor name, group, or model")
 	}
 	if interval == 0 {
-		interval = 300
+		interval = common.ChannelMonitorDefaultIntervalSeconds
 	}
 	if interval < channelMonitorMinInterval || interval > channelMonitorMaxInterval {
 		return nil, errors.New("interval must be between 30 and 86400 seconds")
@@ -192,10 +193,16 @@ func monitorAdminView(m model.ChannelMonitor, checks []model.ChannelMonitorCheck
 		stat := monitorStat{Status: "unknown", Availability: map[string]float64{}}
 		totals := make([]int, len(windows))
 		successes := make([]int, len(windows))
+		modelChecks := make([]model.ChannelMonitorCheck, 0, len(checks))
 		for _, check := range checks {
-			if check.Model != name {
-				continue
+			if check.Model == name {
+				modelChecks = append(modelChecks, check)
 			}
+		}
+		sort.SliceStable(modelChecks, func(i, j int) bool {
+			return modelChecks[i].CheckedAt > modelChecks[j].CheckedAt
+		})
+		for _, check := range modelChecks {
 			if stat.LastChecked == 0 {
 				stat.Status, stat.LatencyMS, stat.ErrorSummary, stat.LastChecked = check.Status, check.LatencyMS, check.ErrorBrief, check.CheckedAt
 			}
@@ -210,6 +217,9 @@ func monitorAdminView(m model.ChannelMonitor, checks []model.ChannelMonitorCheck
 			if len(stat.History) < channelMonitorHistorySlots {
 				stat.History = append(stat.History, monitorHistory{Status: check.Status, LatencyMS: check.LatencyMS, CheckedAt: check.CheckedAt})
 			}
+		}
+		for left, right := 0, len(stat.History)-1; left < right; left, right = left+1, right-1 {
+			stat.History[left], stat.History[right] = stat.History[right], stat.History[left]
 		}
 		for i, window := range windows {
 			if totals[i] > 0 {
@@ -238,7 +248,7 @@ func AdminUpdateChannelMonitorConfig(c *gin.Context) {
 
 func monitorPublicView(m model.ChannelMonitor, checks []model.ChannelMonitorCheck) monitorPublic {
 	admin := monitorAdminView(m, checks)
-	pub := monitorPublic{Name: m.Name, Group: m.Group, Models: map[string]monitorPublicStat{}}
+	pub := monitorPublic{Name: m.Name, Group: m.Group, Models: map[string]monitorPublicStat{}, IntervalSeconds: m.IntervalSeconds}
 	for name, stat := range admin.Models {
 		pub.Models[name] = monitorPublicStat{Status: stat.Status, LatencyMS: stat.LatencyMS, Availability: stat.Availability, History: stat.History}
 	}
@@ -247,7 +257,7 @@ func monitorPublicView(m model.ChannelMonitor, checks []model.ChannelMonitorChec
 
 func GetChannelMonitors(c *gin.Context) {
 	if !common.ChannelMonitorEnabled {
-		c.JSON(http.StatusForbidden, gin.H{"success": false, "message": "channel monitoring is disabled"})
+		common.ApiSuccess(c, []monitorPublic{})
 		return
 	}
 	rows, err := model.ListChannelMonitors()
@@ -255,6 +265,13 @@ func GetChannelMonitors(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	activeRows := make([]model.ChannelMonitor, 0, len(rows))
+	for _, row := range rows {
+		if row.Enabled {
+			activeRows = append(activeRows, row)
+		}
+	}
+	rows = activeRows
 	ids := make([]int64, 0, len(rows))
 	for _, row := range rows {
 		ids = append(ids, row.ID)
@@ -316,8 +333,8 @@ func AdminCreateChannelMonitor(c *gin.Context) {
 		common.ApiErrorMsg(c, "invalid request")
 		return
 	}
-	if in.Name == nil || in.Group == nil || in.PrimaryModel == nil || in.IntervalSeconds == nil {
-		common.ApiErrorMsg(c, "name, group, model, and interval are required")
+	if in.Group == nil || in.PrimaryModel == nil {
+		common.ApiErrorMsg(c, "group and model are required")
 		return
 	}
 	extraModels := []string{}
@@ -329,7 +346,15 @@ func AdminCreateChannelMonitor(c *gin.Context) {
 		monitorBadRequest(c, err)
 		return
 	}
-	extra, err := validateMonitorFields(*in.Name, group, *in.PrimaryModel, extraModels, *in.IntervalSeconds, availableMonitorModels(group))
+	name := group
+	if in.Name != nil && strings.TrimSpace(*in.Name) != "" {
+		name = *in.Name
+	}
+	interval := common.ChannelMonitorDefaultIntervalSeconds
+	if in.IntervalSeconds != nil {
+		interval = *in.IntervalSeconds
+	}
+	extra, err := validateMonitorFields(name, group, *in.PrimaryModel, extraModels, interval, availableMonitorModels(group))
 	if err != nil {
 		monitorBadRequest(c, err)
 		return
@@ -339,10 +364,7 @@ func AdminCreateChannelMonitor(c *gin.Context) {
 	if in.Enabled != nil {
 		enabled = *in.Enabled
 	}
-	row := model.ChannelMonitor{Name: strings.TrimSpace(*in.Name), Group: group, PrimaryModel: strings.TrimSpace(*in.PrimaryModel), ExtraModelsJSON: string(raw), IntervalSeconds: *in.IntervalSeconds, Enabled: enabled}
-	if row.IntervalSeconds == 0 {
-		row.IntervalSeconds = 300
-	}
+	row := model.ChannelMonitor{Name: strings.TrimSpace(name), Group: group, PrimaryModel: strings.TrimSpace(*in.PrimaryModel), ExtraModelsJSON: string(raw), IntervalSeconds: interval, Enabled: enabled}
 	if err := model.DB.Create(&row).Error; err != nil {
 		common.ApiError(c, err)
 		return
@@ -544,7 +566,23 @@ type channelMonitorHandler struct{}
 func (channelMonitorHandler) Type() string  { return model.SystemTaskTypeChannelMonitor }
 func (channelMonitorHandler) Enabled() bool { return common.ChannelMonitorEnabled }
 func (channelMonitorHandler) Interval() time.Duration {
-	return time.Duration(common.ChannelMonitorDefaultIntervalSeconds) * time.Second
+	rows, err := model.ListChannelMonitors()
+	if err != nil {
+		return time.Duration(common.ChannelMonitorDefaultIntervalSeconds) * time.Second
+	}
+	minInterval := 0
+	for _, row := range rows {
+		if !row.Enabled || row.IntervalSeconds <= 0 {
+			continue
+		}
+		if minInterval == 0 || row.IntervalSeconds < minInterval {
+			minInterval = row.IntervalSeconds
+		}
+	}
+	if minInterval == 0 {
+		minInterval = common.ChannelMonitorDefaultIntervalSeconds
+	}
+	return time.Duration(minInterval) * time.Second
 }
 func (channelMonitorHandler) NewPayload() any { return nil }
 func (channelMonitorHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {

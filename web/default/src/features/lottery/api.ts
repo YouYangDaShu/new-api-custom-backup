@@ -17,7 +17,7 @@ export async function drawLottery(): Promise<{ success: boolean; data: LotteryDr
 
 export interface LotteryAdminData {
   config: { enabled: boolean; threshold_display_amount: number; prizes: LotteryPrize[] }
-  users: Array<{ user_id: number; accumulated: number; available_draws: number }>
+  users: Array<{ user_id: number; username: string; accumulated: number; available_draws: number; threshold: number }>
   users_total: number
   page: number
   page_size: number

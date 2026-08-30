@@ -42,6 +42,7 @@ import {
   AVAILABILITY_WINDOWS,
   DEFAULT_AVAILABILITY_WINDOW,
   getAvailabilityValue,
+  getMonitorRefreshInterval,
   HISTORY_SLOTS,
   timelineTickClass,
   type AvailabilityWindow,
@@ -90,15 +91,28 @@ function availabilityClass(value: number | undefined) {
   return 'text-destructive'
 }
 
-function Timeline(props: { history?: MonitorHistoryPoint[] }) {
+function Timeline(props: {
+  history?: MonitorHistoryPoint[]
+  refreshIntervalMs: number | false
+}) {
   const { t } = useTranslation()
   const slots = buildTimelineSlots(props.history)
+  const refreshSeconds =
+    props.refreshIntervalMs === false
+      ? undefined
+      : Math.round(props.refreshIntervalMs / 1000)
 
   return (
     <div className='border-border/70 mt-4 border-t pt-3'>
       <div className='text-muted-foreground mb-2 flex justify-between gap-3 text-[10px] font-semibold uppercase'>
         <span>{t('Recent {{count}} records', { count: HISTORY_SLOTS })}</span>
-        <span>{t('30-second auto-refresh')}</span>
+        {refreshSeconds === undefined ? null : (
+          <span>
+            {t('Auto-refreshing every {{seconds}}s', {
+              seconds: refreshSeconds,
+            })}
+          </span>
+        )}
       </div>
       <TooltipProvider delay={100}>
         <div
@@ -158,6 +172,7 @@ function ModelMonitor(props: {
   model: string
   stat: MonitorStat
   availabilityWindow: AvailabilityWindow
+  refreshIntervalMs: number | false
 }) {
   const { t } = useTranslation()
   const status = props.stat.status || 'unknown'
@@ -220,12 +235,18 @@ function ModelMonitor(props: {
         </div>
       </div>
 
-      <Timeline history={props.stat.history} />
+      <Timeline
+        history={props.stat.history}
+        refreshIntervalMs={props.refreshIntervalMs}
+      />
     </section>
   )
 }
 
-function MonitorCard(props: { row: PublicChannelMonitor }) {
+function MonitorCard(props: {
+  row: PublicChannelMonitor
+  refreshIntervalMs: number | false
+}) {
   const { t } = useTranslation()
   const [availabilityWindow, setAvailabilityWindow] =
     useState<AvailabilityWindow>(DEFAULT_AVAILABILITY_WINDOW)
@@ -297,6 +318,7 @@ function MonitorCard(props: { row: PublicChannelMonitor }) {
               model={model}
               stat={stat}
               availabilityWindow={availabilityWindow}
+              refreshIntervalMs={props.refreshIntervalMs}
             />
           ))
         ) : (
@@ -344,10 +366,12 @@ export function ChannelMonitorPage() {
   const query = useQuery({
     queryKey: ['channel-monitors'],
     queryFn: getChannelMonitors,
-    refetchInterval: 30_000,
+    refetchInterval: (currentQuery) =>
+      getMonitorRefreshInterval(currentQuery.state.data?.data),
     refetchOnWindowFocus: false,
   })
   const rows = query.data?.data ?? emptyRows
+  const refreshIntervalMs = getMonitorRefreshInterval(rows)
 
   let content: ReactNode
   if (query.isLoading) {
@@ -383,7 +407,11 @@ export function ChannelMonitorPage() {
     content = (
       <div className='grid items-start gap-4 lg:grid-cols-2'>
         {rows.map((row) => (
-          <MonitorCard key={`${row.name}-${row.group}`} row={row} />
+          <MonitorCard
+            key={`${row.name}-${row.group}`}
+            row={row}
+            refreshIntervalMs={refreshIntervalMs}
+          />
         ))}
       </div>
     )

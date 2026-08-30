@@ -5,7 +5,6 @@ import { useTranslation } from 'react-i18next'
 import { PageTransition } from '@/components/page-transition'
 import { Button } from '@/components/ui/button'
 import { formatLocalCurrencyAmount } from '@/lib/currency'
-import { formatQuota } from '@/lib/format'
 
 import { drawLottery, getLottery } from './api'
 
@@ -67,11 +66,11 @@ export function Lottery() {
 
               <div className='mt-8 flex items-end justify-between gap-4'>
                 <div>
-                  <p className='text-3xl font-semibold tabular-nums sm:text-4xl'>{formatQuota(data.accumulated)}</p>
+                  <p className='text-3xl font-semibold tabular-nums sm:text-4xl'>{formatLocalCurrencyAmount(data.accumulated)}</p>
                   <p className='text-muted-foreground mt-1 text-xs'>{t('Total spent')}</p>
                 </div>
                 <div className='text-right'>
-                  <p className='text-cyan-600 text-lg font-medium tabular-nums dark:text-cyan-200'>{formatQuota(remaining)}</p>
+                  <p className='text-cyan-600 text-lg font-medium tabular-nums dark:text-cyan-200'>{formatLocalCurrencyAmount(remaining)}</p>
                   <p className='text-muted-foreground mt-1 text-xs'>{t('Remaining to next draw')}</p>
                 </div>
               </div>
@@ -82,10 +81,10 @@ export function Lottery() {
                 </div>
                 <div className='text-muted-foreground mt-2 flex justify-between text-xs'>
                   <span>{t('Progress')}</span>
-                  <span className='tabular-nums'>{formatQuota(data.threshold)} {t('Threshold')}</span>
+                  <span className='tabular-nums'>{formatLocalCurrencyAmount(data.threshold)} {t('Threshold')}</span>
                 </div>
                 <p className='text-muted-foreground mt-3 text-xs leading-relaxed'>
-                  {t('Rule: every {{threshold}} of spending earns 1 draw. The bar shows progress toward your next draw; any surplus rolls into the next round.', { threshold: formatQuota(data.threshold) })}
+                  {t('Rule: every {{threshold}} of spending earns 1 draw. The bar shows progress toward your next draw; any surplus rolls into the next round.', { threshold: formatLocalCurrencyAmount(data.threshold) })}
                 </p>
               </div>
             </div>

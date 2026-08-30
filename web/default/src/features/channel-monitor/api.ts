@@ -11,9 +11,10 @@ export type AdminMonitorStat = MonitorStat & {
   last_checked: number
 }
 export type PublicChannelMonitor = {
-  name: string
+  name?: string
   group: string
   models: Record<string, MonitorStat>
+  interval_seconds: number
 }
 export type AdminChannelMonitor = PublicChannelMonitor & {
   id: number
@@ -28,7 +29,7 @@ export type AdminChannelMonitor = PublicChannelMonitor & {
   models: Record<string, AdminMonitorStat>
 }
 export type MonitorInput = {
-  name: string
+  name?: string
   group: string
   primary_model: string
   extra_models: string[]
