@@ -106,8 +106,13 @@ autoDetect:
 	if scheme == "http" && !settings.AllowInsecureOrigin && r.Host != "localhost" && r.Host != "127.0.0.1" && !strings.HasPrefix(r.Host, "127.0.0.1:") && !strings.HasPrefix(r.Host, "localhost:") {
 		return nil, fmt.Errorf("Passkey 仅支持 HTTPS，当前访问: %s://%s，请在 Passkey 设置中允许不安全 Origin 或配置 HTTPS", scheme, r.Host)
 	}
-	// 优先使用请求的完整Host（包含端口）
-	host := r.Host
+	// RP ID / Origin 决定 Passkey 凭据绑定到哪个域，必须来自配置
+	// （Passkey 设置或 ServerAddress），不能信任客户端可控的请求 Host。
+	// 仅本地开发（loopback）例外，此时请求 Host 是安全的显式回退。
+	host := ""
+	if isLoopbackHost(r.Host) {
+		host = r.Host
+	}
 
 	// 如果无法从请求获取Host，尝试从ServerAddress获取
 	if host == "" && system_setting.ServerAddress != "" {
@@ -119,7 +124,7 @@ autoDetect:
 		}
 	}
 	if host == "" {
-		return nil, fmt.Errorf("无法确定 Passkey 的 Origin，请在系统设置或 Passkey 设置中指定。当前 Host: '%s', ServerAddress: '%s'", r.Host, system_setting.ServerAddress)
+		return nil, fmt.Errorf("无法确定 Passkey 的 Origin：非本地部署必须在系统设置（服务器地址）或 Passkey 设置（Origins/RPID）中显式配置。当前 Host: '%s', ServerAddress: '%s'", r.Host, system_setting.ServerAddress)
 	}
 	if scheme == "" {
 		scheme = "https"
@@ -141,6 +146,22 @@ func resolveRPID(r *http.Request, settings *system_setting.PasskeySettings, orig
 		return "", fmt.Errorf("无法解析 Passkey Origin: %w", err)
 	}
 	return hostWithoutPort(parsed.Host), nil
+}
+
+// isLoopbackHost reports whether host (optionally with port) is localhost or a
+// loopback IP — the only case where trusting the request Host is safe.
+func isLoopbackHost(host string) bool {
+	h := hostWithoutPort(host)
+	if h == "" {
+		return false
+	}
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(strings.Trim(h, "[]")); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 func hostWithoutPort(host string) string {

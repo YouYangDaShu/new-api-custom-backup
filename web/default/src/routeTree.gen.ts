@@ -40,6 +40,7 @@ import { Route as AuthenticatedWalletIndexRouteImport } from './routes/_authenti
 import { Route as AuthenticatedUsersIndexRouteImport } from './routes/_authenticated/users/index'
 import { Route as AuthenticatedUsageLogsIndexRouteImport } from './routes/_authenticated/usage-logs/index'
 import { Route as AuthenticatedTokenRankingsIndexRouteImport } from './routes/_authenticated/token-rankings/index'
+import { Route as AuthenticatedTokenRankingManagementIndexRouteImport } from './routes/_authenticated/token-ranking-management/index'
 import { Route as AuthenticatedSystemSettingsIndexRouteImport } from './routes/_authenticated/system-settings/index'
 import { Route as AuthenticatedSystemInfoIndexRouteImport } from './routes/_authenticated/system-info/index'
 import { Route as AuthenticatedSubscriptionsIndexRouteImport } from './routes/_authenticated/subscriptions/index'
@@ -47,9 +48,13 @@ import { Route as AuthenticatedRedemptionCodesIndexRouteImport } from './routes/
 import { Route as AuthenticatedProfileIndexRouteImport } from './routes/_authenticated/profile/index'
 import { Route as AuthenticatedPlaygroundIndexRouteImport } from './routes/_authenticated/playground/index'
 import { Route as AuthenticatedModelsIndexRouteImport } from './routes/_authenticated/models/index'
+import { Route as AuthenticatedLotteryIndexRouteImport } from './routes/_authenticated/lottery/index'
+import { Route as AuthenticatedLotteryManagementIndexRouteImport } from './routes/_authenticated/lottery-management/index'
 import { Route as AuthenticatedKeysIndexRouteImport } from './routes/_authenticated/keys/index'
 import { Route as AuthenticatedDashboardIndexRouteImport } from './routes/_authenticated/dashboard/index'
 import { Route as AuthenticatedChannelsIndexRouteImport } from './routes/_authenticated/channels/index'
+import { Route as AuthenticatedChannelMonitorIndexRouteImport } from './routes/_authenticated/channel-monitor/index'
+import { Route as AuthenticatedChannelMonitorManagementIndexRouteImport } from './routes/_authenticated/channel-monitor-management/index'
 import { Route as AuthenticatedUsageLogsSectionRouteImport } from './routes/_authenticated/usage-logs/$section'
 import { Route as AuthenticatedModelsSectionRouteImport } from './routes/_authenticated/models/$section'
 import { Route as AuthenticatedErrorsErrorRouteImport } from './routes/_authenticated/errors/$error'
@@ -228,6 +233,12 @@ const AuthenticatedTokenRankingsIndexRoute =
     path: '/token-rankings/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const AuthenticatedTokenRankingManagementIndexRoute =
+  AuthenticatedTokenRankingManagementIndexRouteImport.update({
+    id: '/token-ranking-management/',
+    path: '/token-ranking-management/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedSystemSettingsIndexRoute =
   AuthenticatedSystemSettingsIndexRouteImport.update({
     id: '/',
@@ -270,6 +281,18 @@ const AuthenticatedModelsIndexRoute =
     path: '/models/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
+const AuthenticatedLotteryIndexRoute =
+  AuthenticatedLotteryIndexRouteImport.update({
+    id: '/lottery/',
+    path: '/lottery/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedLotteryManagementIndexRoute =
+  AuthenticatedLotteryManagementIndexRouteImport.update({
+    id: '/lottery-management/',
+    path: '/lottery-management/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
 const AuthenticatedKeysIndexRoute = AuthenticatedKeysIndexRouteImport.update({
   id: '/keys/',
   path: '/keys/',
@@ -285,6 +308,18 @@ const AuthenticatedChannelsIndexRoute =
   AuthenticatedChannelsIndexRouteImport.update({
     id: '/channels/',
     path: '/channels/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedChannelMonitorIndexRoute =
+  AuthenticatedChannelMonitorIndexRouteImport.update({
+    id: '/channel-monitor/',
+    path: '/channel-monitor/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedChannelMonitorManagementIndexRoute =
+  AuthenticatedChannelMonitorManagementIndexRouteImport.update({
+    id: '/channel-monitor-management/',
+    path: '/channel-monitor-management/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
 const AuthenticatedUsageLogsSectionRoute =
@@ -437,9 +472,13 @@ export interface FileRoutesByFullPath {
   '/errors/$error': typeof AuthenticatedErrorsErrorRoute
   '/models/$section': typeof AuthenticatedModelsSectionRoute
   '/usage-logs/$section': typeof AuthenticatedUsageLogsSectionRoute
+  '/channel-monitor-management/': typeof AuthenticatedChannelMonitorManagementIndexRoute
+  '/channel-monitor/': typeof AuthenticatedChannelMonitorIndexRoute
   '/channels/': typeof AuthenticatedChannelsIndexRoute
   '/dashboard/': typeof AuthenticatedDashboardIndexRoute
   '/keys/': typeof AuthenticatedKeysIndexRoute
+  '/lottery-management/': typeof AuthenticatedLotteryManagementIndexRoute
+  '/lottery/': typeof AuthenticatedLotteryIndexRoute
   '/models/': typeof AuthenticatedModelsIndexRoute
   '/playground/': typeof AuthenticatedPlaygroundIndexRoute
   '/profile/': typeof AuthenticatedProfileIndexRoute
@@ -447,6 +486,7 @@ export interface FileRoutesByFullPath {
   '/subscriptions/': typeof AuthenticatedSubscriptionsIndexRoute
   '/system-info/': typeof AuthenticatedSystemInfoIndexRoute
   '/system-settings/': typeof AuthenticatedSystemSettingsIndexRoute
+  '/token-ranking-management/': typeof AuthenticatedTokenRankingManagementIndexRoute
   '/token-rankings/': typeof AuthenticatedTokenRankingsIndexRoute
   '/usage-logs/': typeof AuthenticatedUsageLogsIndexRoute
   '/users/': typeof AuthenticatedUsersIndexRoute
@@ -497,9 +537,13 @@ export interface FileRoutesByTo {
   '/errors/$error': typeof AuthenticatedErrorsErrorRoute
   '/models/$section': typeof AuthenticatedModelsSectionRoute
   '/usage-logs/$section': typeof AuthenticatedUsageLogsSectionRoute
+  '/channel-monitor-management': typeof AuthenticatedChannelMonitorManagementIndexRoute
+  '/channel-monitor': typeof AuthenticatedChannelMonitorIndexRoute
   '/channels': typeof AuthenticatedChannelsIndexRoute
   '/dashboard': typeof AuthenticatedDashboardIndexRoute
   '/keys': typeof AuthenticatedKeysIndexRoute
+  '/lottery-management': typeof AuthenticatedLotteryManagementIndexRoute
+  '/lottery': typeof AuthenticatedLotteryIndexRoute
   '/models': typeof AuthenticatedModelsIndexRoute
   '/playground': typeof AuthenticatedPlaygroundIndexRoute
   '/profile': typeof AuthenticatedProfileIndexRoute
@@ -507,6 +551,7 @@ export interface FileRoutesByTo {
   '/subscriptions': typeof AuthenticatedSubscriptionsIndexRoute
   '/system-info': typeof AuthenticatedSystemInfoIndexRoute
   '/system-settings': typeof AuthenticatedSystemSettingsIndexRoute
+  '/token-ranking-management': typeof AuthenticatedTokenRankingManagementIndexRoute
   '/token-rankings': typeof AuthenticatedTokenRankingsIndexRoute
   '/usage-logs': typeof AuthenticatedUsageLogsIndexRoute
   '/users': typeof AuthenticatedUsersIndexRoute
@@ -561,9 +606,13 @@ export interface FileRoutesById {
   '/_authenticated/errors/$error': typeof AuthenticatedErrorsErrorRoute
   '/_authenticated/models/$section': typeof AuthenticatedModelsSectionRoute
   '/_authenticated/usage-logs/$section': typeof AuthenticatedUsageLogsSectionRoute
+  '/_authenticated/channel-monitor-management/': typeof AuthenticatedChannelMonitorManagementIndexRoute
+  '/_authenticated/channel-monitor/': typeof AuthenticatedChannelMonitorIndexRoute
   '/_authenticated/channels/': typeof AuthenticatedChannelsIndexRoute
   '/_authenticated/dashboard/': typeof AuthenticatedDashboardIndexRoute
   '/_authenticated/keys/': typeof AuthenticatedKeysIndexRoute
+  '/_authenticated/lottery-management/': typeof AuthenticatedLotteryManagementIndexRoute
+  '/_authenticated/lottery/': typeof AuthenticatedLotteryIndexRoute
   '/_authenticated/models/': typeof AuthenticatedModelsIndexRoute
   '/_authenticated/playground/': typeof AuthenticatedPlaygroundIndexRoute
   '/_authenticated/profile/': typeof AuthenticatedProfileIndexRoute
@@ -571,6 +620,7 @@ export interface FileRoutesById {
   '/_authenticated/subscriptions/': typeof AuthenticatedSubscriptionsIndexRoute
   '/_authenticated/system-info/': typeof AuthenticatedSystemInfoIndexRoute
   '/_authenticated/system-settings/': typeof AuthenticatedSystemSettingsIndexRoute
+  '/_authenticated/token-ranking-management/': typeof AuthenticatedTokenRankingManagementIndexRoute
   '/_authenticated/token-rankings/': typeof AuthenticatedTokenRankingsIndexRoute
   '/_authenticated/usage-logs/': typeof AuthenticatedUsageLogsIndexRoute
   '/_authenticated/users/': typeof AuthenticatedUsersIndexRoute
@@ -624,9 +674,13 @@ export interface FileRouteTypes {
     | '/errors/$error'
     | '/models/$section'
     | '/usage-logs/$section'
+    | '/channel-monitor-management/'
+    | '/channel-monitor/'
     | '/channels/'
     | '/dashboard/'
     | '/keys/'
+    | '/lottery-management/'
+    | '/lottery/'
     | '/models/'
     | '/playground/'
     | '/profile/'
@@ -634,6 +688,7 @@ export interface FileRouteTypes {
     | '/subscriptions/'
     | '/system-info/'
     | '/system-settings/'
+    | '/token-ranking-management/'
     | '/token-rankings/'
     | '/usage-logs/'
     | '/users/'
@@ -684,9 +739,13 @@ export interface FileRouteTypes {
     | '/errors/$error'
     | '/models/$section'
     | '/usage-logs/$section'
+    | '/channel-monitor-management'
+    | '/channel-monitor'
     | '/channels'
     | '/dashboard'
     | '/keys'
+    | '/lottery-management'
+    | '/lottery'
     | '/models'
     | '/playground'
     | '/profile'
@@ -694,6 +753,7 @@ export interface FileRouteTypes {
     | '/subscriptions'
     | '/system-info'
     | '/system-settings'
+    | '/token-ranking-management'
     | '/token-rankings'
     | '/usage-logs'
     | '/users'
@@ -747,9 +807,13 @@ export interface FileRouteTypes {
     | '/_authenticated/errors/$error'
     | '/_authenticated/models/$section'
     | '/_authenticated/usage-logs/$section'
+    | '/_authenticated/channel-monitor-management/'
+    | '/_authenticated/channel-monitor/'
     | '/_authenticated/channels/'
     | '/_authenticated/dashboard/'
     | '/_authenticated/keys/'
+    | '/_authenticated/lottery-management/'
+    | '/_authenticated/lottery/'
     | '/_authenticated/models/'
     | '/_authenticated/playground/'
     | '/_authenticated/profile/'
@@ -757,6 +821,7 @@ export interface FileRouteTypes {
     | '/_authenticated/subscriptions/'
     | '/_authenticated/system-info/'
     | '/_authenticated/system-settings/'
+    | '/_authenticated/token-ranking-management/'
     | '/_authenticated/token-rankings/'
     | '/_authenticated/usage-logs/'
     | '/_authenticated/users/'
@@ -1018,6 +1083,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedTokenRankingsIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/token-ranking-management/': {
+      id: '/_authenticated/token-ranking-management/'
+      path: '/token-ranking-management'
+      fullPath: '/token-ranking-management/'
+      preLoaderRoute: typeof AuthenticatedTokenRankingManagementIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/system-settings/': {
       id: '/_authenticated/system-settings/'
       path: '/'
@@ -1067,6 +1139,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedModelsIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/lottery/': {
+      id: '/_authenticated/lottery/'
+      path: '/lottery'
+      fullPath: '/lottery/'
+      preLoaderRoute: typeof AuthenticatedLotteryIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/lottery-management/': {
+      id: '/_authenticated/lottery-management/'
+      path: '/lottery-management'
+      fullPath: '/lottery-management/'
+      preLoaderRoute: typeof AuthenticatedLotteryManagementIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
     '/_authenticated/keys/': {
       id: '/_authenticated/keys/'
       path: '/keys'
@@ -1086,6 +1172,20 @@ declare module '@tanstack/react-router' {
       path: '/channels'
       fullPath: '/channels/'
       preLoaderRoute: typeof AuthenticatedChannelsIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/channel-monitor/': {
+      id: '/_authenticated/channel-monitor/'
+      path: '/channel-monitor'
+      fullPath: '/channel-monitor/'
+      preLoaderRoute: typeof AuthenticatedChannelMonitorIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/channel-monitor-management/': {
+      id: '/_authenticated/channel-monitor-management/'
+      path: '/channel-monitor-management'
+      fullPath: '/channel-monitor-management/'
+      preLoaderRoute: typeof AuthenticatedChannelMonitorManagementIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/usage-logs/$section': {
@@ -1322,15 +1422,20 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedErrorsErrorRoute: typeof AuthenticatedErrorsErrorRoute
   AuthenticatedModelsSectionRoute: typeof AuthenticatedModelsSectionRoute
   AuthenticatedUsageLogsSectionRoute: typeof AuthenticatedUsageLogsSectionRoute
+  AuthenticatedChannelMonitorManagementIndexRoute: typeof AuthenticatedChannelMonitorManagementIndexRoute
+  AuthenticatedChannelMonitorIndexRoute: typeof AuthenticatedChannelMonitorIndexRoute
   AuthenticatedChannelsIndexRoute: typeof AuthenticatedChannelsIndexRoute
   AuthenticatedDashboardIndexRoute: typeof AuthenticatedDashboardIndexRoute
   AuthenticatedKeysIndexRoute: typeof AuthenticatedKeysIndexRoute
+  AuthenticatedLotteryManagementIndexRoute: typeof AuthenticatedLotteryManagementIndexRoute
+  AuthenticatedLotteryIndexRoute: typeof AuthenticatedLotteryIndexRoute
   AuthenticatedModelsIndexRoute: typeof AuthenticatedModelsIndexRoute
   AuthenticatedPlaygroundIndexRoute: typeof AuthenticatedPlaygroundIndexRoute
   AuthenticatedProfileIndexRoute: typeof AuthenticatedProfileIndexRoute
   AuthenticatedRedemptionCodesIndexRoute: typeof AuthenticatedRedemptionCodesIndexRoute
   AuthenticatedSubscriptionsIndexRoute: typeof AuthenticatedSubscriptionsIndexRoute
   AuthenticatedSystemInfoIndexRoute: typeof AuthenticatedSystemInfoIndexRoute
+  AuthenticatedTokenRankingManagementIndexRoute: typeof AuthenticatedTokenRankingManagementIndexRoute
   AuthenticatedTokenRankingsIndexRoute: typeof AuthenticatedTokenRankingsIndexRoute
   AuthenticatedUsageLogsIndexRoute: typeof AuthenticatedUsageLogsIndexRoute
   AuthenticatedUsersIndexRoute: typeof AuthenticatedUsersIndexRoute
@@ -1346,9 +1451,15 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedErrorsErrorRoute: AuthenticatedErrorsErrorRoute,
   AuthenticatedModelsSectionRoute: AuthenticatedModelsSectionRoute,
   AuthenticatedUsageLogsSectionRoute: AuthenticatedUsageLogsSectionRoute,
+  AuthenticatedChannelMonitorManagementIndexRoute:
+    AuthenticatedChannelMonitorManagementIndexRoute,
+  AuthenticatedChannelMonitorIndexRoute: AuthenticatedChannelMonitorIndexRoute,
   AuthenticatedChannelsIndexRoute: AuthenticatedChannelsIndexRoute,
   AuthenticatedDashboardIndexRoute: AuthenticatedDashboardIndexRoute,
   AuthenticatedKeysIndexRoute: AuthenticatedKeysIndexRoute,
+  AuthenticatedLotteryManagementIndexRoute:
+    AuthenticatedLotteryManagementIndexRoute,
+  AuthenticatedLotteryIndexRoute: AuthenticatedLotteryIndexRoute,
   AuthenticatedModelsIndexRoute: AuthenticatedModelsIndexRoute,
   AuthenticatedPlaygroundIndexRoute: AuthenticatedPlaygroundIndexRoute,
   AuthenticatedProfileIndexRoute: AuthenticatedProfileIndexRoute,
@@ -1356,6 +1467,8 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
     AuthenticatedRedemptionCodesIndexRoute,
   AuthenticatedSubscriptionsIndexRoute: AuthenticatedSubscriptionsIndexRoute,
   AuthenticatedSystemInfoIndexRoute: AuthenticatedSystemInfoIndexRoute,
+  AuthenticatedTokenRankingManagementIndexRoute:
+    AuthenticatedTokenRankingManagementIndexRoute,
   AuthenticatedTokenRankingsIndexRoute: AuthenticatedTokenRankingsIndexRoute,
   AuthenticatedUsageLogsIndexRoute: AuthenticatedUsageLogsIndexRoute,
   AuthenticatedUsersIndexRoute: AuthenticatedUsersIndexRoute,

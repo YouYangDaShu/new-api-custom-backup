@@ -12,17 +12,46 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestRankingNameOnlyMasksEmail(t *testing.T) {
-	require.Equal(t, "al***ce@example.com", maskRankingName("alice@example.com"))
-	require.Equal(t, "304***051@qq.com", maskRankingName("304123051@qq.com"))
-	require.Equal(t, "ab***cd@example.com", maskRankingName("abcd@example.com"))
-	require.Equal(t, "1975***382", maskRankingName("1975702382"))
-	require.Equal(t, "123***789", maskRankingName("123456789"))
-	require.Equal(t, "123**678", maskRankingName("12345678"))
-	require.Equal(t, "123*567", maskRankingName("1234567"))
-	require.Equal(t, "123456", maskRankingName("123456"))
-	require.Equal(t, "普通用户名", maskRankingName("普通用户名"))
-	require.Equal(t, "player29369", maskRankingName("player29369"))
+func TestMaskRankingNameMasksEveryNameForm(t *testing.T) {
+	// Emails keep only the first rune of the local part.
+	require.Equal(t, "a***@example.com", maskRankingName("alice@example.com"))
+	require.Equal(t, "3***@qq.com", maskRankingName("304123051@qq.com"))
+	require.Equal(t, "a***@example.com", maskRankingName("abcd@example.com"))
+	require.Equal(t, "a***@example.com", maskRankingName("ab@example.com"))
+	// Phone-like digit strings keep at most the first 3 and last 2 digits.
+	require.Equal(t, "197***82", maskRankingName("1975702382"))
+	require.Equal(t, "123***89", maskRankingName("123456789"))
+	require.Equal(t, "123***78", maskRankingName("12345678"))
+	// Short digit strings and every other username keep only the first rune.
+	require.Equal(t, "1***", maskRankingName("1234567"))
+	require.Equal(t, "1***", maskRankingName("123456"))
+	require.Equal(t, "普***", maskRankingName("普通用户名"))
+	require.Equal(t, "p***", maskRankingName("player29369"))
+	require.Equal(t, "***", maskRankingName("   "))
+}
+
+func TestConfiguredWeeklyRankingRewardsUsesOverrideAndFallback(t *testing.T) {
+	oldReward1, oldReward2, oldReward3 := common.WeeklyRankReward1, common.WeeklyRankReward2, common.WeeklyRankReward3
+	common.OptionMapRWMutex.Lock()
+	oldOptions := common.OptionMap
+	common.OptionMap = map[string]string{"TokenRankingRewards": "[1.25, 0.5]"}
+	common.OptionMapRWMutex.Unlock()
+	common.WeeklyRankReward1, common.WeeklyRankReward2, common.WeeklyRankReward3 = 9, 8, 7
+	t.Cleanup(func() {
+		common.WeeklyRankReward1, common.WeeklyRankReward2, common.WeeklyRankReward3 = oldReward1, oldReward2, oldReward3
+		common.OptionMapRWMutex.Lock()
+		common.OptionMap = oldOptions
+		common.OptionMapRWMutex.Unlock()
+	})
+
+	require.Equal(t, []float64{1.25, 0.5}, ConfiguredWeeklyRankingRewardAmounts())
+	require.Equal(t, []int{common.QuotaFromFloat(1.25 * common.QuotaPerUnit), common.QuotaFromFloat(0.5 * common.QuotaPerUnit)}, ConfiguredWeeklyRankingRewards())
+
+	common.OptionMapRWMutex.Lock()
+	common.OptionMap["TokenRankingRewards"] = "[]"
+	common.OptionMapRWMutex.Unlock()
+	require.Equal(t, []float64{9, 8, 7}, ConfiguredWeeklyRankingRewardAmounts())
+	require.Equal(t, []int{common.QuotaFromFloat(9 * common.QuotaPerUnit), common.QuotaFromFloat(8 * common.QuotaPerUnit), common.QuotaFromFloat(7 * common.QuotaPerUnit)}, ConfiguredWeeklyRankingRewards())
 }
 
 func TestShanghaiWeekRangeUsesMondayBoundary(t *testing.T) {
@@ -75,6 +104,35 @@ func TestWeeklyRankingReturnsCurrentUserOutsideTopTwenty(t *testing.T) {
 	require.Equal(t, 21, current.Rank)
 	require.True(t, current.IsCurrentUser)
 	require.Equal(t, "rank-user-21", current.DisplayName)
+	// Other users' names are masked for the signed-in viewer.
+	for _, row := range rows {
+		require.Equal(t, "r***", row.DisplayName)
+	}
+}
+
+func TestRankingMasksOtherUsersButNotCurrentUser(t *testing.T) {
+	truncateTables(t)
+	loc := time.FixedZone("UTC+8", 8*3600)
+	start := time.Date(2026, 8, 10, 0, 0, 0, 0, loc).Unix()
+	users := []User{
+		{Id: 92060, Username: "alice@example.com", AffCode: "rank-mask-a", Role: common.RoleCommonUser, Status: common.UserStatusEnabled},
+		{Id: 92061, Username: "bob-viewer", AffCode: "rank-mask-b", Role: common.RoleCommonUser, Status: common.UserStatusEnabled},
+	}
+	for i := range users {
+		require.NoError(t, DB.Create(&users[i]).Error)
+		require.NoError(t, LOG_DB.Create(&Log{UserId: users[i].Id, Type: LogTypeConsume, CreatedAt: start + int64(i), PromptTokens: 100 - i}).Error)
+	}
+
+	rows, _, err := GetUserRankingWithCurrent(time.Date(2026, 8, 16, 12, 0, 0, 0, loc), "week", 20, 92061)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	byID := map[int]WeeklyUserRanking{}
+	for _, row := range rows {
+		byID[row.UserID] = row
+	}
+	require.Equal(t, "a***@example.com", byID[92060].DisplayName)
+	require.Equal(t, "bob-viewer", byID[92061].DisplayName)
+	require.True(t, byID[92061].IsCurrentUser)
 }
 
 func TestWeeklyUserRankingAndIdempotentRewards(t *testing.T) {
@@ -112,7 +170,7 @@ func TestWeeklyUserRankingAndIdempotentRewards(t *testing.T) {
 	require.Equal(t, 91001, rows[1].UserID)
 	require.True(t, rows[1].RewardEligible)
 	require.EqualValues(t, 200, rows[1].TotalTokens)
-	require.Equal(t, "al***ce@example.com", rows[1].DisplayName)
+	require.Equal(t, "a***@example.com", rows[1].DisplayName)
 	require.Equal(t, 91002, rows[2].UserID)
 	require.EqualValues(t, 130, rows[2].TotalTokens)
 
@@ -317,6 +375,35 @@ func TestWeeklyRewardRejectsInvalidRewardQuota(t *testing.T) {
 	var count int64
 	require.NoError(t, DB.Model(&WeeklyRankingReward{}).Count(&count).Error)
 	require.Zero(t, count)
+}
+
+func TestWeeklyRankingFallsBackWhenCacheExtractFails(t *testing.T) {
+	truncateTables(t)
+	require.NoError(t, DB.AutoMigrate(&WeeklyRankingReward{}))
+	require.NoError(t, DB.Exec("DELETE FROM weekly_ranking_rewards").Error)
+	t.Cleanup(func() { DB.Exec("DELETE FROM weekly_ranking_rewards") })
+
+	// Force the MySQL JSON-extract expression against the SQLite test DB so the
+	// first aggregation query fails, proving one bad `other` value cannot 500
+	// the ranking API or block weekly reward settlement.
+	common.SetLogDatabaseType(common.DatabaseTypeMySQL)
+	t.Cleanup(func() { common.SetLogDatabaseType(common.DatabaseTypeSQLite) })
+
+	user := User{Id: 92070, Username: "fallback-user", AffCode: "rank-fallback", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Quota: 0}
+	require.NoError(t, DB.Create(&user).Error)
+	loc := time.FixedZone("UTC+8", 8*3600)
+	start := time.Date(2026, 8, 10, 0, 0, 0, 0, loc).Unix()
+	require.NoError(t, LOG_DB.Create(&Log{UserId: user.Id, Type: LogTypeConsume, CreatedAt: start + 10, PromptTokens: 100, CompletionTokens: 20, Other: "not-json"}).Error)
+
+	rows, err := GetWeeklyUserRanking(time.Date(2026, 8, 16, 12, 0, 0, 0, loc), 10)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.EqualValues(t, 120, rows[0].TotalTokens)
+	require.Zero(t, rows[0].CacheTokens)
+
+	awarded, err := SettleWeeklyRankingRewards(time.Date(2026, 8, 17, 0, 5, 0, 0, loc), []int{500})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, awarded)
 }
 
 func TestWeeklyRewardConcurrentSettlementHasSingleWinner(t *testing.T) {

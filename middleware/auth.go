@@ -3,6 +3,7 @@ package middleware
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"strconv"
@@ -34,13 +35,114 @@ func validUserInfo(username string, role int) bool {
 	return true
 }
 
+func normalizeSessionInt(value any) (int, bool) {
+	maxInt := int64(^uint(0) >> 1)
+	minInt := -maxInt - 1
+	switch n := value.(type) {
+	case int:
+		return n, true
+	case int8:
+		return int(n), true
+	case int16:
+		return int(n), true
+	case int32:
+		return int(n), true
+	case int64:
+		if n < minInt || n > maxInt {
+			return 0, false
+		}
+		return int(n), true
+	case uint:
+		if uint64(n) > uint64(maxInt) {
+			return 0, false
+		}
+		return int(n), true
+	case uint8:
+		return int(n), true
+	case uint16:
+		return int(n), true
+	case uint32:
+		if uint64(n) > uint64(maxInt) {
+			return 0, false
+		}
+		return int(n), true
+	case uint64:
+		if n > uint64(maxInt) {
+			return 0, false
+		}
+		return int(n), true
+	case float64:
+		if math.IsNaN(n) || math.IsInf(n, 0) || math.Trunc(n) != n || n < float64(minInt) || n > float64(maxInt) {
+			return 0, false
+		}
+		return int(n), true
+	case float32:
+		f := float64(n)
+		if math.IsNaN(f) || math.IsInf(f, 0) || math.Trunc(f) != f || f < float64(minInt) || f > float64(maxInt) {
+			return 0, false
+		}
+		return int(n), true
+	default:
+		return 0, false
+	}
+}
+
+func normalizeSessionString(value any) (string, bool) {
+	str, ok := value.(string)
+	return str, ok
+}
+
 func authHelper(c *gin.Context, minRole int) {
 	session := sessions.Default(c)
 	username := session.Get("username")
 	role := session.Get("role")
 	id := session.Get("id")
 	status := session.Get("status")
+	group := session.Get("group")
 	useAccessToken := false
+	if username != nil {
+		// Sessions live for up to 30 days; the role/status stored at login
+		// must not keep granting access after a ban or demotion. Revalidate
+		// them from the user cache/DB on every request (the relay token path
+		// already does the equivalent via GetUserCache).
+		sessionUsername, usernameOK := normalizeSessionString(username)
+		sessionRole, roleOK := normalizeSessionInt(role)
+		sessionUserId, idOK := normalizeSessionInt(id)
+		sessionStatus, statusOK := normalizeSessionInt(status)
+		if !usernameOK || !roleOK || !idOK || !statusOK || sessionUserId <= 0 ||
+			(sessionStatus != common.UserStatusEnabled && sessionStatus != common.UserStatusDisabled) ||
+			!validUserInfo(sessionUsername, sessionRole) {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"success": false,
+				"message": common.TranslateMessage(c, i18n.MsgAuthUserInfoInvalid),
+			})
+			c.Abort()
+			return
+		}
+		userCache, cacheErr := model.GetUserCache(sessionUserId)
+		if cacheErr != nil {
+			common.SysLog("authHelper user revalidation error: " + cacheErr.Error())
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": common.TranslateMessage(c, i18n.MsgDatabaseError),
+			})
+			c.Abort()
+			return
+		}
+		username = userCache.Username
+		role = userCache.Role
+		id = sessionUserId
+		status = userCache.Status
+		group = userCache.Group
+	}
+	if username == nil && (role != nil || id != nil || status != nil || group != nil) {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"message": common.TranslateMessage(c, i18n.MsgAuthUserInfoInvalid),
+		})
+		c.Abort()
+		return
+	}
 	if username == nil {
 		// Check access token
 		accessToken := c.Request.Header.Get("Authorization")
@@ -83,6 +185,7 @@ func authHelper(c *gin.Context, minRole int) {
 			role = user.Role
 			id = user.Id
 			status = user.Status
+			group = user.Group
 			useAccessToken = true
 		} else {
 			c.JSON(http.StatusOK, gin.H{
@@ -113,7 +216,19 @@ func authHelper(c *gin.Context, minRole int) {
 		return
 
 	}
-	if id != apiUserId {
+	userID, idOK := normalizeSessionInt(id)
+	statusValue, statusOK := normalizeSessionInt(status)
+	roleValue, roleOK := normalizeSessionInt(role)
+	usernameValue, usernameOK := normalizeSessionString(username)
+	if !idOK || !statusOK || !roleOK || !usernameOK {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"message": common.TranslateMessage(c, i18n.MsgAuthUserInfoInvalid),
+		})
+		c.Abort()
+		return
+	}
+	if userID != apiUserId {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"success": false,
 			"message": common.TranslateMessage(c, i18n.MsgAuthUserIdMismatch),
@@ -121,7 +236,7 @@ func authHelper(c *gin.Context, minRole int) {
 		c.Abort()
 		return
 	}
-	if status.(int) == common.UserStatusDisabled {
+	if statusValue == common.UserStatusDisabled {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": common.TranslateMessage(c, i18n.MsgAuthUserBanned),
@@ -129,7 +244,7 @@ func authHelper(c *gin.Context, minRole int) {
 		c.Abort()
 		return
 	}
-	if role.(int) < minRole {
+	if roleValue < minRole {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": common.TranslateMessage(c, i18n.MsgAuthInsufficientPrivilege),
@@ -137,7 +252,7 @@ func authHelper(c *gin.Context, minRole int) {
 		c.Abort()
 		return
 	}
-	if !validUserInfo(username.(string), role.(int)) {
+	if !validUserInfo(usernameValue, roleValue) {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": common.TranslateMessage(c, i18n.MsgAuthUserInfoInvalid),
@@ -147,11 +262,11 @@ func authHelper(c *gin.Context, minRole int) {
 	}
 	// 防止不同newapi版本冲突，导致数据不通用
 	c.Header("Auth-Version", "864b7076dbcd0a3c01b5520316720ebf")
-	c.Set("username", username)
-	c.Set("role", role)
-	c.Set("id", id)
-	c.Set("group", session.Get("group"))
-	c.Set("user_group", session.Get("group"))
+	c.Set("username", usernameValue)
+	c.Set("role", roleValue)
+	c.Set("id", userID)
+	c.Set("group", group)
+	c.Set("user_group", group)
 	c.Set("use_access_token", useAccessToken)
 
 	// 管理/root 写操作审计兜底：内聚在鉴权链路里，保证任何经过 AdminAuth/RootAuth
@@ -220,13 +335,16 @@ func WssAuth(c *gin.Context) {
 // Used for endpoints that need to be accessible from both the dashboard and API clients.
 func TokenOrUserAuth() func(c *gin.Context) {
 	return func(c *gin.Context) {
-		// Try session auth first (dashboard users)
+		// Try session auth first (dashboard users). Status is revalidated from
+		// the user cache/DB, not trusted from the 30-day session snapshot.
 		session := sessions.Default(c)
 		if id := session.Get("id"); id != nil {
-			if status, ok := session.Get("status").(int); ok && status == common.UserStatusEnabled {
-				c.Set("id", id)
-				c.Next()
-				return
+			if userId, ok := id.(int); ok {
+				if userCache, err := model.GetUserCache(userId); err == nil && userCache.Status == common.UserStatusEnabled {
+					c.Set("id", userId)
+					c.Next()
+					return
+				}
 			}
 		}
 		// Fall back to token auth (API clients)
@@ -235,9 +353,16 @@ func TokenOrUserAuth() func(c *gin.Context) {
 }
 
 // TokenAuthReadOnly 宽松版本的令牌认证中间件，用于只读查询接口。
-// 只验证令牌 key 是否存在，不检查令牌状态、过期时间和额度。
-// 即使令牌已过期、已耗尽或已禁用，也允许访问。
-// 仍然检查用户是否被封禁。
+//
+// 明确的产品契约（documented product contract）：持有令牌 key 即可查询该令牌
+// 自身的用量/日志（/api/usage/token、/api/log/token），即使令牌已过期或额度已
+// 耗尽 —— 用户需要据此排查"key 为什么不可用"。边界如下：
+//   - 只读、仅限该令牌自身的数据（handler 以 token_id/token_key 过滤）；
+//   - 管理员手动禁用的令牌被拒绝（禁用即吊销）；
+//   - 被封禁用户的所有令牌被拒绝；
+//   - 配合 CORS 修复（不再对任意来源放行凭据），不存在跨站读取途径。
+//
+// 若要收紧为"过期/耗尽也拒绝"，需要产品层面先改变上述契约。
 func TokenAuthReadOnly() func(c *gin.Context) {
 	return func(c *gin.Context) {
 		key := c.Request.Header.Get("Authorization")

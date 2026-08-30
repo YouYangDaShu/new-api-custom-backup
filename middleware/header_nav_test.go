@@ -6,10 +6,13 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func withHeaderNavModules(t *testing.T, raw string) {
@@ -38,6 +41,24 @@ func performHeaderNavRequest(t *testing.T, handler gin.HandlerFunc, authenticate
 	t.Helper()
 
 	gin.SetMode(gin.TestMode)
+	if authenticated {
+		// authHelper revalidates session role/status from the DB, so an
+		// authenticated request needs a real user row behind the session.
+		common.RedisEnabled = false
+		db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+		require.NoError(t, err)
+		oldDB := model.DB
+		model.DB = db
+		t.Cleanup(func() { model.DB = oldDB })
+		require.NoError(t, db.AutoMigrate(&model.User{}))
+		require.NoError(t, db.Create(&model.User{
+			Id:       1,
+			Username: "tester",
+			Role:     common.RoleCommonUser,
+			Status:   common.UserStatusEnabled,
+			Group:    "default",
+		}).Error)
+	}
 	router := gin.New()
 	router.Use(sessions.Sessions("session", cookie.NewStore([]byte("header-nav-test"))))
 	router.GET("/login", func(c *gin.Context) {

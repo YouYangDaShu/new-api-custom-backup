@@ -29,6 +29,7 @@ import { toast } from 'sonner'
 
 import { OAuthCallbackScreen } from '@/features/auth/components/oauth-callback-screen'
 import { OAUTH_BIND_STORAGE_KEY } from '@/features/auth/constants'
+import { getAppUrl } from '@/lib/app-base-path'
 import { api, getSelf } from '@/lib/api'
 import { useAuthStore, type AuthUser } from '@/stores/auth-store'
 
@@ -60,19 +61,18 @@ function OAuthCallback() {
   useEffect(() => {
     ;(async () => {
       const safeNavigate = (target: string) => {
-        navigate({ to: target as never, replace: true })
+        const routeTarget = target.startsWith('/') ? target : `/${target}`
+        const publicTarget = getAppUrl(routeTarget)
+        navigate({ to: routeTarget as never, replace: true })
         if (typeof window !== 'undefined') {
           setTimeout(() => {
-            const normalizedTarget = target.startsWith('/')
-              ? target
-              : `/${target}`
             const currentPath =
               window.location.pathname + window.location.search
             if (
-              currentPath !== normalizedTarget &&
-              currentPath !== `${normalizedTarget}/`
+              currentPath !== publicTarget &&
+              currentPath !== `${publicTarget}/`
             ) {
-              window.location.replace(target)
+              window.location.replace(publicTarget)
             }
           }, 100)
         }
@@ -112,7 +112,7 @@ function OAuthCallback() {
         window.close()
         setTimeout(() => {
           if (!window.closed) {
-            window.location.replace('/_authenticated/profile/')
+            window.location.replace(getAppUrl('/profile'))
           }
         }, 200)
       }
@@ -180,7 +180,7 @@ function OAuthCallback() {
               // Close the callback window if we opened a new tab for binding
               closeBindingWindow()
             } else {
-              safeNavigate('/_authenticated/profile/')
+              safeNavigate('/profile')
             }
             return
           }

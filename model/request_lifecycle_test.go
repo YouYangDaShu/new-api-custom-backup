@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -120,6 +121,80 @@ func TestRequestLifecycle_ClosesOnlyStalePendingRows(t *testing.T) {
 	assert.Contains(t, stale.Content, "408")
 	assert.Equal(t, LogTypeProcessing, fresh.Type)
 	assert.Equal(t, LogTypeProcessing, charged.Type)
+}
+
+func TestRequestLifecycle_ActiveLeaseSurvivesOldTimeout(t *testing.T) {
+	if LOG_DB == nil {
+		t.Skip("LOG_DB not initialized")
+	}
+	require.NoError(t, LOG_DB.AutoMigrate(&Log{}))
+	now := time.Now().Truncate(time.Second)
+	const reqID = "req-life-active-lease"
+	LOG_DB.Where("request_id = ?", reqID).Delete(&Log{})
+	t.Cleanup(func() { LOG_DB.Where("request_id = ?", reqID).Delete(&Log{}) })
+	pending := common.MapToJsonStr(map[string]interface{}{"billing_status": "pending"})
+	require.NoError(t, createLog(&Log{RequestId: reqID, Type: LogTypeProcessing, Content: "processing", Quota: 0,
+		CreatedAt: now.Add(-2 * staleProcessingLogTimeout).Unix(), LastActivityAt: now.Add(-2 * staleProcessingLogTimeout).Unix(), Other: pending}))
+	heartbeatCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go runRequestLogHeartbeat(heartbeatCtx, reqID, 5*time.Millisecond)
+	require.Eventually(t, func() bool {
+		var row Log
+		return LOG_DB.Where("request_id = ?", reqID).First(&row).Error == nil && row.LastActivityAt >= now.Add(-time.Second).Unix()
+	}, time.Second, 10*time.Millisecond)
+
+	_, err := CloseStaleProcessingLogs(now)
+	require.NoError(t, err)
+	var row Log
+	require.NoError(t, LOG_DB.Where("request_id = ?", reqID).First(&row).Error)
+	assert.Equal(t, LogTypeProcessing, row.Type)
+	assert.True(t, TouchRequestLog(reqID))
+}
+
+func TestRequestLifecycle_FinalizeIsIdempotent(t *testing.T) {
+	if LOG_DB == nil {
+		t.Skip("LOG_DB not initialized")
+	}
+	require.NoError(t, LOG_DB.AutoMigrate(&Log{}))
+	common.LogConsumeEnabled = true
+	const reqID = "req-life-finalize-idempotent"
+	LOG_DB.Where("request_id = ?", reqID).Delete(&Log{})
+	t.Cleanup(func() { LOG_DB.Where("request_id = ?", reqID).Delete(&Log{}) })
+	c := newTestGinContext(reqID, 99898)
+	StartRequestLog(c, "gpt-test", false, "default")
+	require.True(t, FinalizeRequestLog(c, FinalizeRequestLogParams{Success: true, Quota: 77, Content: "ok"}))
+	assert.False(t, FinalizeRequestLog(c, FinalizeRequestLogParams{Success: true, Quota: 99, Content: "duplicate"}))
+	var rows []Log
+	require.NoError(t, LOG_DB.Where("request_id = ?", reqID).Find(&rows).Error)
+	require.Len(t, rows, 1)
+	assert.Equal(t, 77, rows[0].Quota)
+}
+
+func TestRequestLifecycle_ClientCancellationReleasesLease(t *testing.T) {
+	if LOG_DB == nil {
+		t.Skip("LOG_DB not initialized")
+	}
+	require.NoError(t, LOG_DB.AutoMigrate(&Log{}))
+	original := common.ProcessingLogTimeoutMinutes
+	common.ProcessingLogTimeoutMinutes = 1
+	t.Cleanup(func() { common.ProcessingLogTimeoutMinutes = original })
+	const reqID = "req-life-client-cancel"
+	LOG_DB.Where("request_id = ?", reqID).Delete(&Log{})
+	t.Cleanup(func() { LOG_DB.Where("request_id = ?", reqID).Delete(&Log{}) })
+	c := newTestGinContext(reqID, 99897)
+	requestCtx, cancel := context.WithCancel(c.Request.Context())
+	c.Request = c.Request.WithContext(requestCtx)
+	StartRequestLog(c, "gpt-test", true, "default")
+	cancel()
+
+	staleAt := time.Now().Add(-2 * time.Minute).Unix()
+	require.NoError(t, LOG_DB.Model(&Log{}).Where("request_id = ?", reqID).Update("last_activity_at", staleAt).Error)
+	closed, err := CloseStaleProcessingLogs(time.Now())
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, closed, int64(1))
+	var row Log
+	require.NoError(t, LOG_DB.Where("request_id = ?", reqID).First(&row).Error)
+	assert.Equal(t, LogTypeError, row.Type)
 }
 
 func TestRequestLifecycle_UsesConfiguredProcessingTimeout(t *testing.T) {

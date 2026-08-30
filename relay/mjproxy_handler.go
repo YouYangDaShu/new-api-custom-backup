@@ -28,6 +28,15 @@ import (
 
 func RelayMidjourneyImage(c *gin.Context) {
 	taskId := c.Param("id")
+	// The route is unauthenticated (image clients cannot send API keys), so a
+	// signed expiring URL is the access control: reject before any DB or
+	// upstream access when the signature is missing, expired, or invalid.
+	if err := service.VerifyMjImageSignature(taskId, c.Query("ex"), c.Query("sig")); err != nil {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "unauthorized_image_access",
+		})
+		return
+	}
 	midjourneyTask := model.GetByOnlyMJId(taskId)
 	if midjourneyTask == nil {
 		c.JSON(400, gin.H{
@@ -150,9 +159,9 @@ func coverMidjourneyTaskDto(c *gin.Context, originTask *model.Midjourney) (midjo
 	midjourneyTask.FinishTime = originTask.FinishTime
 	midjourneyTask.ImageUrl = ""
 	if originTask.ImageUrl != "" && setting.MjForwardUrlEnabled {
-		midjourneyTask.ImageUrl = system_setting.ServerAddress + "/mj/image/" + originTask.MjId
+		midjourneyTask.ImageUrl = system_setting.ServerAddress + service.SignedMjImagePath(originTask.MjId)
 		if originTask.Status != "SUCCESS" {
-			midjourneyTask.ImageUrl += "?rand=" + strconv.FormatInt(time.Now().UnixNano(), 10)
+			midjourneyTask.ImageUrl += "&rand=" + strconv.FormatInt(time.Now().UnixNano(), 10)
 		}
 	} else {
 		midjourneyTask.ImageUrl = originTask.ImageUrl
@@ -232,11 +241,20 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 	if err != nil {
 		return &mjResp.Response
 	}
+	taskPersisted := false
 	defer func() {
+		if !taskPersisted {
+			// Never charge for a task the platform cannot track: without a
+			// local row the poller can neither report progress nor refund it.
+			common.SysLog(fmt.Sprintf("midjourney swap-face task %s not persisted after upstream accept; skipping charge for user %d", mjResp.Response.Result, info.UserId))
+			return
+		}
 		if mjResp.StatusCode == 200 && mjResp.Response.Code == 1 {
 			err := service.PostConsumeQuota(info, priceData.Quota, 0, true)
 			if err != nil {
 				common.SysLog("error consuming token remain quota: " + err.Error())
+			} else {
+				c.Set("billing_settled", true)
 			}
 
 			tokenName := c.GetString("token_name")
@@ -280,6 +298,7 @@ func RelaySwapFace(c *gin.Context, info *relaycommon.RelayInfo) *dto.MidjourneyR
 	if err != nil {
 		return service.MidjourneyErrorWrapper(constant.MjRequestError, "insert_midjourney_task_failed")
 	}
+	taskPersisted = true
 	c.Writer.WriteHeader(mjResp.StatusCode)
 	respBody, err := json.Marshal(midjResponse)
 	if err != nil {
@@ -544,6 +563,8 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 			err := service.PostConsumeQuota(relayInfo, priceData.Quota, 0, true)
 			if err != nil {
 				common.SysLog("error consuming token remain quota: " + err.Error())
+			} else {
+				c.Set("billing_settled", true)
 			}
 			tokenName := c.GetString("token_name")
 			logContent := fmt.Sprintf("模型固定价格 %.2f，分组倍率 %.2f，操作 %s，ID %s", priceData.ModelPrice, priceData.GroupRatioInfo.GroupRatio, midjRequest.Action, midjResponse.Result)
@@ -641,6 +662,11 @@ func RelayMidjourneySubmit(c *gin.Context, relayInfo *relaycommon.RelayInfo) *dt
 	}
 	err = midjourneyTask.Insert()
 	if err != nil {
+		// Never charge for a task the platform cannot track: without a local
+		// row the poller can neither report progress nor refund it. The
+		// deferred charge above checks consumeQuota at function exit.
+		consumeQuota = false
+		common.SysLog(fmt.Sprintf("midjourney task %s not persisted after upstream accept; skipping charge for user %d", midjResponse.Result, relayInfo.UserId))
 		return &dto.MidjourneyResponse{
 			Code:        4,
 			Description: "insert_midjourney_task_failed",

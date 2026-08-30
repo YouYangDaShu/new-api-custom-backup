@@ -20,6 +20,7 @@ type UserBase struct {
 	Email    string `json:"email"`
 	Quota    int    `json:"quota"`
 	Status   int    `json:"status"`
+	Role     int    `json:"role"`
 	Username string `json:"username"`
 	Setting  string `json:"setting"`
 }
@@ -94,6 +95,9 @@ func updateUserCache(user User) error {
 	if err := updateUserNameCache(user.Id, user.Username); err != nil {
 		return err
 	}
+	if err := updateUserRoleCache(user.Id, user.Role); err != nil {
+		return err
+	}
 	return updateUserSettingCache(user.Id, user.Setting)
 }
 
@@ -115,7 +119,12 @@ func GetUserCache(userId int) (userCache *UserBase, err error) {
 	// Try getting from Redis first
 	userCache, err = cacheGetUserBase(userId)
 	if err == nil {
-		return userCache, nil
+		// Entries cached before the Role field existed carry Role == 0
+		// (guest), which no session/token holder legitimately has. Treat them
+		// as a miss so the entry self-heals from the DB.
+		if userCache.Role != common.RoleGuestUser {
+			return userCache, nil
+		}
 	}
 
 	// If Redis fails, get from DB
@@ -131,6 +140,7 @@ func GetUserCache(userId int) (userCache *UserBase, err error) {
 		Group:    user.Group,
 		Quota:    user.Quota,
 		Status:   user.Status,
+		Role:     user.Role,
 		Username: user.Username,
 		Setting:  user.Setting,
 		Email:    user.Email,
@@ -247,6 +257,13 @@ func updateUserNameCache(userId int, username string) error {
 		return nil
 	}
 	return common.RedisHSetField(getUserCacheKey(userId), "Username", username)
+}
+
+func updateUserRoleCache(userId int, role int) error {
+	if !common.RedisEnabled {
+		return nil
+	}
+	return common.RedisHSetField(getUserCacheKey(userId), "Role", fmt.Sprintf("%d", role))
 }
 
 func updateUserSettingCache(userId int, setting string) error {

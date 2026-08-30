@@ -1,6 +1,7 @@
 package common
 
 import (
+	"crypto/subtle"
 	"strings"
 	"sync"
 	"time"
@@ -9,8 +10,9 @@ import (
 )
 
 type verificationValue struct {
-	code string
-	time time.Time
+	code     string
+	time     time.Time
+	failures int
 }
 
 const (
@@ -22,6 +24,10 @@ var verificationMutex sync.Mutex
 var verificationMap map[string]verificationValue
 var verificationMapMaxSize = 10
 var VerificationValidMinutes = 10
+
+// verificationMaxFailures bounds guesses per issued code: after this many
+// mismatches the code is invalidated and a new one must be requested.
+const verificationMaxFailures = 5
 
 func GenerateVerificationCode(length int) string {
 	code := uuid.New().String()
@@ -44,15 +50,31 @@ func RegisterVerificationCodeWithKey(key string, code string, purpose string) {
 	}
 }
 
+// VerifyCodeWithKey checks a code without consuming it (the reset flow
+// verifies once to render the form and again to apply). Comparison is
+// constant-time and each stored code allows at most verificationMaxFailures
+// wrong guesses before it is invalidated. Callers that complete a
+// state-changing action (bind/register/reset) must consume the code with
+// DeleteKey on success.
 func VerifyCodeWithKey(key string, code string, purpose string) bool {
 	verificationMutex.Lock()
 	defer verificationMutex.Unlock()
-	value, okay := verificationMap[purpose+key]
+	mapKey := purpose + key
+	value, okay := verificationMap[mapKey]
 	now := time.Now()
 	if !okay || int(now.Sub(value.time).Seconds()) >= VerificationValidMinutes*60 {
 		return false
 	}
-	return code == value.code
+	if subtle.ConstantTimeCompare([]byte(code), []byte(value.code)) == 1 {
+		return true
+	}
+	value.failures++
+	if value.failures >= verificationMaxFailures {
+		delete(verificationMap, mapKey)
+	} else {
+		verificationMap[mapKey] = value
+	}
+	return false
 }
 
 func DeleteKey(key string, purpose string) {

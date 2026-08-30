@@ -66,6 +66,9 @@ var DisplayTokenStatEnabled = true
 var DrawingEnabled = true
 var TaskEnabled = true
 var DataExportEnabled = true
+var ChannelMonitorEnabled = true
+var ChannelMonitorDefaultIntervalSeconds = 300
+var TokenRankingEnabled = true
 var DataExportInterval = 5         // unit: minute
 var DataExportDefaultTime = "hour" // unit: minute
 var DefaultCollapseSidebar = false // default value of collapse sidebar
@@ -74,6 +77,12 @@ var DefaultCollapseSidebar = false // default value of collapse sidebar
 
 var SessionSecret = uuid.New().String()
 var CryptoSecret = uuid.New().String()
+
+// AccessTokenMaxAgeDays optionally bounds the lifetime of user system-access
+// tokens (ACCESS_TOKEN_MAX_AGE_DAYS env). 0 (default) keeps the historical
+// no-expiry behavior; when > 0, tokens older than the limit — including
+// legacy tokens without a creation stamp — are rejected until regenerated.
+var AccessTokenMaxAgeDays = GetEnvOrDefault("ACCESS_TOKEN_MAX_AGE_DAYS", 0)
 var SessionCookieSecure = false
 var SessionCookieTrustedURLs []string
 

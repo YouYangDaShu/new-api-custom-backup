@@ -29,6 +29,7 @@ import ReactDOM from 'react-dom/client'
 import { toast } from 'sonner'
 
 import { getStatus } from '@/lib/api'
+import { getAppBasePath } from '@/lib/app-base-path'
 import { installBuildMetadata } from '@/lib/build-metadata'
 import { applyFaviconToDom } from '@/lib/dom-utils'
 import '@/lib/dayjs'
@@ -100,20 +101,16 @@ const queryClient = new QueryClient({
   }),
 })
 
-// Create a new router instance
-// 预览挂 a.youyangai.top/newpreview 时加 base；根路径预览则用 '/'
-const previewBase =
-  typeof window !== 'undefined' &&
-  window.location.pathname.startsWith('/newpreview')
-    ? '/newpreview'
-    : '/'
+// Create a new router instance. Public deployments may mount the app under a
+// path prefix; keep the prefix in the router while API URLs remain same-origin.
+const previewBase = getAppBasePath()
 
 const router = createRouter({
   routeTree,
   context: { queryClient },
   defaultPreload: 'intent',
   defaultPreloadStaleTime: 0,
-  basepath: previewBase,
+  basepath: previewBase || '/',
 })
 
 // Register the router instance for type safety
@@ -124,7 +121,7 @@ declare module '@tanstack/react-router' {
 }
 
 // Render the app
-const rootElement = document.getElementById('root')!
+const rootElement = document.querySelector('#root')
 // Set document.title and favicon from cached status, then refresh from network
 ;(function initSystemBranding() {
   try {
@@ -167,7 +164,7 @@ const rootElement = document.getElementById('root')!
     /* empty */
   }
 })()
-if (!rootElement.innerHTML) {
+if (rootElement && !rootElement.innerHTML) {
   const root = ReactDOM.createRoot(rootElement)
   root.render(
     <StrictMode>

@@ -60,6 +60,7 @@ type Log struct {
 	Id                int    `json:"id" gorm:"index:idx_created_at_id,priority:2;index:idx_user_id_id,priority:2"`
 	UserId            int    `json:"user_id" gorm:"index;index:idx_user_id_id,priority:1"`
 	CreatedAt         int64  `json:"created_at" gorm:"bigint;index:idx_created_at_id,priority:1;index:idx_created_at_type"`
+	LastActivityAt    int64  `json:"-" gorm:"bigint;index"`
 	Type              int    `json:"type" gorm:"index:idx_created_at_type"`
 	Content           string `json:"content"`
 	Username          string `json:"username" gorm:"index;index:index_username_model_name,priority:2;default:''"`
@@ -131,7 +132,7 @@ func CloseStaleProcessingLogs(now time.Time) (int64, error) {
 		"error_type":     "new_api_error",
 	})
 	result := LOG_DB.Model(&Log{}).
-		Where("type = ? AND quota = ? AND content = ? AND created_at < ? AND (other LIKE ? OR other = ? OR other IS NULL)", LogTypeProcessing, 0, "processing", cutoff, "%\"billing_status\":\"pending\"%", "").
+		Where("type = ? AND quota = ? AND content = ? AND (((last_activity_at IS NULL OR last_activity_at = 0) AND created_at < ?) OR (last_activity_at > 0 AND last_activity_at < ?)) AND (other LIKE ? OR other = ? OR other IS NULL)", LogTypeProcessing, 0, "processing", cutoff, cutoff, "%\"billing_status\":\"pending\"%", "").
 		Updates(map[string]interface{}{
 			"type":    LogTypeError,
 			"content": "status_code=408, 请求超时已关闭（未扣费）",
@@ -412,6 +413,7 @@ func StartRequestLog(c *gin.Context, modelName string, isStream bool, group stri
 	var existing int64
 	if err := LOG_DB.Model(&Log{}).Where("request_id = ? AND type = ?", requestId, LogTypeProcessing).Limit(1).Count(&existing).Error; err == nil && existing > 0 {
 		c.Set("request_log_started", true)
+		startRequestLogHeartbeat(c, requestId)
 		return
 	}
 	username := c.GetString("username")
@@ -431,26 +433,68 @@ func StartRequestLog(c *gin.Context, modelName string, isStream bool, group stri
 	if c.Request != nil && c.Request.URL != nil {
 		other["request_path"] = c.Request.URL.Path
 	}
+	now := common.GetTimestamp()
 	log := &Log{
-		UserId:    userId,
-		Username:  username,
-		CreatedAt: common.GetTimestamp(),
-		Type:      LogTypeProcessing,
-		Content:   "processing",
-		TokenName: tokenName,
-		ModelName: modelName,
-		TokenId:   tokenId,
-		IsStream:  isStream,
-		Group:     group,
-		Ip:        lifecycleClientIP(c),
-		RequestId: requestId,
-		Other:     common.MapToJsonStr(other),
+		UserId:         userId,
+		Username:       username,
+		CreatedAt:      now,
+		LastActivityAt: now,
+		Type:           LogTypeProcessing,
+		Content:        "processing",
+		TokenName:      tokenName,
+		ModelName:      modelName,
+		TokenId:        tokenId,
+		IsStream:       isStream,
+		Group:          group,
+		Ip:             lifecycleClientIP(c),
+		RequestId:      requestId,
+		Other:          common.MapToJsonStr(other),
 	}
 	if err := createLog(log); err != nil {
 		logger.LogError(c, "failed to start request log: "+err.Error())
 		return
 	}
 	c.Set("request_log_started", true)
+	startRequestLogHeartbeat(c, requestId)
+}
+
+// TouchRequestLog refreshes the ownership lease while the request is still running.
+// The stale closer only reclaims rows whose lease has expired, so long upstream
+// requests remain chargeable while abandoned work is still recoverable.
+func TouchRequestLog(requestId string) bool {
+	if LOG_DB == nil || requestId == "" {
+		return false
+	}
+	result := LOG_DB.Model(&Log{}).
+		Where("request_id = ? AND type = ?", requestId, LogTypeProcessing).
+		Update("last_activity_at", common.GetTimestamp())
+	return result.Error == nil && result.RowsAffected == 1
+}
+
+func startRequestLogHeartbeat(c *gin.Context, requestId string) {
+	if c == nil || c.Request == nil || requestId == "" {
+		return
+	}
+	interval := processingLogTimeout() / 3
+	if interval < time.Second {
+		interval = time.Second
+	}
+	go runRequestLogHeartbeat(c.Request.Context(), requestId, interval)
+}
+
+func runRequestLogHeartbeat(ctx context.Context, requestId string, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if !TouchRequestLog(requestId) {
+				return
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 type FinalizeRequestLogParams struct {
@@ -596,13 +640,34 @@ type RecordConsumeLogParams struct {
 }
 
 func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams) {
+	if params.Other == nil {
+		params.Other = map[string]interface{}{}
+	}
+	// Lottery accumulation is tied to the finalized, successful wallet charge,
+	// not to whether consume logging is enabled. The request id makes this
+	// idempotent across duplicate finalization attempts.
+	billingSource, _ := params.Other["billing_source"].(string)
+	violationFee, _ := params.Other["violation_fee"].(bool)
+	requestStatus, _ := params.Other["request_status"].(string)
+	statusCode := asInt(params.Other["status_code"])
+	deferLottery, _ := params.Other["defer_lottery"].(bool)
+	billingSettled := false
+	if c != nil {
+		billingSettled = c.GetBool("billing_settled")
+	}
+	if params.Quota > 0 && billingSettled && billingSource != "subscription" && !deferLottery && !violationFee && requestStatus != "failed" && statusCode < 400 {
+		eventKey := ""
+		if c != nil {
+			eventKey = c.GetString(common.RequestIdKey)
+		}
+		if err := AccumulateLotteryConsumption(userId, params.Quota, eventKey); err != nil {
+			logger.LogError(c, "failed to accumulate lottery consumption: "+err.Error())
+		}
+	}
 	if !common.LogConsumeEnabled {
 		return
 	}
 	logger.LogInfo(c, fmt.Sprintf("record consume log: userId=%d, params=%s", userId, common.GetJsonString(params)))
-	if params.Other == nil {
-		params.Other = map[string]interface{}{}
-	}
 	if _, ok := params.Other["status_code"]; !ok {
 		params.Other["status_code"] = 200
 	}

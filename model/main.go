@@ -282,6 +282,7 @@ func migrateDB() error {
 		&AffRebateClaim{},
 		&QuotaData{},
 		&Task{},
+		&TaskBillingOperation{},
 		&Model{},
 		&Vendor{},
 		&PrefillGroup{},
@@ -302,6 +303,11 @@ func migrateDB() error {
 		&AuthzRole{},
 		&UserAnnouncementRead{},
 		&WeeklyRankingReward{},
+		&UserLotteryProgress{},
+		&LotteryConsumptionEvent{},
+		&LotteryDraw{},
+		&ChannelMonitor{},
+		&ChannelMonitorCheck{},
 	)
 	if err != nil {
 		return err
@@ -346,6 +352,7 @@ func migrateDBFast() error {
 		{&AffRebateClaim{}, "AffRebateClaim"},
 		{&QuotaData{}, "QuotaData"},
 		{&Task{}, "Task"},
+		{&TaskBillingOperation{}, "TaskBillingOperation"},
 		{&Model{}, "Model"},
 		{&Vendor{}, "Vendor"},
 		{&PrefillGroup{}, "PrefillGroup"},
@@ -363,6 +370,11 @@ func migrateDBFast() error {
 		{&SystemTask{}, "SystemTask"},
 		{&SystemTaskLock{}, "SystemTaskLock"},
 		{&WeeklyRankingReward{}, "WeeklyRankingReward"},
+		{&UserLotteryProgress{}, "UserLotteryProgress"},
+		{&LotteryConsumptionEvent{}, "LotteryConsumptionEvent"},
+		{&LotteryDraw{}, "LotteryDraw"},
+		{&ChannelMonitor{}, "ChannelMonitor"},
+		{&ChannelMonitorCheck{}, "ChannelMonitorCheck"},
 	}
 	// 动态计算migration数量，确保errChan缓冲区足够大
 	errChan := make(chan error, len(migrations))

@@ -133,19 +133,34 @@ func main() {
 		}
 	}()
 
+	// Prune the lottery idempotency ledger past its retention window; see
+	// model.CleanupLotteryConsumptionEvents for why this cannot enable
+	// duplicate accrual.
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			removed, err := model.CleanupLotteryConsumptionEvents(time.Now())
+			if err != nil {
+				logger.LogWarn(context.Background(), "failed to clean up lottery consumption events: "+err.Error())
+			} else if removed > 0 {
+				logger.LogInfo(context.Background(), fmt.Sprintf("cleaned up %d expired lottery consumption events", removed))
+			}
+		}
+	}()
+
 	// Settle last week's top users at Monday 00:05 Asia/Shanghai. Startup
 	// performs catch-up only after that week's due time; the ledger keeps retries
 	// and multi-master races idempotent.
 	go func() {
 		settle := func(now time.Time) bool {
+			if !common.TokenRankingEnabled {
+				return true
+			}
 			if _, due := model.WeeklyRewardWeekDue(now); !due {
 				return true
 			}
-			rewards := []int{
-				common.QuotaFromFloat(common.WeeklyRankReward1 * common.QuotaPerUnit),
-				common.QuotaFromFloat(common.WeeklyRankReward2 * common.QuotaPerUnit),
-				common.QuotaFromFloat(common.WeeklyRankReward3 * common.QuotaPerUnit),
-			}
+			rewards := model.ConfiguredWeeklyRankingRewards()
 			awarded, err := model.SettleWeeklyRankingRewards(now, rewards)
 			if err != nil {
 				logger.LogWarn(context.Background(), "failed to settle weekly ranking rewards: "+err.Error())
@@ -207,10 +222,12 @@ func main() {
 
 	if os.Getenv("ENABLE_PPROF") == "true" {
 		gopool.Go(func() {
-			log.Println(http.ListenAndServe("0.0.0.0:8005", nil))
+			// pprof exposes heap/goroutine internals with no auth: keep the
+			// opt-in listener loopback-only.
+			log.Println(http.ListenAndServe("127.0.0.1:8005", nil))
 		})
 		go common.Monitor()
-		common.SysLog("pprof enabled")
+		common.SysLog("pprof enabled on 127.0.0.1:8005")
 	}
 
 	err = common.StartPyroScope()

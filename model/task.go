@@ -41,6 +41,24 @@ const (
 	TaskStatusUnknown               = "UNKNOWN"
 )
 
+// Billing finalization states persisted together with the terminal status
+// transition, so a task can never report SUCCESS/FAILURE while its required
+// settlement or refund silently failed. Rows created before this column
+// existed keep the empty string and are never retried automatically.
+const (
+	// TaskBillingStatePending — the terminal CAS was won but the
+	// settlement/refund work has not completed yet; the recovery sweep
+	// retries it.
+	TaskBillingStatePending = "pending"
+	// TaskBillingStateDone — terminal billing completed (or none was needed).
+	TaskBillingStateDone = "done"
+	// TaskBillingStateManual — a compensation step failed, so wallet/token
+	// state may no longer match the pre-settlement baseline. Automatic
+	// retries could double-apply a delta; the residual amount is logged for
+	// manual reconciliation and the recovery sweep skips these rows.
+	TaskBillingStateManual = "manual"
+)
+
 type Task struct {
 	ID         int64                 `json:"id" gorm:"primary_key;AUTO_INCREMENT"`
 	CreatedAt  int64                 `json:"created_at" gorm:"index"`
@@ -58,8 +76,15 @@ type Task struct {
 	StartTime  int64                 `json:"start_time" gorm:"index"`
 	FinishTime int64                 `json:"finish_time" gorm:"index"`
 	Progress   string                `json:"progress" gorm:"type:varchar(20);index"`
-	Properties Properties            `json:"properties" gorm:"type:json"`
-	Username   string                `json:"username,omitempty" gorm:"-"`
+	// BillingState tracks whether the terminal settlement/refund completed;
+	// see the TaskBillingState* constants. Internal only.
+	BillingState string `json:"-" gorm:"column:billing_state;type:varchar(16);index"`
+	// BillingLeaseOwner/BillingLeaseUntil coordinate recovery workers. A lease
+	// is claimed with a conditional UPDATE and can be reclaimed after expiry.
+	BillingLeaseOwner string     `json:"-" gorm:"column:billing_lease_owner;type:varchar(128);index"`
+	BillingLeaseUntil int64      `json:"-" gorm:"column:billing_lease_until;index"`
+	Properties        Properties `json:"properties" gorm:"type:json"`
+	Username          string     `json:"username,omitempty" gorm:"-"`
 	// 禁止返回给用户，内部可能包含key等隐私信息
 	PrivateData TaskPrivateData `json:"-" gorm:"column:private_data;type:json"`
 	Data        json.RawMessage `json:"data" gorm:"type:json"`
@@ -106,6 +131,10 @@ type TaskPrivateData struct {
 	TokenId        int                 `json:"token_id,omitempty"`        // 令牌 ID，用于令牌额度退款
 	NodeName       string              `json:"node_name,omitempty"`       // 发起任务的节点名，轮询结算阶段据此归属日志而非最后查询节点
 	BillingContext *TaskBillingContext `json:"billing_context,omitempty"` // 计费参数快照（用于轮询阶段重新计算）
+	// 结算重试输入：终态 CAS 写入时随任务持久化，供恢复清扫在结算失败后
+	// 重放同一笔结算，而无需再次访问上游。
+	PendingSettleQuota  int `json:"pending_settle_quota,omitempty"`  // adaptor 决定的最终额度
+	PendingSettleTokens int `json:"pending_settle_tokens,omitempty"` // token 重算输入
 }
 
 // TaskBillingContext 记录任务提交时的计费参数，以便轮询阶段可以重新计算额度。
@@ -304,6 +333,112 @@ func GetTimedOutUnfinishedTasks(cutoffUnix int64, limit int) []*Task {
 	return tasks
 }
 
+// GetTerminalTasksWithPendingBilling returns terminal tasks whose settlement
+// or refund has not completed yet, for the recovery sweep. updatedBefore
+// keeps the sweep from racing a finalization that is still in flight.
+func GetTerminalTasksWithPendingBilling(updatedBefore int64, limit int) []*Task {
+	var tasks []*Task
+	err := DB.Where("billing_state = ?", TaskBillingStatePending).
+		Where("status IN ?", []TaskStatus{TaskStatusSuccess, TaskStatusFailure}).
+		Where("updated_at < ?", updatedBefore).
+		Order("id").
+		Limit(limit).
+		Find(&tasks).Error
+	if err != nil {
+		return nil
+	}
+	return tasks
+}
+
+// ClaimTerminalTaskBilling atomically leases one pending terminal task to a
+// recovery worker. Empty/expired leases are reclaimable, which lets another
+// worker recover a task after the original process crashes.
+func ClaimTerminalTaskBilling(taskID int64, workerID string, now, leaseUntil int64) (*Task, bool, error) {
+	if taskID == 0 || workerID == "" {
+		return nil, false, nil
+	}
+	result := DB.Model(&Task{}).
+		Where("id = ? AND billing_state = ? AND status IN ?", taskID, TaskBillingStatePending, []TaskStatus{TaskStatusSuccess, TaskStatusFailure}).
+		Where("billing_lease_until IS NULL OR billing_lease_until = 0 OR billing_lease_until < ?", now).
+		Updates(map[string]any{
+			"billing_lease_owner": workerID,
+			"billing_lease_until": leaseUntil,
+		})
+	if result.Error != nil {
+		return nil, false, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return nil, false, nil
+	}
+	var task Task
+	if err := DB.First(&task, taskID).Error; err != nil {
+		return nil, false, err
+	}
+	return &task, true, nil
+}
+
+// CompleteTerminalTaskBilling marks a leased billing recovery complete only
+// if this worker still owns the lease. A stale worker therefore cannot clear
+// a lease that another worker has reclaimed.
+func CompleteTerminalTaskBilling(taskID int64, workerID string) (bool, error) {
+	if taskID == 0 || workerID == "" {
+		return false, nil
+	}
+	result := DB.Model(&Task{}).
+		Where("id = ? AND billing_state = ? AND billing_lease_owner = ?", taskID, TaskBillingStatePending, workerID).
+		Updates(map[string]any{
+			"billing_state":       TaskBillingStateDone,
+			"billing_lease_owner": "",
+			"billing_lease_until": 0,
+		})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
+}
+
+// RenewTerminalTaskBillingLease extends a live lease only for its current
+// owner. A false result means the worker has lost ownership and must stop
+// starting any further billing work.
+func RenewTerminalTaskBillingLease(taskID int64, workerID string, leaseUntil int64) (bool, error) {
+	if taskID == 0 || workerID == "" {
+		return false, nil
+	}
+	result := DB.Model(&Task{}).
+		Where("id = ? AND billing_state = ? AND billing_lease_owner = ?", taskID, TaskBillingStatePending, workerID).
+		Updates(map[string]any{"billing_lease_until": leaseUntil})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
+}
+
+func HasTerminalTaskBillingLease(taskID int64, workerID string, now int64) (bool, error) {
+	if taskID == 0 || workerID == "" {
+		return false, nil
+	}
+	var count int64
+	err := DB.Model(&Task{}).
+		Where("id = ? AND billing_state = ? AND billing_lease_owner = ? AND billing_lease_until > ?", taskID, TaskBillingStatePending, workerID, now).
+		Count(&count).Error
+	return count == 1, err
+}
+
+// ReleaseTerminalTaskBillingLease makes a failed recovery attempt available
+// immediately while preserving the pending billing marker. A crashed worker
+// cannot call this method; its lease remains reclaimable after expiry.
+func ReleaseTerminalTaskBillingLease(taskID int64, workerID string) error {
+	if taskID == 0 || workerID == "" {
+		return nil
+	}
+	return DB.Model(&Task{}).
+		Where("id = ? AND billing_state = ? AND billing_lease_owner = ?", taskID, TaskBillingStatePending, workerID).
+		Updates(map[string]any{
+			"billing_lease_owner": "",
+			"billing_lease_until": 0,
+		}).Error
+}
+
 func GetAllUnFinishSyncTasks(limit int) []*Task {
 	var tasks []*Task
 	var err error
@@ -419,6 +554,16 @@ func (Task *Task) Update() error {
 
 func (t *Task) UpdateQuota() error {
 	return DB.Model(t).Update("quota", t.Quota).Error
+}
+
+// UpdateBillingState persists the billing finalization state. In-memory tasks
+// (no primary key, e.g. focused billing tests) only update the struct.
+func (t *Task) UpdateBillingState(state string) error {
+	t.BillingState = state
+	if t.ID == 0 {
+		return nil
+	}
+	return DB.Model(t).Update("billing_state", state).Error
 }
 
 // UpdateWithStatus performs a conditional UPDATE guarded by fromStatus (CAS).

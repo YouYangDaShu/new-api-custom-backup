@@ -1,28 +1,36 @@
 package model
 
+const (
+	MidjourneyBillingStatePending = "pending"
+	MidjourneyBillingStateDone    = "done"
+	MidjourneyBillingStateManual  = "manual"
+)
+
 type Midjourney struct {
-	Id          int    `json:"id"`
-	Code        int    `json:"code"`
-	UserId      int    `json:"user_id" gorm:"index"`
-	Action      string `json:"action" gorm:"type:varchar(40);index"`
-	MjId        string `json:"mj_id" gorm:"index"`
-	Prompt      string `json:"prompt"`
-	PromptEn    string `json:"prompt_en"`
-	Description string `json:"description"`
-	State       string `json:"state"`
-	SubmitTime  int64  `json:"submit_time" gorm:"index"`
-	StartTime   int64  `json:"start_time" gorm:"index"`
-	FinishTime  int64  `json:"finish_time" gorm:"index"`
-	ImageUrl    string `json:"image_url"`
-	VideoUrl    string `json:"video_url"`
-	VideoUrls   string `json:"video_urls"`
-	Status      string `json:"status" gorm:"type:varchar(20);index"`
-	Progress    string `json:"progress" gorm:"type:varchar(30);index"`
-	FailReason  string `json:"fail_reason"`
-	ChannelId   int    `json:"channel_id"`
-	Quota       int    `json:"quota"`
-	Buttons     string `json:"buttons"`
-	Properties  string `json:"properties"`
+	Id                 int    `json:"id"`
+	Code               int    `json:"code"`
+	UserId             int    `json:"user_id" gorm:"index"`
+	Action             string `json:"action" gorm:"type:varchar(40);index"`
+	MjId               string `json:"mj_id" gorm:"index"`
+	Prompt             string `json:"prompt"`
+	PromptEn           string `json:"prompt_en"`
+	Description        string `json:"description"`
+	State              string `json:"state"`
+	SubmitTime         int64  `json:"submit_time" gorm:"index"`
+	StartTime          int64  `json:"start_time" gorm:"index"`
+	FinishTime         int64  `json:"finish_time" gorm:"index"`
+	ImageUrl           string `json:"image_url"`
+	VideoUrl           string `json:"video_url"`
+	VideoUrls          string `json:"video_urls"`
+	Status             string `json:"status" gorm:"type:varchar(20);index"`
+	Progress           string `json:"progress" gorm:"type:varchar(30);index"`
+	FailReason         string `json:"fail_reason"`
+	ChannelId          int    `json:"channel_id"`
+	Quota              int    `json:"quota"`
+	BillingState       string `json:"-" gorm:"column:billing_state;type:varchar(16);index"`
+	PendingRefundQuota int    `json:"-" gorm:"column:pending_refund_quota"`
+	Buttons            string `json:"buttons"`
+	Properties         string `json:"properties"`
 }
 
 // TaskQueryParams 用于包含所有搜索条件的结构体，可以根据需求添加更多字段
@@ -94,7 +102,7 @@ func GetAllUnFinishTasks() []*Midjourney {
 	var tasks []*Midjourney
 	var err error
 	// get all tasks progress is not 100%
-	err = DB.Where("progress != ?", "100%").Find(&tasks).Error
+	err = DB.Where("progress != ? OR (status = ? AND billing_state = ?)", "100%", "FAILURE", MidjourneyBillingStatePending).Find(&tasks).Error
 	if err != nil {
 		return nil
 	}
@@ -108,7 +116,7 @@ func GetAllUnFinishTasks() []*Midjourney {
 func HasUnfinishedMidjourneyTasks() bool {
 	var id int
 	err := DB.Model(&Midjourney{}).
-		Where("progress != ?", "100%").
+		Where("progress != ? OR (status = ? AND billing_state = ?)", "100%", "FAILURE", MidjourneyBillingStatePending).
 		Limit(1).
 		Pluck("id", &id).Error
 	return err == nil && id != 0

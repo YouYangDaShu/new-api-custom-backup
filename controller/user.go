@@ -257,6 +257,11 @@ func Register(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if common.EmailVerificationEnabled {
+		// Consume the code once the account exists so it cannot be replayed
+		// within its validity window.
+		common.DeleteKey(user.Email, common.EmailVerificationPurpose)
+	}
 
 	// 获取插入后的用户ID
 	var insertedUser model.User
@@ -388,6 +393,7 @@ func GenerateAccessToken(c *gin.Context) {
 		return
 	}
 	user.SetAccessToken(key)
+	user.AccessTokenCreatedAt = common.GetTimestamp()
 
 	if model.DB.Where("access_token = ?", user.AccessToken).First(user).RowsAffected != 0 {
 		common.ApiErrorI18n(c, i18n.MsgUuidDuplicate)
@@ -398,6 +404,9 @@ func GenerateAccessToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	// Audit the rotation (never the token value): the old token is revoked by
+	// this overwrite.
+	model.RecordLog(id, model.LogTypeSystem, "系统访问令牌已重新生成，旧令牌即时失效")
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -1238,6 +1247,9 @@ func EmailBind(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	// Consume the code on successful bind so it cannot be replayed within its
+	// validity window.
+	common.DeleteKey(email, common.EmailVerificationPurpose)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",

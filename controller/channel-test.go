@@ -491,6 +491,9 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 		}
 	}
 	info.SetEstimatePromptTokens(usage.PromptTokens)
+	if _, probe := c.Request.Context().Value(channelMonitorProbeContextKey{}).(bool); probe {
+		return testResult{context: c, localErr: nil, newAPIError: nil}
+	}
 
 	quota, tieredResult := settleTestQuota(info, priceData, usage)
 	tok := time.Now()

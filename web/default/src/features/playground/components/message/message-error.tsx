@@ -22,6 +22,7 @@ import { useTranslation } from 'react-i18next'
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { getAppUrl } from '@/lib/app-base-path'
 import { useAuthStore } from '@/stores/auth-store'
 
 import {
@@ -71,7 +72,9 @@ export function MessageError({
             <Button
               variant='outline'
               size='sm'
-              onClick={() => window.open(MODEL_PRICING_SETTINGS_PATH, '_blank')}
+              onClick={() =>
+                window.open(getAppUrl(MODEL_PRICING_SETTINGS_PATH), '_blank')
+              }
             >
               <Settings className='mr-1 h-3.5 w-3.5' />
               {t('Go to Settings')}

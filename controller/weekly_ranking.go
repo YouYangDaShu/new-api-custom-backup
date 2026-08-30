@@ -11,6 +11,10 @@ import (
 )
 
 func GetWeeklyUserRanking(c *gin.Context) {
+	if !common.TokenRankingEnabled {
+		common.ApiErrorMsg(c, "token ranking is disabled")
+		return
+	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	period := c.DefaultQuery("period", "week")
 	if period != "day" && period != "week" {
@@ -31,7 +35,7 @@ func GetWeeklyUserRanking(c *gin.Context) {
 	} else {
 		start, end, _ = model.ShanghaiWeekRange(now, 0)
 	}
-	rewardAmounts := []float64{common.WeeklyRankReward1, common.WeeklyRankReward2, common.WeeklyRankReward3}
+	rewardAmounts := model.ConfiguredWeeklyRankingRewardAmounts()
 	rewardIndex := 0
 	for i := range rows {
 		if rewardIndex >= len(rewardAmounts) {
@@ -41,6 +45,15 @@ func GetWeeklyUserRanking(c *gin.Context) {
 			rows[i].RewardAmount = rewardAmounts[rewardIndex]
 			rows[i].RewardQuota = common.QuotaFromFloat(rows[i].RewardAmount * common.QuotaPerUnit)
 			rewardIndex++
+		}
+	}
+	if currentUser != nil {
+		for _, row := range rows {
+			if row.IsCurrentUser {
+				currentUser.RewardAmount = row.RewardAmount
+				currentUser.RewardQuota = row.RewardQuota
+				break
+			}
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{

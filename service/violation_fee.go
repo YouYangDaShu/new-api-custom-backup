@@ -35,7 +35,7 @@ func HasCSAMViolationMarker(err *types.NewAPIError) bool {
 		return true
 	}
 	msg := err.ToOpenAIError().Message
-	return strings.Contains(msg, CSAMViolationMarker) || strings.Contains(err.Error(), ContentViolatesUsageMarker)
+	return strings.Contains(msg, CSAMViolationMarker) || strings.Contains(msg, ContentViolatesUsageMarker)
 }
 
 func WrapAsViolationFeeGrokCSAM(err *types.NewAPIError) *types.NewAPIError {
@@ -127,6 +127,7 @@ func ChargeViolationFeeIfNeeded(ctx *gin.Context, relayInfo *relaycommon.RelayIn
 		logger.LogError(ctx, fmt.Sprintf("failed to charge violation fee: %s", err.Error()))
 		return false
 	}
+	ctx.Set("billing_settled", true)
 
 	model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, feeQuota)
 	model.UpdateChannelUsedQuota(relayInfo.ChannelId, feeQuota)

@@ -55,6 +55,9 @@ func InitOptionMap() {
 	common.OptionMap["DrawingEnabled"] = strconv.FormatBool(common.DrawingEnabled)
 	common.OptionMap["TaskEnabled"] = strconv.FormatBool(common.TaskEnabled)
 	common.OptionMap["DataExportEnabled"] = strconv.FormatBool(common.DataExportEnabled)
+	common.OptionMap["ChannelMonitorEnabled"] = strconv.FormatBool(common.ChannelMonitorEnabled)
+	common.OptionMap["ChannelMonitorDefaultIntervalSeconds"] = strconv.Itoa(common.ChannelMonitorDefaultIntervalSeconds)
+	common.OptionMap["TokenRankingEnabled"] = strconv.FormatBool(common.TokenRankingEnabled)
 	common.OptionMap["ChannelDisableThreshold"] = strconv.FormatFloat(common.ChannelDisableThreshold, 'f', -1, 64)
 	common.OptionMap["EmailDomainRestrictionEnabled"] = strconv.FormatBool(common.EmailDomainRestrictionEnabled)
 	common.OptionMap["EmailAliasRestrictionEnabled"] = strconv.FormatBool(common.EmailAliasRestrictionEnabled)
@@ -138,6 +141,7 @@ func InitOptionMap() {
 	common.OptionMap["WeeklyRankReward1"] = strconv.FormatFloat(common.WeeklyRankReward1, 'f', -1, 64)
 	common.OptionMap["WeeklyRankReward2"] = strconv.FormatFloat(common.WeeklyRankReward2, 'f', -1, 64)
 	common.OptionMap["WeeklyRankReward3"] = strconv.FormatFloat(common.WeeklyRankReward3, 'f', -1, 64)
+	common.OptionMap["TokenRankingRewards"] = "[]"
 	common.OptionMap["ProcessingLogTimeoutMinutes"] = strconv.Itoa(common.ProcessingLogTimeoutMinutes)
 	common.OptionMap["AffTopupRate"] = strconv.FormatFloat(common.AffTopupRate, 'f', -1, 64)
 	common.OptionMap["QuotaRemindThreshold"] = strconv.Itoa(common.QuotaRemindThreshold)
@@ -228,6 +232,21 @@ func UpdateOption(key string, value string) error {
 
 func validateCustomOptionValue(key, value string) error {
 	switch key {
+	case "ChannelMonitorDefaultIntervalSeconds":
+		v, err := strconv.Atoi(value)
+		if err != nil || v < 30 || v > 86400 {
+			return fmt.Errorf("invalid monitor interval: %q", value)
+		}
+	case "TokenRankingRewards":
+		var values []float64
+		if err := common.Unmarshal([]byte(value), &values); err != nil || len(values) > 100 {
+			return fmt.Errorf("invalid ranking rewards")
+		}
+		for _, v := range values {
+			if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v*common.QuotaPerUnit > float64(common.MaxQuota) {
+				return fmt.Errorf("invalid ranking reward")
+			}
+		}
 	case "WeeklyRankReward1", "WeeklyRankReward2", "WeeklyRankReward3":
 		v, err := strconv.ParseFloat(value, 64)
 		if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v*common.QuotaPerUnit > float64(common.MaxQuota) {
@@ -250,6 +269,11 @@ func validateCustomOptionValue(key, value string) error {
 func UpdateOptionsBulk(values map[string]string) error {
 	if len(values) == 0 {
 		return nil
+	}
+	for k, v := range values {
+		if err := validateCustomOptionValue(k, v); err != nil {
+			return err
+		}
 	}
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		for k, v := range values {
@@ -348,6 +372,10 @@ func updateOptionMap(key string, value string) (err error) {
 			common.TaskEnabled = boolValue
 		case "DataExportEnabled":
 			common.DataExportEnabled = boolValue
+		case "ChannelMonitorEnabled":
+			common.ChannelMonitorEnabled = boolValue
+		case "TokenRankingEnabled":
+			common.TokenRankingEnabled = boolValue
 		case "DefaultCollapseSidebar":
 			common.DefaultCollapseSidebar = boolValue
 		case "MjNotifyEnabled":
@@ -389,6 +417,8 @@ func updateOptionMap(key string, value string) (err error) {
 		}
 	}
 	switch key {
+	case lotteryConfigKey:
+		refreshLotteryConfigCache(value)
 	case "EmailDomainWhitelist":
 		common.EmailDomainWhitelist = strings.Split(value, ",")
 	case "SMTPServer":
@@ -574,6 +604,8 @@ func updateOptionMap(key string, value string) (err error) {
 		common.RetryTimes, _ = strconv.Atoi(value)
 	case "DataExportInterval":
 		common.DataExportInterval, _ = strconv.Atoi(value)
+	case "ChannelMonitorDefaultIntervalSeconds":
+		common.ChannelMonitorDefaultIntervalSeconds, _ = strconv.Atoi(value)
 	case "DataExportDefaultTime":
 		common.DataExportDefaultTime = value
 	case "ModelRatio":

@@ -37,8 +37,10 @@ import {
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-import { type SidebarData } from '@/components/layout/types'
+import type { SidebarData } from '@/components/layout/types'
+import { useStatus } from '@/hooks/use-status'
 import { ROLE } from '@/lib/roles'
+import { useAuthStore } from '@/stores/auth-store'
 
 /**
  * Root navigation groups for the application sidebar.
@@ -48,6 +50,13 @@ import { ROLE } from '@/lib/roles'
  */
 export function useSidebarData(): SidebarData {
   const { t } = useTranslation()
+  const { status } = useStatus()
+  const role = useAuthStore((s) => s.auth.user?.role ?? ROLE.GUEST)
+  const isAdmin = role >= ROLE.ADMIN
+  const publicModulesEnabled = {
+    rankings: isAdmin || status?.token_ranking_enabled !== false,
+    monitoring: isAdmin || status?.channel_monitor_enabled !== false,
+  }
 
   return {
     navGroups: [
@@ -81,9 +90,27 @@ export function useSidebarData(): SidebarData {
             url: '/dashboard/models',
             icon: LayoutDashboard,
           },
+          ...(publicModulesEnabled.rankings
+            ? [
+                {
+                  title: t('Token rankings'),
+                  url: '/token-rankings',
+                  icon: Trophy,
+                },
+              ]
+            : []),
+          ...(publicModulesEnabled.monitoring
+            ? [
+                {
+                  title: t('Channel monitoring'),
+                  url: '/channel-monitor',
+                  icon: Activity,
+                },
+              ]
+            : []),
           {
-            title: 'Token 排行榜',
-            url: '/token-rankings',
+            title: t('Lottery'),
+            url: '/lottery',
             icon: Trophy,
           },
           {
@@ -144,6 +171,24 @@ export function useSidebarData(): SidebarData {
             title: t('Redemption Codes'),
             url: '/redemption-codes',
             icon: Ticket,
+          },
+          {
+            title: t('Lottery Management'),
+            url: '/lottery-management',
+            icon: Trophy,
+            requiredRole: ROLE.ADMIN,
+          },
+          {
+            title: t('Channel monitor management'),
+            url: '/channel-monitor-management',
+            icon: Activity,
+            requiredRole: ROLE.ADMIN,
+          },
+          {
+            title: t('Token ranking management'),
+            url: '/token-ranking-management',
+            icon: Trophy,
+            requiredRole: ROLE.ADMIN,
           },
           {
             title: t('Subscriptions'),

@@ -30,6 +30,7 @@ import { Separator } from '@/components/ui/separator'
 import { OAUTH_BIND_STORAGE_KEY } from '@/features/auth/constants'
 import { useDialogs } from '@/hooks/use-dialog'
 import { useStatus } from '@/hooks/use-status'
+import { getAppUrl } from '@/lib/app-base-path'
 import {
   handleGitHubOAuth,
   handleOIDCOAuth,
@@ -116,8 +117,10 @@ export function AccountBindingsTab({
   }
 
   const handleBindCustomOAuth = (provider: { id: string; name: string }) => {
-    const redirectUrl = `${window.location.origin}/oauth/${provider.id}?bind=true`
-    window.location.href = `/api/oauth/${provider.id}?redirect=${encodeURIComponent(redirectUrl)}`
+    const redirectUrl = `${window.location.origin}${getAppUrl(`/oauth/${provider.id}?bind=true`)}`
+    window.location.href = getAppUrl(
+      `/api/oauth/${provider.id}?redirect=${encodeURIComponent(redirectUrl)}`
+    )
   }
 
   useEffect(() => {
@@ -266,11 +269,16 @@ export function AccountBindingsTab({
   return (
     <>
       <div className='grid grid-cols-1 gap-2.5 sm:grid-cols-2 sm:gap-3'>
-        {bindings.map((binding) => (
-          <div
-            key={binding.id}
-            className='flex items-center justify-between gap-2.5 rounded-lg border p-2.5 sm:gap-3 sm:p-3'
-          >
+        {bindings.map((binding) => {
+          let actionLabel = t('Bind')
+          if (binding.isBound) {
+            actionLabel = binding.id === 'email' ? t('Change') : t('Bound')
+          }
+          return (
+            <div
+              key={binding.id}
+              className='flex items-center justify-between gap-2.5 rounded-lg border p-2.5 sm:gap-3 sm:p-3'
+            >
             <div className='flex min-w-0 items-center gap-2.5 sm:gap-3'>
               <div className='bg-muted shrink-0 rounded-md p-1.5 sm:p-2'>
                 <binding.icon className='h-4 w-4' />
@@ -298,14 +306,11 @@ export function AccountBindingsTab({
               onClick={binding.onBind}
               disabled={binding.isBound && binding.id !== 'email'}
             >
-              {binding.isBound
-                ? binding.id === 'email'
-                  ? t('Change')
-                  : t('Bound')
-                : t('Bind')}
+              {actionLabel}
             </Button>
-          </div>
-        ))}
+            </div>
+          )
+        })}
       </div>
 
       {/* Custom OAuth Bindings */}

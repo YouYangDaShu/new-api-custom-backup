@@ -20,6 +20,7 @@ import axios, { type AxiosRequestConfig } from 'axios'
 import { t } from 'i18next'
 import { toast } from 'sonner'
 
+import { getAppBasePath } from '@/lib/app-base-path'
 import { useAuthStore } from '@/stores/auth-store'
 
 declare module 'axios' {
@@ -36,8 +37,9 @@ export type ApiRequestConfig = AxiosRequestConfig
 // Axios Instance Configuration
 // ============================================================================
 
-// Base URL: empty string for same-origin API requests
-const baseURL = ''
+// Keep API requests same-origin while supporting deployments mounted below a
+// public path such as /newpreview or /newapi-dev.
+const baseURL = getAppBasePath()
 
 // Create axios instance with default config
 export const api = axios.create({
@@ -65,7 +67,8 @@ api.get = ((url: string, config: ApiRequestConfig = {}) => {
   const key = `${url}?${params}`
 
   // Return existing in-flight request if available
-  if (inFlightGet.has(key)) return inFlightGet.get(key)!
+  const inFlight = inFlightGet.get(key)
+  if (inFlight) return inFlight
 
   // Create new request and clean up after completion
   const req = originalGet(url, config).finally(() => inFlightGet.delete(key))

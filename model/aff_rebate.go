@@ -2,10 +2,11 @@ package model
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // AffRebateClaim is a main-DB unique claim ticket for invite topup rebates.
@@ -25,23 +26,17 @@ func (AffRebateClaim) TableName() string {
 	return "aff_rebate_claims"
 }
 
-func isUniqueConstraintErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	// GORM / driver messages vary by dialect; match common unique-violation text.
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "unique") ||
-		strings.Contains(msg, "duplicate") ||
-		strings.Contains(msg, "constraint failed") ||
-		strings.Contains(msg, "1062")
-}
-
-// tryClaimAffRebateSource inserts a unique claim row.
+// tryClaimAffRebateSource inserts a unique claim row within the caller's
+// transaction. It uses INSERT ... ON CONFLICT DO NOTHING (portable across
+// SQLite/MySQL/PostgreSQL, same pattern as the lottery event ledger) so only a
+// real duplicate key reads as "already claimed"; any other DB error is
+// returned for the caller to fail closed. Running inside the same transaction
+// as the credit removes the old double-pay window where the credit committed
+// but the claim row was later deleted.
 // Returns (true, nil) if this caller owns the claim and should pay the rebate.
 // Returns (false, nil) if source was already claimed.
 // Returns (false, err) on unexpected DB errors (caller should fail closed / retry).
-func tryClaimAffRebateSource(sourceKey string, inviterId, inviteeId, reward, topupQuota int) (claimed bool, err error) {
+func tryClaimAffRebateSource(tx *gorm.DB, sourceKey string, inviterId, inviteeId, reward, topupQuota int) (claimed bool, err error) {
 	sourceKey = strings.TrimSpace(sourceKey)
 	if sourceKey == "" {
 		// No business key: cannot atomically dedupe; caller pays without claim.
@@ -55,25 +50,11 @@ func tryClaimAffRebateSource(sourceKey string, inviterId, inviteeId, reward, top
 		TopupQuota: topupQuota,
 		CreatedAt:  common.GetTimestamp(),
 	}
-	if e := DB.Create(row).Error; e != nil {
-		if isUniqueConstraintErr(e) {
-			return false, nil
-		}
-		return false, e
+	result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(row)
+	if result.Error != nil {
+		return false, result.Error
 	}
-	return true, nil
-}
-
-// releaseAffRebateClaim removes a claim when credit failed after insert, so a
-// later retry can re-claim. Best-effort; logs on failure.
-func releaseAffRebateClaim(sourceKey string) {
-	sourceKey = strings.TrimSpace(sourceKey)
-	if sourceKey == "" {
-		return
-	}
-	if err := DB.Where("source_key = ?", sourceKey).Delete(&AffRebateClaim{}).Error; err != nil {
-		common.SysError(fmt.Sprintf("release aff rebate claim failed source=%s: %v", sourceKey, err))
-	}
+	return result.RowsAffected > 0, nil
 }
 
 // ErrAffRebateAlreadyPaid is returned when a source was already claimed (tests / callers).

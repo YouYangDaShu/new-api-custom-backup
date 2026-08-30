@@ -40,6 +40,7 @@ import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
 import { Separator } from '@/components/ui/separator'
 import { getCommonHeaders } from '@/lib/api'
+import { getAppUrl } from '@/lib/app-base-path'
 
 import {
   deleteOllamaModel,
@@ -245,19 +246,22 @@ export function OllamaModelsDialog({
     setPullProgress({ status: 'starting', completed: 0, total: 0 })
 
     try {
-      const response = await fetch('/api/channel/ollama/pull/stream', {
-        method: 'POST',
-        credentials: 'include',
-        headers: {
-          ...getCommonHeaders(),
-          Accept: 'text/event-stream',
-        },
-        body: JSON.stringify({
-          channel_id: channelId,
-          model_name: pullName.trim(),
-        }),
-        signal: controller.signal,
-      })
+      const response = await fetch(
+        getAppUrl('/api/channel/ollama/pull/stream'),
+        {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            ...getCommonHeaders(),
+            Accept: 'text/event-stream',
+          },
+          body: JSON.stringify({
+            channel_id: channelId,
+            model_name: pullName.trim(),
+          }),
+          signal: controller.signal,
+        }
+      )
 
       if (!response.ok || !response.body) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`)

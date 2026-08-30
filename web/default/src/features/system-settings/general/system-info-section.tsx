@@ -40,6 +40,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { getAppUrl } from '@/lib/app-base-path'
 
 import { FormDirtyIndicator } from '../components/form-dirty-indicator'
 import { FormNavigationGuard } from '../components/form-navigation-guard'
@@ -164,7 +165,7 @@ export function SystemInfoSection({ defaultValues }: SystemInfoSectionProps) {
             // 延时用于让表单脏状态先清除（移除 beforeunload 拦截）并展示成功提示后再刷新；
             // 使用 replace 让已失效的路由不进入历史，防止返回按钮再次触发 404。
             setTimeout(() => {
-              window.location.replace('/')
+              window.location.replace(getAppUrl('/'))
             }, 600)
           } else {
             // Theme update failed; revert to the last saved value.

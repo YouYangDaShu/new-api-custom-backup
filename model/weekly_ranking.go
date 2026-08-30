@@ -2,7 +2,9 @@ package model
 
 import (
 	"fmt"
+	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -10,6 +12,48 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+// ConfiguredWeeklyRankingRewardAmounts returns user-visible balance amounts
+// from the persisted admin configuration. Legacy three-option settings remain
+// the fallback. Invalid values are zeroed defensively because this function is
+// also used to build a response visible to ordinary users.
+func ConfiguredWeeklyRankingRewardAmounts() []float64 {
+	common.OptionMapRWMutex.RLock()
+	raw := common.OptionMap["TokenRankingRewards"]
+	legacyAmounts := []float64{common.WeeklyRankReward1, common.WeeklyRankReward2, common.WeeklyRankReward3}
+	common.OptionMapRWMutex.RUnlock()
+	var amounts []float64
+	if raw != "" {
+		if err := common.Unmarshal([]byte(raw), &amounts); err != nil {
+			amounts = nil
+		}
+	}
+	if len(amounts) == 0 {
+		amounts = legacyAmounts
+	}
+	for i, amount := range amounts {
+		if math.IsNaN(amount) || math.IsInf(amount, 0) || amount < 0 || amount*common.QuotaPerUnit > float64(common.MaxQuota) {
+			amounts[i] = 0
+		}
+	}
+	return amounts
+}
+
+// ConfiguredWeeklyRankingRewards returns quota values using the same amounts
+// exposed by ConfiguredWeeklyRankingRewardAmounts. Keeping conversion here
+// ensures settlement and the user-facing ranking response share one config.
+func ConfiguredWeeklyRankingRewards() []int {
+	amounts := ConfiguredWeeklyRankingRewardAmounts()
+	rewards := make([]int, len(amounts))
+	for i, amount := range amounts {
+		if amount <= 0 {
+			rewards[i] = 0
+			continue
+		}
+		rewards[i] = common.QuotaFromFloat(amount * common.QuotaPerUnit)
+	}
+	return rewards
+}
 
 // WeeklyRankingReward is the idempotency ledger for automatic weekly awards.
 // WeekStart is the Asia/Shanghai Monday (YYYY-MM-DD).
@@ -81,6 +125,11 @@ func ShanghaiWeekRange(now time.Time, offset int) (startUnix, endUnix int64, key
 	return start.Unix(), end.Unix(), start.Format("2006-01-02")
 }
 
+// maskRankingName hides identifying account details from other signed-in
+// users. Every name form is masked unconditionally: emails keep only the first
+// rune of the local part plus the domain, long digit strings (phone-like) keep
+// at most the first 3 and last 2 digits, and any other name keeps only its
+// first rune.
 func maskRankingName(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -88,32 +137,20 @@ func maskRankingName(value string) string {
 	}
 	if at := strings.IndexByte(value, '@'); at > 0 {
 		local := []rune(value[:at])
-		if len(local) <= 3 {
-			return value
-		}
-		visible := 3
-		if len(local) < 6 {
-			visible = len(local) / 2
-		}
-		return string(local[:visible]) + "***" + string(local[len(local)-visible:]) + value[at:]
+		return string(local[0]) + "***" + value[at:]
 	}
 	runes := []rune(value)
-	allDigits := len(runes) > 6
+	allDigits := true
 	for _, r := range runes {
 		if r < '0' || r > '9' {
 			allDigits = false
 			break
 		}
 	}
-	if allDigits {
-		hidden := len(runes) - 6
-		if hidden > 3 {
-			hidden = 3
-		}
-		left := (len(runes) - hidden + 1) / 2
-		return string(runes[:left]) + strings.Repeat("*", hidden) + string(runes[left+hidden:])
+	if allDigits && len(runes) >= 8 {
+		return string(runes[:3]) + "***" + string(runes[len(runes)-2:])
 	}
-	return value
+	return string(runes[0]) + "***"
 }
 
 // GetWeeklyUserRanking aggregates successful consumption logs, then filters out
@@ -133,7 +170,7 @@ func GetUserRankingWithCurrent(now time.Time, period string, limit, currentUserI
 	} else {
 		start, end, _ = ShanghaiWeekRange(local, 0)
 	}
-	rows, err := getUserRankingByRange(start, end, 100)
+	rows, err := getUserRankingByRange(start, end, 100, currentUserID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -161,10 +198,12 @@ func GetWeeklyUserRankingWithCurrent(now time.Time, limit, currentUserID int) ([
 
 func getWeeklyUserRanking(now time.Time, offset, limit int) ([]WeeklyUserRanking, error) {
 	start, end, _ := ShanghaiWeekRange(now, offset)
-	return getUserRankingByRange(start, end, limit)
+	return getUserRankingByRange(start, end, limit, 0)
 }
 
-func getUserRankingByRange(start, end int64, limit int) ([]WeeklyUserRanking, error) {
+// getUserRankingByRange masks every display name except the requesting user's
+// own row (currentUserID 0 masks all rows).
+func getUserRankingByRange(start, end int64, limit, currentUserID int) ([]WeeklyUserRanking, error) {
 	if LOG_DB == nil || DB == nil {
 		return []WeeklyUserRanking{}, nil
 	}
@@ -187,7 +226,19 @@ func getUserRankingByRange(start, end int64, limit int) ([]WeeklyUserRanking, er
 		Where("type = ? AND created_at >= ? AND created_at < ? AND user_id > 0", LogTypeConsume, start, end).
 		Group("user_id").Scan(&totals).Error
 	if err != nil {
-		return nil, err
+		// A malformed `other` JSON value can abort the cache-token extract on
+		// MySQL/PostgreSQL. Fall back without it (cache_tokens = 0) so the
+		// ranking API and weekly reward settlement keep working, mirroring the
+		// SumUsedQuota fallback.
+		common.SysError("failed to query weekly ranking with cache extract, fallback: " + err.Error())
+		fallbackSQL := "user_id, COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens, COALESCE(SUM(completion_tokens), 0) AS output_tokens, 0 AS cache_tokens, COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS total_tokens, COUNT(*) AS request_count"
+		err = LOG_DB.Model(&Log{}).
+			Select(fallbackSQL).
+			Where("type = ? AND created_at >= ? AND created_at < ? AND user_id > 0", LogTypeConsume, start, end).
+			Group("user_id").Scan(&totals).Error
+		if err != nil {
+			return nil, err
+		}
 	}
 	if len(totals) == 0 {
 		return []WeeklyUserRanking{}, nil
@@ -214,11 +265,14 @@ func getUserRankingByRange(start, end int64, limit int) ([]WeeklyUserRanking, er
 		if name == "" {
 			name = user.Username
 		}
+		if currentUserID == 0 || user.Id != currentUserID {
+			name = maskRankingName(name)
+		}
 		inputTokens := total.PromptTokens - total.CacheTokens
 		if inputTokens < 0 {
 			inputTokens = 0
 		}
-		rows = append(rows, WeeklyUserRanking{UserID: user.Id, RewardEligible: user.Role == common.RoleCommonUser, DisplayName: maskRankingName(name), InputTokens: inputTokens, OutputTokens: total.OutputTokens, CacheTokens: total.CacheTokens, TotalTokens: total.TotalTokens, RequestCount: total.RequestCount})
+		rows = append(rows, WeeklyUserRanking{UserID: user.Id, RewardEligible: user.Role == common.RoleCommonUser, DisplayName: name, InputTokens: inputTokens, OutputTokens: total.OutputTokens, CacheTokens: total.CacheTokens, TotalTokens: total.TotalTokens, RequestCount: total.RequestCount})
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
 		if rows[i].TotalTokens == rows[j].TotalTokens {
@@ -242,7 +296,17 @@ func SettleWeeklyRankingRewards(now time.Time, rewards []int) (int64, error) {
 	if DB == nil || LOG_DB == nil || len(rewards) == 0 {
 		return 0, nil
 	}
+	if !common.TokenRankingEnabled {
+		return 0, nil
+	}
 	if _, due := WeeklyRewardWeekDue(now); !due {
+		return 0, nil
+	}
+	weekStart, _, _ := ShanghaiWeekRange(now, -1)
+	common.OptionMapRWMutex.RLock()
+	disabledAt, _ := strconv.ParseInt(common.OptionMap["TokenRankingDisabledAt"], 10, 64)
+	common.OptionMapRWMutex.RUnlock()
+	if disabledAt >= weekStart {
 		return 0, nil
 	}
 	for i, reward := range rewards {

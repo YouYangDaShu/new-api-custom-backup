@@ -235,14 +235,16 @@ func TopUpQuotaAmount(topUp *TopUp) int {
 	if topUp == nil {
 		return 0
 	}
+	// Saturating conversions per common/quota_math.go: a huge order can never
+	// overflow into a negative rebate base.
 	if topUp.PaymentProvider == PaymentProviderCreem {
-		return int(topUp.Amount)
+		return common.QuotaFromDecimal(decimal.NewFromInt(topUp.Amount))
 	}
 	dQuotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
 	if topUp.PaymentProvider == PaymentProviderStripe {
-		return int(decimal.NewFromFloat(topUp.Money).Mul(dQuotaPerUnit).IntPart())
+		return common.QuotaFromDecimal(decimal.NewFromFloat(topUp.Money).Mul(dQuotaPerUnit))
 	}
-	return int(decimal.NewFromInt(topUp.Amount).Mul(dQuotaPerUnit).IntPart())
+	return common.QuotaFromDecimal(decimal.NewFromInt(topUp.Amount).Mul(dQuotaPerUnit))
 }
 
 // topUpQueryWindowSeconds 限制充值记录查询的时间窗口（秒）。

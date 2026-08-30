@@ -299,6 +299,10 @@ func GenerateClaudeOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo,
 
 func GenerateMjOtherInfo(relayInfo *relaycommon.RelayInfo, priceData types.PriceData) map[string]interface{} {
 	other := make(map[string]interface{})
+	// Midjourney charges at submission but the task is async and fully refunded
+	// on failure, so lottery accrual is deferred to the poller's terminal
+	// success transition (RecordMjTaskLotteryConsumption).
+	other["defer_lottery"] = true
 	other["model_price"] = priceData.ModelPrice
 	other["group_ratio"] = priceData.GroupRatioInfo.GroupRatio
 	if priceData.GroupRatioInfo.HasSpecialRatio {

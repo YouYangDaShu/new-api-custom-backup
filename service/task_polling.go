@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -36,6 +38,68 @@ type TaskPollingAdaptor interface {
 // GetTaskAdaptorFunc 由 main 包注入，用于获取指定平台的任务适配器。
 // 打破 service -> relay -> relay/channel -> service 的循环依赖。
 var GetTaskAdaptorFunc func(platform constant.TaskPlatform) TaskPollingAdaptor
+
+var pendingBillingWorkerSeq uint64
+
+var terminalBillingLeaseSeconds int64 = 300
+var terminalBillingLeaseHeartbeat = 10 * time.Second
+
+var executeTaskSettlementForBilling = executeTaskSettlement
+
+func newPendingBillingWorkerID() string {
+	if key, err := common.GenerateRandomCharsKey(24); err == nil {
+		return "billing-worker-" + key
+	}
+	return fmt.Sprintf("billing-worker-%d-%d-%d", os.Getpid(), time.Now().UnixNano(), atomic.AddUint64(&pendingBillingWorkerSeq, 1))
+}
+
+func taskBillingOperationKey(task *model.Task) string {
+	if task == nil {
+		return ""
+	}
+	if task.TaskID != "" {
+		return "task:" + task.TaskID + ":terminal-billing"
+	}
+	return fmt.Sprintf("task-db:%d:terminal-billing", task.ID)
+}
+
+func startTaskBillingLeaseHeartbeat(ctx context.Context, taskID int64, workerID, operationKey string) (*atomic.Bool, func()) {
+	lost := &atomic.Bool{}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(terminalBillingLeaseHeartbeat)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				until := time.Now().Unix() + terminalBillingLeaseSeconds
+				ok, err := model.RenewTerminalTaskBillingLease(taskID, workerID, until)
+				if err != nil || !ok {
+					lost.Store(true)
+					return
+				}
+				if operationKey != "" {
+					ok, err = model.RenewTaskBillingOperation(operationKey, workerID, until)
+					if err != nil || !ok {
+						lost.Store(true)
+						return
+					}
+				}
+			case <-stop:
+				return
+			case <-ctx.Done():
+				lost.Store(true)
+				return
+			}
+		}
+	}()
+	return lost, func() {
+		close(stop)
+		<-done
+	}
+}
 
 // sweepTimedOutTasks 在主轮询之前独立清理超时任务。
 // 每次最多处理 100 条，剩余的下个周期继续处理。
@@ -69,6 +133,12 @@ func sweepTimedOutTasks(ctx context.Context) {
 			task.FailReason = reason
 		}
 
+		if isLegacy || task.Quota == 0 {
+			task.BillingState = model.TaskBillingStateDone
+		} else {
+			task.BillingState = model.TaskBillingStatePending
+		}
+
 		won, err := task.UpdateWithStatus(oldStatus)
 		if err != nil {
 			logger.LogError(ctx, fmt.Sprintf("sweepTimedOutTasks CAS update error for task %s: %v", task.TaskID, err))
@@ -79,14 +149,46 @@ func sweepTimedOutTasks(ctx context.Context) {
 			continue
 		}
 		timedOutCount++
-		if !isLegacy && task.Quota != 0 {
-			RefundTaskQuota(ctx, task, reason)
-		}
+		finishTerminalTaskBilling(ctx, task)
 	}
 
 	if timedOutCount > 0 {
 		logger.LogInfo(ctx, fmt.Sprintf("sweepTimedOutTasks: timed out %d tasks", timedOutCount))
 	}
+}
+
+// sweepPendingBillingTasks retries terminal tasks whose settlement or refund
+// did not complete when they were finalized (billing_state = "pending"), so a
+// crash or transient DB error between the terminal CAS and the money movement
+// cannot silently strand a charge or refund. The updated-at grace avoids
+// racing a finalization that is still in flight; tasks downgraded to "manual"
+// (a compensation failed) are intentionally excluded from automatic retries.
+func sweepPendingBillingTasks(ctx context.Context) {
+	const graceSeconds = 60
+	tasks := model.GetTerminalTasksWithPendingBilling(time.Now().Unix()-graceSeconds, 100)
+	if len(tasks) == 0 {
+		return
+	}
+	now := time.Now().Unix()
+	workerID := newPendingBillingWorkerID()
+	recovered := 0
+	for _, candidate := range tasks {
+		if ctx.Err() != nil {
+			return
+		}
+		task, claimed, err := model.ClaimTerminalTaskBilling(candidate.ID, workerID, now, now+300)
+		if err != nil {
+			logger.LogError(ctx, fmt.Sprintf("sweepPendingBillingTasks claim error for task %s: %v", candidate.TaskID, err))
+			continue
+		}
+		if !claimed {
+			continue
+		}
+		if finishTerminalTaskBillingWithLease(ctx, task, workerID) {
+			recovered++
+		}
+	}
+	logger.LogInfo(ctx, fmt.Sprintf("sweepPendingBillingTasks: recovered %d/%d tasks with unfinished terminal billing", recovered, len(tasks)))
 }
 
 // TaskPollSummary is the result recorded on an async_task_poll system task row,
@@ -113,6 +215,7 @@ func RunTaskPollingOnce(ctx context.Context, report func(processed, total int)) 
 
 	common.SysLog("任务进度轮询开始")
 	sweepTimedOutTasks(ctx)
+	sweepPendingBillingTasks(ctx)
 	allTasks := model.GetAllUnFinishSyncTasks(constant.TaskQueryLimit)
 	summary.UnfinishedTasks = len(allTasks)
 	platformTask := make(map[constant.TaskPlatform][]*model.Task)
@@ -277,6 +380,7 @@ func updateSunoTasks(ctx context.Context, channelId int, taskIds []string, taskM
 			continue
 		}
 
+		previousStatus := task.Status
 		task.Status = lo.If(model.TaskStatus(responseItem.Status) != "", model.TaskStatus(responseItem.Status)).Else(task.Status)
 		task.FailReason = lo.If(responseItem.FailReason != "", responseItem.FailReason).Else(task.FailReason)
 		task.SubmitTime = lo.If(responseItem.SubmitTime != 0, responseItem.SubmitTime).Else(task.SubmitTime)
@@ -284,13 +388,26 @@ func updateSunoTasks(ctx context.Context, channelId int, taskIds []string, taskM
 		task.FinishTime = lo.If(responseItem.FinishTime != 0, responseItem.FinishTime).Else(task.FinishTime)
 		if responseItem.FailReason != "" || task.Status == model.TaskStatusFailure {
 			logger.LogInfo(ctx, task.TaskID+" 构建失败，"+task.FailReason)
+			task.Status = model.TaskStatusFailure
 			task.Progress = "100%"
-			RefundTaskQuota(ctx, task, task.FailReason)
 		}
-		if responseItem.Status == model.TaskStatusSuccess {
+		if task.Status == model.TaskStatusSuccess {
 			task.Progress = "100%"
 		}
 		task.Data = responseItem.Data
+
+		isDone := task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure
+		if isDone && previousStatus != task.Status {
+			// CAS-guard the terminal write so a failed task cannot be refunded
+			// twice under polling races or update failures, and a successful
+			// wallet charge accrues lottery progress exactly once.
+			FinalizeTerminalTaskBilling(ctx, adaptor, task, &relaycommon.TaskInfo{
+				TaskID: responseItem.TaskID,
+				Status: string(task.Status),
+				Reason: task.FailReason,
+			}, previousStatus)
+			continue
+		}
 
 		err = task.Update()
 		if err != nil {
@@ -509,10 +626,6 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		}
 	}
 
-	shouldRefund := false
-	shouldSettle := false
-	quota := task.Quota
-
 	task.Status = model.TaskStatus(taskResult.Status)
 	switch taskResult.Status {
 	case model.TaskStatusSubmitted:
@@ -539,7 +652,6 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 			// No URL from adaptor — construct proxy URL using public task ID
 			task.PrivateData.ResultURL = taskcommon.BuildProxyURL(task.TaskID)
 		}
-		shouldSettle = true
 	case model.TaskStatusFailure:
 		logger.LogJson(ctx, fmt.Sprintf("Task %s failed", taskId), task)
 		task.Status = model.TaskStatusFailure
@@ -550,9 +662,6 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		task.FailReason = taskResult.Reason
 		logger.LogInfo(ctx, fmt.Sprintf("Task %s failed: %s", task.TaskID, task.FailReason))
 		taskResult.Progress = taskcommon.ProgressComplete
-		if quota != 0 {
-			shouldRefund = true
-		}
 	default:
 		return fmt.Errorf("unknown task status %s for task %s", taskResult.Status, task.TaskID)
 	}
@@ -562,16 +671,7 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 
 	isDone := task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure
 	if isDone && snap.Status != task.Status {
-		won, err := task.UpdateWithStatus(snap.Status)
-		if err != nil {
-			logger.LogError(ctx, fmt.Sprintf("UpdateWithStatus failed for task %s: %s", task.TaskID, err.Error()))
-			shouldRefund = false
-			shouldSettle = false
-		} else if !won {
-			logger.LogWarn(ctx, fmt.Sprintf("Task %s already transitioned by another process, skip billing", task.TaskID))
-			shouldRefund = false
-			shouldSettle = false
-		}
+		FinalizeTerminalTaskBilling(ctx, adaptor, task, taskResult, snap.Status)
 	} else if !snap.Equal(task.Snapshot()) {
 		if _, err := task.UpdateWithStatus(snap.Status); err != nil {
 			logger.LogError(ctx, fmt.Sprintf("Failed to update task %s: %s", task.TaskID, err.Error()))
@@ -581,14 +681,202 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 		logger.LogDebug(ctx, "No update needed for task %s", task.TaskID)
 	}
 
-	if shouldSettle {
-		settleTaskBillingOnComplete(ctx, adaptor, task, taskResult)
-	}
-	if shouldRefund {
-		RefundTaskQuota(ctx, task, task.FailReason)
+	return nil
+}
+
+// FinalizeTerminalTaskBilling persists a task's transition into a terminal
+// status with a CAS guard and, only when this caller wins the transition, runs
+// the terminal billing exactly once: settlement plus lottery accrual on
+// success, refund on failure. Callers must already have applied the terminal
+// fields (Status/Progress/FinishTime/FailReason) to the task. It is shared by
+// the polling loops and the Gemini/Vertex realtime fetch path so both execute
+// the same completion behavior without double settlement or double refunds.
+func FinalizeTerminalTaskBilling(ctx context.Context, adaptor TaskPollingAdaptor, task *model.Task, taskResult *relaycommon.TaskInfo, fromStatus model.TaskStatus) bool {
+	// Resolve the billing work and persist it inside the same CAS write as
+	// the terminal transition, so a task can never sit in a terminal status
+	// without a durable record of unfinished settlement/refund work. If the
+	// money movement below fails, sweepPendingBillingTasks replays it from
+	// the persisted plan.
+	if task.Status == model.TaskStatusSuccess {
+		prepareTaskSettlementPlan(task, adaptor, taskResult)
+		if task.Quota != 0 || task.PrivateData.PendingSettleQuota > 0 || task.PrivateData.PendingSettleTokens > 0 {
+			task.BillingState = model.TaskBillingStatePending
+		} else {
+			task.BillingState = model.TaskBillingStateDone
+		}
+	} else if task.Quota != 0 {
+		task.BillingState = model.TaskBillingStatePending
+	} else {
+		task.BillingState = model.TaskBillingStateDone
 	}
 
-	return nil
+	won, err := task.UpdateWithStatus(fromStatus)
+	if err != nil {
+		logger.LogError(ctx, fmt.Sprintf("UpdateWithStatus failed for task %s: %s", task.TaskID, err.Error()))
+		return false
+	}
+	if !won {
+		logger.LogWarn(ctx, fmt.Sprintf("Task %s already transitioned by another process, skip billing", task.TaskID))
+		return false
+	}
+	finishTerminalTaskBilling(ctx, task)
+	return true
+}
+
+// finishTerminalTaskBilling executes the billing work recorded for a terminal
+// task (settlement + lottery accrual on success, refund on failure) and marks
+// it done only after it fully completed. On failure the persisted "pending"
+// marker stays in place for sweepPendingBillingTasks, unless the billing layer
+// downgraded the task to "manual" because a compensation step failed.
+// Idempotent: shared by the finalization paths and the recovery sweep.
+func finishTerminalTaskBilling(ctx context.Context, task *model.Task) bool {
+	if task != nil && task.ID != 0 && task.BillingState == model.TaskBillingStatePending && task.BillingLeaseOwner == "" {
+		now := time.Now().Unix()
+		workerID := newPendingBillingWorkerID()
+		claimedTask, claimed, err := model.ClaimTerminalTaskBilling(task.ID, workerID, now, now+terminalBillingLeaseSeconds)
+		if err != nil || !claimed {
+			if err != nil {
+				logger.LogError(ctx, fmt.Sprintf("任务 %s 账务 claim 失败: %s", task.TaskID, err.Error()))
+			}
+			return false
+		}
+		completed := finishTerminalTaskBillingWithLease(ctx, claimedTask, workerID)
+		*task = *claimedTask
+		return completed
+	}
+	return finishTerminalTaskBillingWithLease(ctx, task, "")
+}
+
+func finishTerminalTaskBillingWithLease(ctx context.Context, task *model.Task, workerID string) bool {
+	if task == nil {
+		return false
+	}
+	if task.BillingState != model.TaskBillingStatePending {
+		return task.BillingState == model.TaskBillingStateDone
+	}
+	operationKey := ""
+	if task.ID != 0 && workerID != "" {
+		operationKey = taskBillingOperationKey(task)
+	}
+	var stopHeartbeat func()
+	var leaseLost *atomic.Bool
+	if workerID != "" && task.ID != 0 {
+		valid, err := model.HasTerminalTaskBillingLease(task.ID, workerID, time.Now().Unix())
+		if err != nil || !valid {
+			return false
+		}
+	}
+
+	operationState := model.TaskBillingOperationInProgress
+	if operationKey != "" {
+		var err error
+		operationState, err = model.BeginTaskBillingOperation(operationKey, task.ID, workerID, time.Now().Unix(), task.BillingLeaseUntil)
+		if err != nil {
+			logger.LogError(ctx, fmt.Sprintf("任务 %s 账务 operation claim 失败: %s", task.TaskID, err.Error()))
+			return false
+		}
+		if operationState == "in_flight" {
+			logger.LogWarn(ctx, fmt.Sprintf("任务 %s 账务 operation 仍由其他 worker 执行，保留 pending", task.TaskID))
+			if workerID != "" {
+				_ = model.ReleaseTerminalTaskBillingLease(task.ID, workerID)
+			}
+			return false
+		}
+		if operationState == model.TaskBillingOperationManual {
+			logger.LogError(ctx, fmt.Sprintf("任务 %s 账务 operation 已进入 manual，需人工核对", task.TaskID))
+			_ = task.UpdateBillingState(model.TaskBillingStateManual)
+			if workerID != "" {
+				_ = model.ReleaseTerminalTaskBillingLease(task.ID, workerID)
+			}
+			return false
+		}
+	}
+	if workerID != "" && task.ID != 0 {
+		opHeartbeatKey := ""
+		if operationState == model.TaskBillingOperationInProgress {
+			opHeartbeatKey = operationKey
+		}
+		leaseLost, stopHeartbeat = startTaskBillingLeaseHeartbeat(ctx, task.ID, workerID, opHeartbeatKey)
+		defer stopHeartbeat()
+	}
+
+	if workerID != "" && (ctx.Err() != nil || leaseLost.Load()) {
+		_ = model.FailTaskBillingOperation(operationKey, workerID, ctx.Err())
+		_ = model.ReleaseTerminalTaskBillingLease(task.ID, workerID)
+		return false
+	}
+	operationApplied := operationState == model.TaskBillingOperationDone
+	completed := operationApplied
+	if !operationApplied {
+		if task.Status == model.TaskStatusSuccess {
+			if executeTaskSettlementForBilling(ctx, task) {
+				completed = true
+			} else {
+				// A false settlement with no remaining charge means there is no
+				// billing work left (nothing was ever charged), not a retryable
+				// failure; retryable failures keep task.Quota at the pre-consumed
+				// value.
+				completed = task.Quota == 0
+			}
+		} else {
+			completed = task.Quota == 0 || RefundTaskQuota(ctx, task, task.FailReason)
+		}
+		if completed && operationKey != "" {
+			won, err := model.CompleteTaskBillingOperation(operationKey, workerID)
+			if err != nil || !won {
+				completed = false
+			}
+		}
+	}
+	if completed && task.Status == model.TaskStatusSuccess {
+		if workerID == "" || (ctx.Err() == nil && !leaseLost.Load()) {
+			if err := RecordTaskLotteryConsumption(task); err != nil {
+				// Funds are already settled (and the operation is done). Keep the
+				// terminal marker pending so recovery retries only this event.
+				logger.LogWarn(ctx, fmt.Sprintf("任务 %s 抽奖累计未完成，等待恢复清扫重试: %s", task.TaskID, err.Error()))
+				if workerID != "" {
+					_ = model.ReleaseTerminalTaskBillingLease(task.ID, workerID)
+				}
+				return false
+			}
+		}
+	}
+	if !completed {
+		if operationKey != "" && workerID != "" && !leaseLost.Load() && ctx.Err() == nil {
+			_ = model.FailTaskBillingOperation(operationKey, workerID, errors.New("terminal billing attempt failed"))
+		}
+		logger.LogWarn(ctx, fmt.Sprintf("任务 %s 终态账务未完成，等待恢复清扫重试", task.TaskID))
+		if workerID != "" {
+			if err := model.ReleaseTerminalTaskBillingLease(task.ID, workerID); err != nil {
+				logger.LogError(ctx, fmt.Sprintf("任务 %s 账务 lease 释放失败: %s", task.TaskID, err.Error()))
+			}
+		}
+		return false
+	}
+	if workerID != "" && (ctx.Err() != nil || leaseLost.Load()) {
+		logger.LogWarn(ctx, fmt.Sprintf("任务 %s 账务 lease 在资金操作后失效，保留 pending", task.TaskID))
+		_ = model.ReleaseTerminalTaskBillingLease(task.ID, workerID)
+		return false
+	}
+	if workerID != "" {
+		won, err := model.CompleteTerminalTaskBilling(task.ID, workerID)
+		if err != nil {
+			logger.LogError(ctx, fmt.Sprintf("任务 %s 账务完成标记写入失败: %s", task.TaskID, err.Error()))
+		} else if !won {
+			logger.LogWarn(ctx, fmt.Sprintf("任务 %s 账务 lease 已失效，保留 pending 供恢复", task.TaskID))
+		} else {
+			task.BillingState = model.TaskBillingStateDone
+			task.BillingLeaseOwner = ""
+			task.BillingLeaseUntil = 0
+		}
+		return won && err == nil
+	}
+	if err := task.UpdateBillingState(model.TaskBillingStateDone); err != nil {
+		// The billing itself succeeded; a retried finalization is a no-op
+		// (delta 0 / quota already 0 / lottery event dedup).
+		logger.LogError(ctx, fmt.Sprintf("任务 %s 账务完成标记写入失败: %s", task.TaskID, err.Error()))
+	}
+	return true
 }
 
 func redactVideoResponseBody(body []byte) []byte {
@@ -630,21 +918,63 @@ func truncateBase64(s string) string {
 //
 //  2. taskResult.TotalTokens > 0 → 按 token 重算
 //  3. 都不满足 → 保持预扣额度不变
-func settleTaskBillingOnComplete(ctx context.Context, adaptor TaskPollingAdaptor, task *model.Task, taskResult *relaycommon.TaskInfo) {
-	// 0. 按次计费的任务不做差额结算
+func settleTaskBillingOnComplete(ctx context.Context, adaptor TaskPollingAdaptor, task *model.Task, taskResult *relaycommon.TaskInfo) bool {
+	if task == nil || task.TaskID == "" {
+		return false
+	}
+	prepareTaskSettlementPlan(task, adaptor, taskResult)
+	return executeTaskSettlement(ctx, task)
+}
+
+// prepareTaskSettlementPlan resolves the settlement decision for a successful
+// task and records it on the task (PrivateData.PendingSettle*), so the plan is
+// persisted by the terminal CAS write and the recovery sweep can replay the
+// exact same settlement without re-fetching upstream state.
+func prepareTaskSettlementPlan(task *model.Task, adaptor TaskPollingAdaptor, taskResult *relaycommon.TaskInfo) {
+	if task == nil {
+		return
+	}
+	// 按次计费的任务不做差额结算，无需结算计划
 	if bc := task.PrivateData.BillingContext; bc != nil && bc.PerCallBilling {
-		logger.LogInfo(ctx, fmt.Sprintf("任务 %s 按次计费，跳过差额结算", task.TaskID))
 		return
 	}
 	// 1. 优先让 adaptor 决定最终额度
-	if actualQuota := adaptor.AdjustBillingOnComplete(task, taskResult); actualQuota > 0 {
-		RecalculateTaskQuota(ctx, task, actualQuota, "adaptor计费调整")
-		return
+	if adaptor != nil && taskResult != nil {
+		if actualQuota := adaptor.AdjustBillingOnComplete(task, taskResult); actualQuota > 0 {
+			if actualQuota > common.MaxQuota {
+				common.SysError(fmt.Sprintf("task %s returned invalid actual quota %d", task.TaskID, actualQuota))
+				return
+			}
+			task.PrivateData.PendingSettleQuota = actualQuota
+			return
+		}
 	}
 	// 2. 回退到 token 重算
-	if taskResult.TotalTokens > 0 {
-		RecalculateTaskQuotaByTokens(ctx, task, taskResult.TotalTokens)
-		return
+	if taskResult != nil && taskResult.TotalTokens > 0 {
+		task.PrivateData.PendingSettleTokens = taskResult.TotalTokens
+	}
+}
+
+// executeTaskSettlement applies the recorded settlement plan. Returns true
+// when the final charge is in place and non-zero (the caller then accrues
+// lottery progress); false on settlement failure or when nothing was charged.
+func executeTaskSettlement(ctx context.Context, task *model.Task) bool {
+	if task == nil || task.TaskID == "" {
+		return false
+	}
+	// 0. 按次计费的任务不做差额结算
+	if bc := task.PrivateData.BillingContext; bc != nil && bc.PerCallBilling {
+		logger.LogInfo(ctx, fmt.Sprintf("任务 %s 按次计费，跳过差额结算", task.TaskID))
+		return task.Quota > 0
+	}
+	// 1. adaptor 决定的最终额度
+	if actualQuota := task.PrivateData.PendingSettleQuota; actualQuota > 0 {
+		return RecalculateTaskQuota(ctx, task, actualQuota, "adaptor计费调整")
+	}
+	// 2. token 重算
+	if tokens := task.PrivateData.PendingSettleTokens; tokens > 0 {
+		return RecalculateTaskQuotaByTokens(ctx, task, tokens)
 	}
 	// 3. 无调整，保持预扣额度
+	return task.Quota > 0
 }

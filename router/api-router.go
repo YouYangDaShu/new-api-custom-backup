@@ -39,7 +39,40 @@ func SetApiRouter(router *gin.Engine) {
 			perfMetricsRoute.GET("", controller.GetPerfMetrics)
 		}
 		apiRouter.GET("/rankings", middleware.HeaderNavModuleAuth("rankings"), controller.GetRankings)
-		apiRouter.GET("/weekly-user-ranking", middleware.UserAuth(), controller.GetWeeklyUserRanking)
+		apiRouter.GET("/weekly-user-ranking", middleware.HeaderNavModuleAuth("rankings"), controller.GetWeeklyUserRanking)
+		rankingAdminRoute := apiRouter.Group("/weekly-user-ranking/admin")
+		rankingAdminRoute.Use(middleware.AdminAuth())
+		rankingAdminRoute.GET("/", controller.GetTokenRankingAdmin)
+		rankingAdminRoute.PUT("/", controller.UpdateTokenRankingAdmin)
+		rankingAdminRoute.GET("/history", controller.AdminGetWeeklyRankingHistory)
+		monitorRoute := apiRouter.Group("/channel-monitor")
+		monitorRoute.GET("/", middleware.UserAuth(), controller.GetChannelMonitors)
+		monitorAdminRoute := monitorRoute.Group("/admin")
+		monitorAdminRoute.Use(middleware.AdminAuth())
+		{
+			monitorAdminRoute.GET("/", controller.AdminGetChannelMonitors)
+			monitorAdminRoute.GET("/models", controller.AdminGetChannelMonitorModels)
+			monitorAdminRoute.PUT("/config", controller.AdminUpdateChannelMonitorConfig)
+			monitorAdminRoute.POST("/", controller.AdminCreateChannelMonitor)
+			monitorAdminRoute.PUT("/:id", controller.AdminUpdateChannelMonitor)
+			monitorAdminRoute.PATCH("/:id", controller.AdminUpdateChannelMonitor)
+			monitorAdminRoute.DELETE("/:id", controller.AdminDeleteChannelMonitor)
+			monitorAdminRoute.POST("/:id/run", controller.AdminRunChannelMonitor)
+		}
+		lotteryRoute := apiRouter.Group("/lottery")
+		lotteryRoute.Use(middleware.UserAuth())
+		{
+			lotteryRoute.GET("/", controller.GetLottery)
+			lotteryRoute.POST("/draw", controller.DrawLottery)
+		}
+		lotteryAdminRoute := apiRouter.Group("/lottery/admin")
+		lotteryAdminRoute.Use(middleware.AdminAuth())
+		{
+			lotteryAdminRoute.GET("/", controller.AdminGetLottery)
+			lotteryAdminRoute.PUT("/", controller.AdminUpdateLottery)
+			lotteryAdminRoute.POST("/reset", controller.AdminResetLottery)
+			lotteryAdminRoute.POST("/reset/:id", controller.AdminResetLottery)
+		}
 		apiRouter.GET("/verification", middleware.EmailVerificationRateLimit(), middleware.TurnstileCheck(), controller.SendEmailVerification)
 		apiRouter.GET("/reset_password", middleware.CriticalRateLimit(), middleware.TurnstileCheck(), controller.SendPasswordResetEmail)
 		apiRouter.POST("/user/reset", middleware.CriticalRateLimit(), anonymousRequestBodyLimit, controller.ResetPassword)
