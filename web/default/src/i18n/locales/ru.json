@@ -3724,6 +3724,7 @@
     "Recharge": "Пополнение",
     "Recharge Amount": "Сумма пополнения",
     "Recharge Amount (USD)": "Сумма пополнения (USD)",
+    "Recipient": "Получатель",
     "Recommended": "Рекомендуется",
     "Recommended actions": "Рекомендуемые действия",
     "Recommended to keep this high to avoid upstream throttling.": "Рекомендуется поддерживать это значение высоким, чтобы избежать регулирования со стороны вышестоящего поставщика.",

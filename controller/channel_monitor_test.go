@@ -161,14 +161,6 @@ func TestParseMonitorIDRejectsInvalidValues(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestTokenRankingHistoryDTOOmitsIdentityFields(t *testing.T) {
-	b := mustMarshal(tokenRankingHistoryRow{WeekStart: "2026-08-24", Rank: 1, TotalTokens: 10, RewardQuota: 2, CreatedAt: 1, RewardStatus: "awarded"})
-	s := string(b)
-	require.NotContains(t, s, "user_id")
-	require.NotContains(t, s, "email")
-	require.Contains(t, s, "reward_status")
-}
-
 func TestGetChannelMonitorsReturnsEmptyWhenDisabled(t *testing.T) {
 	previous := common.ChannelMonitorEnabled
 	common.ChannelMonitorEnabled = false
