@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
 
-import { createDraftPrize } from './draft-prize.ts'
+import { createDraftPrize } from './draft-prize'
 
 describe('lottery draft prize ids', () => {
   test('numbers fresh tiers sequentially', () => {

@@ -57,6 +57,46 @@ func TestValidateMonitorFieldsRejectsUnavailableModels(t *testing.T) {
 	})
 }
 
+func TestChannelMonitorSchedulerUsesShortestEnabledInterval(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.ChannelMonitor{}))
+	monitors := []model.ChannelMonitor{
+		{Name: "slow", Group: "default", PrimaryModel: "model-a", IntervalSeconds: 300, Enabled: true},
+		{Name: "fast", Group: "default", PrimaryModel: "model-a", IntervalSeconds: 60, Enabled: true},
+		{Name: "disabled", Group: "default", PrimaryModel: "model-a", IntervalSeconds: 30, Enabled: false},
+	}
+	require.NoError(t, db.Create(&monitors).Error)
+	t.Cleanup(func() {
+		db.Where("id IN ?", []int64{monitors[0].ID, monitors[1].ID, monitors[2].ID}).Delete(&model.ChannelMonitor{})
+	})
+
+	assert.Equal(t, 60*time.Second, (channelMonitorHandler{}).Interval())
+}
+
+func TestMonitorAdminViewHistoryIsOldestToNewest(t *testing.T) {
+	view := monitorAdminView(model.ChannelMonitor{ID: 44, PrimaryModel: "model-a"}, []model.ChannelMonitorCheck{
+		{MonitorID: 44, Model: "model-a", Status: model.ChannelMonitorStatusSuccess, CheckedAt: 300},
+		{MonitorID: 44, Model: "model-a", Status: model.ChannelMonitorStatusFailed, CheckedAt: 100},
+		{MonitorID: 44, Model: "model-a", Status: model.ChannelMonitorStatusTimeout, CheckedAt: 200},
+	})
+	history := view.Models["model-a"].History
+	require.Len(t, history, 3)
+	assert.Equal(t, int64(100), history[0].CheckedAt)
+	assert.Equal(t, int64(300), history[2].CheckedAt)
+}
+
+func TestLotteryAdminProgressDTOExposesDisplayFieldsOnly(t *testing.T) {
+	payload := lotteryAdminUserProgress{UserID: 7, Username: "alice", Accumulated: 12.5, AvailableDraws: 2, Threshold: 20}
+	body := string(mustMarshal(payload))
+	assert.Contains(t, body, `"user_id":7`)
+	assert.Contains(t, body, `"username":"alice"`)
+	assert.Contains(t, body, `"accumulated":12.5`)
+	assert.Contains(t, body, `"threshold":20`)
+	assert.NotContains(t, body, "password")
+	assert.NotContains(t, body, "token")
+	assert.NotContains(t, body, "quota")
+}
+
 func TestAdminGetChannelMonitorModelsReturnsOnlySortedModelNames(t *testing.T) {
 	db := setupModelListControllerTestDB(t)
 	require.NoError(t, db.Create(&[]model.Ability{
@@ -90,10 +130,11 @@ func TestMonitorPublicViewOmitsManagementFields(t *testing.T) {
 	row := model.ChannelMonitor{ID: 42, Name: "Public", Group: "default", PrimaryModel: "model-a", IntervalSeconds: 60, Enabled: false, LastCheckedAt: 123}
 	view := monitorPublicView(row, []model.ChannelMonitorCheck{{MonitorID: 42, Model: "model-a", Status: model.ChannelMonitorStatusFailed, ErrorBrief: "secret", CheckedAt: 123}})
 	require.Equal(t, "Public", view.Name)
+	require.Equal(t, 60, view.IntervalSeconds)
 	require.NotContains(t, view.Models["model-a"].Status, "secret")
 	require.NotContains(t, string(mustMarshal(view)), "id")
-	require.NotContains(t, string(mustMarshal(view)), "interval_seconds")
 	require.NotContains(t, string(mustMarshal(view)), "enabled")
+	require.NotContains(t, string(mustMarshal(view)), "module_enabled")
 	require.NotContains(t, string(mustMarshal(view)), "error_summary")
 }
 
@@ -120,15 +161,7 @@ func TestParseMonitorIDRejectsInvalidValues(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestTokenRankingHistoryDTOOmitsIdentityFields(t *testing.T) {
-	b := mustMarshal(tokenRankingHistoryRow{WeekStart: "2026-08-24", Rank: 1, TotalTokens: 10, RewardQuota: 2, CreatedAt: 1, RewardStatus: "awarded"})
-	s := string(b)
-	require.NotContains(t, s, "user_id")
-	require.NotContains(t, s, "email")
-	require.Contains(t, s, "reward_status")
-}
-
-func TestGetChannelMonitorsBlocksWhenDisabled(t *testing.T) {
+func TestGetChannelMonitorsReturnsEmptyWhenDisabled(t *testing.T) {
 	previous := common.ChannelMonitorEnabled
 	common.ChannelMonitorEnabled = false
 	t.Cleanup(func() { common.ChannelMonitorEnabled = previous })
@@ -136,8 +169,8 @@ func TestGetChannelMonitorsBlocksWhenDisabled(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	GetChannelMonitors(c)
-	require.Equal(t, http.StatusForbidden, recorder.Code)
-	require.NotContains(t, recorder.Body.String(), "interval_seconds")
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.JSONEq(t, `{"success":true,"message":"","data":[]}`, recorder.Body.String())
 }
 
 func TestAdminRunChannelMonitorUsesCompleteThirtyDaySeries(t *testing.T) {

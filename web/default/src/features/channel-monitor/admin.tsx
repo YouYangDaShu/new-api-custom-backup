@@ -33,7 +33,7 @@ const knownMonitorErrors = new Set([
   'invalid monitor name, group, or model',
   'invalid monitor group',
   'interval must be between 30 and 86400 seconds',
-  'name, group, model, and interval are required',
+  'group and model are required',
   'one or more extra models are not available in selected group',
   'primary model is not available in selected group',
   'selected group has no available models',
@@ -73,28 +73,23 @@ function monitorErrorMessage(
 }
 
 const emptyForm: MonitorInput = {
-  name: '',
   group: '',
   primary_model: '',
   extra_models: [],
-  interval_seconds: 300,
+  interval_seconds: 60,
   enabled: true,
 }
 function fieldLabel(
-  field: 'name' | 'group' | 'primary_model',
+  field: 'group' | 'primary_model',
   t: (key: string) => string
 ) {
-  if (field === 'name') return t('Monitoring name')
   if (field === 'group') return t('User-visible group name')
   return t('Model to check first')
 }
 function fieldDescription(
-  field: 'name' | 'group' | 'primary_model',
+  field: 'group' | 'primary_model',
   t: (key: string) => string
 ) {
-  if (field === 'name') {
-    return t('Give this monitor a name for administrators to recognize.')
-  }
   if (field === 'group') {
     return t('The group name users select when making requests.')
   }
@@ -111,6 +106,15 @@ export function ChannelMonitorAdminPage() {
   const query = useQuery({
     queryKey: ['admin-channel-monitors'],
     queryFn: getAdminChannelMonitors,
+    refetchInterval: (currentQuery) => {
+      const monitors = currentQuery.state.data?.data ?? []
+      const enabledIntervals = monitors
+        .filter((monitor) => monitor.module_enabled && monitor.enabled)
+        .map((monitor) => monitor.interval_seconds)
+        .filter((interval) => Number.isFinite(interval) && interval >= 30)
+      if (enabledIntervals.length === 0) return false
+      return Math.max(30, Math.min(...enabledIntervals)) * 1000
+    },
   })
   const groupsQuery = useQuery({
     queryKey: ['channel-monitor', 'system-groups'],
@@ -172,17 +176,11 @@ export function ChannelMonitorAdminPage() {
     form.extra_models.every(
       (model) => model !== form.primary_model && availableModelSet.has(model)
     )
-  const trimmedMonitorName = form.name.trim()
-  const monitorNameValid =
-    trimmedMonitorName.length > 0 &&
-    [...trimmedMonitorName].length <= 128 &&
-    !/\p{Cc}/u.test(form.name)
   const groupValid =
     form.group.trim().length > 0 &&
     form.group.length <= 128 &&
     !/[\r\n]/.test(form.group)
   const formValid =
-    monitorNameValid &&
     groupValid &&
     form.primary_model.length <= 128 &&
     form.interval_seconds >= 30 &&
@@ -261,7 +259,7 @@ export function ChannelMonitorAdminPage() {
   })
   const save = useMutation({
     mutationFn: () => {
-      if (editing === null) return createChannelMonitor(form)
+      if (editing === null) return createChannelMonitor({ ...form, name: form.group })
       return updateChannelMonitor(editing, form)
     },
     onSuccess: () => {
@@ -297,7 +295,6 @@ export function ChannelMonitorAdminPage() {
   const edit = (row: AdminChannelMonitor) => {
     setEditing(row.id)
     setForm({
-      name: row.name,
       group: row.group,
       primary_model: row.primary_model,
       extra_models: row.extra_models,
@@ -337,17 +334,6 @@ export function ChannelMonitorAdminPage() {
       </div>
       <section className='space-y-3 rounded-lg border p-4'>
         <div className='grid gap-3 sm:grid-cols-2'>
-          <label className='text-sm'>
-            <span className='mb-1 block'>{fieldLabel('name', t)}</span>
-            <input
-              className='w-full rounded-md border px-3 py-2'
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-            />
-            <span className='text-muted-foreground mt-1 block text-xs'>
-              {fieldDescription('name', t)}
-            </span>
-          </label>
           <label className='text-sm'>
             <span className='mb-1 block'>{fieldLabel('group', t)}</span>
             <Select

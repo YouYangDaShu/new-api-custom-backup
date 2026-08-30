@@ -109,7 +109,7 @@ export function useSidebarData(): SidebarData {
               ]
             : []),
           {
-            title: t('Lottery'),
+            title: t('Welfare lottery'),
             url: '/lottery',
             icon: Trophy,
           },

@@ -23,6 +23,7 @@ import { describe, expect, test } from 'vitest'
 import {
   buildTimelineSlots,
   DEFAULT_AVAILABILITY_WINDOW,
+  getMonitorRefreshInterval,
   getAvailabilityValue,
   HISTORY_SLOTS,
   timelineTickClass,
@@ -47,7 +48,7 @@ const oldest: MonitorHistoryPoint = {
 
 describe('buildTimelineSlots', () => {
   test('uses 60 slots by default and keeps the newest sample on the right', () => {
-    const slots = buildTimelineSlots([newest, middle, oldest])
+    const slots = buildTimelineSlots([oldest, middle, newest])
 
     expect(HISTORY_SLOTS).toBe(60)
     expect(slots).toHaveLength(60)
@@ -57,7 +58,7 @@ describe('buildTimelineSlots', () => {
   })
 
   test('orders real samples from oldest to newest', () => {
-    expect(buildTimelineSlots([newest, middle, oldest], 3)).toEqual([
+    expect(buildTimelineSlots([oldest, middle, newest], 3)).toEqual([
       oldest,
       middle,
       newest,
@@ -65,7 +66,7 @@ describe('buildTimelineSlots', () => {
   })
 
   test('pads missing slots on the left and keeps the newest sample at the right', () => {
-    const slots = buildTimelineSlots([newest, middle, oldest], 5)
+    const slots = buildTimelineSlots([oldest, middle, newest], 5)
 
     expect(slots.slice(0, 2)).toEqual([null, null])
     expect(slots.at(-1)).toBe(newest)
@@ -78,7 +79,7 @@ describe('buildTimelineSlots', () => {
       checked_at: 50,
     }
 
-    expect(buildTimelineSlots([newest, middle, oldest, older], 2)).toEqual([
+    expect(buildTimelineSlots([older, oldest, middle, newest], 2)).toEqual([
       middle,
       newest,
     ])
@@ -89,12 +90,54 @@ describe('buildTimelineSlots', () => {
   })
 
   test('does not modify the input array', () => {
-    const history = [newest, middle, oldest]
+    const history = [oldest, middle, newest]
     const snapshot = [...history]
 
     buildTimelineSlots(history, 5)
 
     expect(history).toEqual(snapshot)
+  })
+})
+
+describe('channel monitor refresh interval', () => {
+  test('uses the shortest enabled interval in milliseconds', () => {
+    expect(getMonitorRefreshInterval([{ interval_seconds: 60 }])).toBe(60_000)
+    expect(
+      getMonitorRefreshInterval([
+        { interval_seconds: 120, enabled: true },
+        { interval_seconds: 60, enabled: true },
+      ])
+    ).toBe(60_000)
+  })
+
+  test('ignores disabled and invalid intervals without polling too often', () => {
+    expect(
+      getMonitorRefreshInterval([{ interval_seconds: 60, enabled: false }])
+    ).toBe(false)
+    expect(
+      getMonitorRefreshInterval([
+        { interval_seconds: 15, enabled: true },
+        { interval_seconds: 60, enabled: false },
+      ])
+    ).toBe(false)
+  })
+
+  test('stops polling when the monitoring module is disabled', () => {
+    expect(
+      getMonitorRefreshInterval([{ interval_seconds: 60, module_enabled: false }])
+    ).toBe(false)
+    expect(
+      getMonitorRefreshInterval([
+        { interval_seconds: 60 },
+        { interval_seconds: 120, module_enabled: false },
+      ])
+    ).toBe(false)
+    expect(getMonitorRefreshInterval([])).toBe(false)
+  })
+
+  test('recomputes when monitor configuration changes', () => {
+    expect(getMonitorRefreshInterval([{ interval_seconds: 120 }])).toBe(120_000)
+    expect(getMonitorRefreshInterval([{ interval_seconds: 60 }])).toBe(60_000)
   })
 })
 

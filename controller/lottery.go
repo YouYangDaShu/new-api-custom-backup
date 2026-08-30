@@ -9,11 +9,25 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+type lotteryAdminUserProgress struct {
+	UserID         int     `json:"user_id"`
+	Username       string  `json:"username"`
+	Accumulated    float64 `json:"accumulated"`
+	AvailableDraws int     `json:"available_draws"`
+	Threshold      float64 `json:"threshold"`
+}
+
 func GetLottery(c *gin.Context) {
 	cfg := model.GetLotteryConfig()
 	progress, err := model.GetLotteryProgress(c.GetInt("id"))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	threshold, thresholdErr := model.LotteryQuotaToDisplay(cfg.Threshold)
+	accumulated, accumulatedErr := model.LotteryQuotaToDisplay(progress.Accumulated)
+	if thresholdErr != nil || accumulatedErr != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"success": false, "message": "lottery currency conversion unavailable"})
 		return
 	}
 	// Expose only user-safe prize fields; weights must stay admin-only.
@@ -25,7 +39,7 @@ func GetLottery(c *gin.Context) {
 		}
 		prizes = append(prizes, gin.H{"id": prize.ID, "name": prize.Name, "amount": amount})
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"enabled": cfg.Enabled, "threshold": cfg.Threshold, "accumulated": progress.Accumulated, "available_draws": progress.AvailableDraws, "prizes": prizes}})
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"enabled": cfg.Enabled, "threshold": threshold, "accumulated": accumulated, "available_draws": progress.AvailableDraws, "prizes": prizes}})
 }
 
 func DrawLottery(c *gin.Context) {
@@ -56,13 +70,40 @@ func AdminGetLottery(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
 		return
 	}
+	userIDs := make([]int, 0, len(progress))
+	for _, item := range progress {
+		userIDs = append(userIDs, item.UserID)
+	}
+	var users []model.User
+	if len(userIDs) > 0 {
+		if err := model.DB.Select("id, username").Where("id IN ?", userIDs).Find(&users).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
+			return
+		}
+	}
+	usernames := make(map[int]string, len(users))
+	for _, user := range users {
+		usernames[user.Id] = user.Username
+	}
+	adminProgress := make([]lotteryAdminUserProgress, 0, len(progress))
+	for _, item := range progress {
+		amount, conversionErr := model.LotteryQuotaToDisplay(item.Accumulated)
+		if conversionErr != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"success": false, "message": "lottery currency conversion unavailable"})
+			return
+		}
+		adminProgress = append(adminProgress, lotteryAdminUserProgress{
+			UserID: item.UserID, Username: usernames[item.UserID], Accumulated: amount,
+			AvailableDraws: item.AvailableDraws, Threshold: displayCfg.ThresholdDisplayAmount,
+		})
+	}
 	if err := model.DB.Order("id desc").Limit(200).Find(&draws).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{
 		"config":      displayCfg,
-		"users":       progress,
+		"users":       adminProgress,
 		"users_total": usersTotal,
 		"page":        pageInfo.GetPage(),
 		"page_size":   pageInfo.GetPageSize(),

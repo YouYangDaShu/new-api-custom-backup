@@ -19,6 +19,9 @@ For commercial licensing, please contact support@quantumnous.com
 
 export const HISTORY_SLOTS = 60
 
+export const MIN_MONITOR_INTERVAL_SECONDS = 30
+export const MAX_MONITOR_INTERVAL_SECONDS = 86400
+
 export type AvailabilityWindow = '24h' | '168h' | '720h'
 
 export const DEFAULT_AVAILABILITY_WINDOW: AvailabilityWindow = '24h'
@@ -47,6 +50,34 @@ export type MonitorHistoryPoint = {
   checked_at: number
 }
 
+export type MonitorRefreshConfig = {
+  interval_seconds?: number
+  enabled?: boolean
+  module_enabled?: boolean
+}
+
+export function getMonitorRefreshInterval(
+  monitors: readonly MonitorRefreshConfig[] | null | undefined
+): number | false {
+  const configs = monitors ?? []
+  if (configs.some((monitor) => monitor.module_enabled === false)) return false
+
+  const intervals = configs
+    .filter((monitor) => monitor.enabled !== false)
+    .map((monitor) => monitor.interval_seconds)
+    .filter(
+      (interval): interval is number =>
+        typeof interval === 'number' &&
+        Number.isFinite(interval) &&
+        Number.isInteger(interval) &&
+        interval >= MIN_MONITOR_INTERVAL_SECONDS &&
+        interval <= MAX_MONITOR_INTERVAL_SECONDS
+    )
+
+  if (intervals.length === 0) return false
+  return Math.min(...intervals) * 1000
+}
+
 export function timelineTickClass(point: MonitorHistoryPoint | null): string {
   if (point?.status === 'success' && point.latency_ms < 6000) {
     return 'h-5 bg-success'
@@ -73,7 +104,7 @@ export function buildTimelineSlots(
 ): Array<MonitorHistoryPoint | null> {
   if (slotCount <= 0) return []
 
-  const points = (history ?? []).slice(0, slotCount).reverse()
+  const points = (history ?? []).slice(-slotCount)
   const emptySlots = Array<MonitorHistoryPoint | null>(
     slotCount - points.length
   ).fill(null)

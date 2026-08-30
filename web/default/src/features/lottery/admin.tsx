@@ -7,7 +7,7 @@ import { PageTransition } from '@/components/page-transition'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
-import { getCurrencyDisplay } from '@/lib/currency'
+import { formatLocalCurrencyAmount, getCurrencyDisplay } from '@/lib/currency'
 import {
   Table,
   TableBody,
@@ -166,7 +166,14 @@ export function LotteryAdmin() {
       </div>
       <div className='rounded-xl border p-6'>
         <h2 className='mb-3 font-medium'>{t('User progress')}</h2>
-        {query.data?.data.users.map((user) => <div className='flex justify-between border-b py-2 text-sm' key={user.user_id}><span>{user.user_id}</span><span>{user.accumulated} / {user.available_draws}</span></div>)}
+        {query.data?.data.users.map((user) => <div className='grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto] items-center gap-3 border-b py-2 text-sm' key={user.user_id}>
+          <span className='min-w-0 truncate' title={user.username}>{t('User ID')}: {user.user_id}</span>
+          <span className='min-w-0 truncate'>{t('Username')}: {user.username || '\u2014'}</span>
+          <span className='text-right tabular-nums'>
+            <span className='block'>{t('Consumption progress')}: {formatLocalCurrencyAmount(user.accumulated)} / {formatLocalCurrencyAmount(user.threshold)}</span>
+            <span className='text-muted-foreground block'>{t('Available draws')}: {user.available_draws}</span>
+          </span>
+        </div>)}
         <div className='mt-4 flex items-center justify-between gap-3 text-sm'>
           <span className='text-muted-foreground'>{t('Total')}: {query.data?.data.users_total ?? 0}</span>
           <div className='flex gap-2'>
