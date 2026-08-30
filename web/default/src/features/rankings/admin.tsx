@@ -17,20 +17,17 @@ import { api } from '@/lib/api'
 import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import {
+  formatHistoryRecipient,
+  formatTokenUsageInBillions,
+  type HistoryRow,
+} from './history'
+import {
   MAX_REWARD_RANKS,
   MAX_REWARD_VALUE,
   parseRewardInputs,
   rewardInputsFromApi,
 } from './rewards'
 
-type HistoryRow = {
-  week_start: string
-  rank: number
-  total_tokens: number
-  reward_quota: number
-  reward_status: string
-  created_at: number
-}
 type Config = { enabled: boolean; rewards: number[]; history: HistoryRow[] }
 
 function formatYuanFromQuota(quota: number, quotaPerUnit: number) {
@@ -220,10 +217,11 @@ export function TokenRankingAdminPage() {
       <section className='space-y-2'>
         <h2 className='font-medium'>{t('Reward history')}</h2>
         <div className='overflow-x-auto'>
-          <table className='w-full min-w-[32rem] text-left text-sm'>
+          <table className='w-full min-w-[44rem] text-left text-sm'>
             <thead>
               <tr>
                 <th className='p-2'>{t('Cycle')}</th>
+                <th className='p-2'>{t('Recipient')}</th>
                 <th className='p-2'>{t('Place')}</th>
                 <th className='p-2'>{t('Token usage')}</th>
                 <th className='p-2'>{t('Reward amount')}</th>
@@ -238,8 +236,13 @@ export function TokenRankingAdminPage() {
                   key={`${item.week_start}-${item.rank}`}
                 >
                   <td className='p-2'>{item.week_start}</td>
+                  <td className='p-2 whitespace-nowrap'>
+                    {formatHistoryRecipient(item, t('User ID'))}
+                  </td>
                   <td className='p-2'>#{item.rank}</td>
-                  <td className='p-2'>{item.total_tokens.toLocaleString()}</td>
+                  <td className='p-2'>
+                    {formatTokenUsageInBillions(item.total_tokens)}
+                  </td>
                   <td className='p-2'>
                     {formatYuanFromQuota(item.reward_quota, quotaPerUnit)}
                   </td>

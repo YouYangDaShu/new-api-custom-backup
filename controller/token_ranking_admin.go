@@ -18,6 +18,7 @@ type tokenRankingAdminConfig struct {
 
 type tokenRankingHistoryRow struct {
 	WeekStart    string `json:"week_start"`
+	UserID       int    `json:"user_id"`
 	DisplayName  string `json:"display_name"`
 	Rank         int    `json:"rank"`
 	TotalTokens  int64  `json:"total_tokens"`
@@ -50,7 +51,20 @@ func adminRankingHistory(rows []model.WeeklyRankingReward) []tokenRankingHistory
 	}
 	history := make([]tokenRankingHistoryRow, 0, len(rows))
 	for _, row := range rows {
-		history = append(history, tokenRankingHistoryRow{WeekStart: row.WeekStart, DisplayName: names[row.UserID], Rank: row.Rank, TotalTokens: row.TotalTokens, RewardQuota: row.RewardQuota, CreatedAt: row.CreatedAt, RewardStatus: "awarded"})
+		displayName := names[row.UserID]
+		if displayName == "" {
+			displayName = "-"
+		}
+		history = append(history, tokenRankingHistoryRow{
+			WeekStart:    row.WeekStart,
+			UserID:       row.UserID,
+			DisplayName:  displayName,
+			Rank:         row.Rank,
+			TotalTokens:  row.TotalTokens,
+			RewardQuota:  row.RewardQuota,
+			CreatedAt:    row.CreatedAt,
+			RewardStatus: "awarded",
+		})
 	}
 	return history
 }
