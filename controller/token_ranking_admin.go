@@ -18,7 +18,6 @@ type tokenRankingAdminConfig struct {
 
 type tokenRankingHistoryRow struct {
 	WeekStart    string `json:"week_start"`
-	UserID       int    `json:"user_id"`
 	DisplayName  string `json:"display_name"`
 	Rank         int    `json:"rank"`
 	TotalTokens  int64  `json:"total_tokens"`
@@ -51,20 +50,7 @@ func adminRankingHistory(rows []model.WeeklyRankingReward) []tokenRankingHistory
 	}
 	history := make([]tokenRankingHistoryRow, 0, len(rows))
 	for _, row := range rows {
-		displayName := names[row.UserID]
-		if displayName == "" {
-			displayName = "-"
-		}
-		history = append(history, tokenRankingHistoryRow{
-			WeekStart:    row.WeekStart,
-			UserID:       row.UserID,
-			DisplayName:  displayName,
-			Rank:         row.Rank,
-			TotalTokens:  row.TotalTokens,
-			RewardQuota:  row.RewardQuota,
-			CreatedAt:    row.CreatedAt,
-			RewardStatus: "awarded",
-		})
+		history = append(history, tokenRankingHistoryRow{WeekStart: row.WeekStart, DisplayName: names[row.UserID], Rank: row.Rank, TotalTokens: row.TotalTokens, RewardQuota: row.RewardQuota, CreatedAt: row.CreatedAt, RewardStatus: "awarded"})
 	}
 	return history
 }
@@ -80,7 +66,15 @@ func GetTokenRankingAdmin(c *gin.Context) {
 		return
 	}
 	history := adminRankingHistory(ledgers)
-	common.ApiSuccess(c, gin.H{"enabled": enabled, "rewards": rewards, "history": history})
+	var stats struct {
+		TotalCount int64
+		TotalQuota int64
+	}
+	if err := model.DB.Model(&model.WeeklyRankingReward{}).Select("COUNT(*) AS total_count, COALESCE(SUM(reward_quota), 0) AS total_quota").Scan(&stats).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"enabled": enabled, "rewards": rewards, "history": history, "total_reward_count": stats.TotalCount, "total_reward_quota": stats.TotalQuota})
 }
 
 func UpdateTokenRankingAdmin(c *gin.Context) {

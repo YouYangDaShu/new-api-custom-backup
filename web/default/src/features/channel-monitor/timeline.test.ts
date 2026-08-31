@@ -124,7 +124,9 @@ describe('channel monitor refresh interval', () => {
 
   test('stops polling when the monitoring module is disabled', () => {
     expect(
-      getMonitorRefreshInterval([{ interval_seconds: 60, module_enabled: false }])
+      getMonitorRefreshInterval([
+        { interval_seconds: 60, module_enabled: false },
+      ])
     ).toBe(false)
     expect(
       getMonitorRefreshInterval([

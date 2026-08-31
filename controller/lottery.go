@@ -15,6 +15,16 @@ type lotteryAdminUserProgress struct {
 	Accumulated    float64 `json:"accumulated"`
 	AvailableDraws int     `json:"available_draws"`
 	Threshold      float64 `json:"threshold"`
+	DrawCount      int64   `json:"draw_count"`
+}
+
+type lotteryAdminDraw struct {
+	ID          uint    `json:"id"`
+	UserID      int     `json:"user_id"`
+	Username    string  `json:"username"`
+	PrizeName   string  `json:"prize_name"`
+	PrizeAmount float64 `json:"prize_amount"`
+	CreatedAt   int64   `json:"created_at"`
 }
 
 func GetLottery(c *gin.Context) {
@@ -59,6 +69,18 @@ func AdminGetLottery(c *gin.Context) {
 		return
 	}
 	pageInfo := common.GetPageQuery(c)
+	if c.Query("p") == "" {
+		if page, conversionErr := strconv.Atoi(c.Query("page")); conversionErr == nil && page > 0 {
+			pageInfo.Page = page
+		}
+	}
+	pageInfo.PageSize = 10
+	if pageSize, conversionErr := strconv.Atoi(c.Query("page_size")); conversionErr == nil {
+		switch pageSize {
+		case 10, 20, 50, 100:
+			pageInfo.PageSize = pageSize
+		}
+	}
 	var usersTotal int64
 	if err := model.DB.Model(&model.UserLotteryProgress{}).Count(&usersTotal).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
@@ -85,6 +107,21 @@ func AdminGetLottery(c *gin.Context) {
 	for _, user := range users {
 		usernames[user.Id] = user.Username
 	}
+	drawCounts := make(map[int]int64, len(userIDs))
+	if len(userIDs) > 0 {
+		type drawCountRow struct {
+			UserID int
+			Count  int64
+		}
+		var rows []drawCountRow
+		if err := model.DB.Model(&model.LotteryDraw{}).Select("user_id, COUNT(*) AS count").Where("user_id IN ?", userIDs).Group("user_id").Scan(&rows).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
+			return
+		}
+		for _, row := range rows {
+			drawCounts[row.UserID] = row.Count
+		}
+	}
 	adminProgress := make([]lotteryAdminUserProgress, 0, len(progress))
 	for _, item := range progress {
 		amount, conversionErr := model.LotteryQuotaToDisplay(item.Accumulated)
@@ -94,20 +131,50 @@ func AdminGetLottery(c *gin.Context) {
 		}
 		adminProgress = append(adminProgress, lotteryAdminUserProgress{
 			UserID: item.UserID, Username: usernames[item.UserID], Accumulated: amount,
-			AvailableDraws: item.AvailableDraws, Threshold: displayCfg.ThresholdDisplayAmount,
+			AvailableDraws: item.AvailableDraws, Threshold: displayCfg.ThresholdDisplayAmount, DrawCount: drawCounts[item.UserID],
 		})
 	}
 	if err := model.DB.Order("id desc").Limit(200).Find(&draws).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
 		return
 	}
+	drawUserIDs := make([]int, 0, len(draws))
+	for _, draw := range draws {
+		drawUserIDs = append(drawUserIDs, draw.UserID)
+	}
+	var drawUsers []model.User
+	if len(drawUserIDs) > 0 {
+		if err := model.DB.Select("id, username").Where("id IN ?", drawUserIDs).Find(&drawUsers).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
+			return
+		}
+	}
+	drawUsernames := make(map[int]string, len(drawUsers))
+	for _, user := range drawUsers {
+		drawUsernames[user.Id] = user.Username
+	}
+	drawLog := make([]lotteryAdminDraw, 0, len(draws))
+	for _, draw := range draws {
+		drawLog = append(drawLog, lotteryAdminDraw{ID: draw.ID, UserID: draw.UserID, Username: drawUsernames[draw.UserID], PrizeName: draw.PrizeName, PrizeAmount: draw.PrizeAmount, CreatedAt: draw.CreatedAt})
+	}
+	type drawStats struct {
+		TotalCount  int64
+		TotalAmount float64
+	}
+	var stats drawStats
+	if err := model.DB.Model(&model.LotteryDraw{}).Select("COUNT(*) AS total_count, COALESCE(SUM(prize_amount), 0) AS total_amount").Scan(&stats).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{
-		"config":      displayCfg,
-		"users":       adminProgress,
-		"users_total": usersTotal,
-		"page":        pageInfo.GetPage(),
-		"page_size":   pageInfo.GetPageSize(),
-		"draws":       draws,
+		"config":       displayCfg,
+		"users":        adminProgress,
+		"users_total":  usersTotal,
+		"page":         pageInfo.GetPage(),
+		"page_size":    pageInfo.GetPageSize(),
+		"draws":        drawLog,
+		"total_draws":  stats.TotalCount,
+		"total_amount": stats.TotalAmount,
 	}})
 }
 

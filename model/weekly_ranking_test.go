@@ -12,19 +12,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestMaskRankingNameMasksEveryNameForm(t *testing.T) {
-	// Emails keep only the first rune of the local part.
-	require.Equal(t, "a***@example.com", maskRankingName("alice@example.com"))
-	require.Equal(t, "3***@qq.com", maskRankingName("304123051@qq.com"))
-	require.Equal(t, "a***@example.com", maskRankingName("abcd@example.com"))
-	require.Equal(t, "a***@example.com", maskRankingName("ab@example.com"))
-	// Phone-like digit strings keep at most the first 3 and last 2 digits.
+func TestMaskRankingNameMasksOtherUsers(t *testing.T) {
+	// Keep identifiable edges of email local parts and the domain.
+	require.Equal(t, "a***e@example.com", maskRankingName("alice@example.com"))
+	require.Equal(t, "3***1@qq.com", maskRankingName("304123051@qq.com"))
+	require.Equal(t, "ab@example.com", maskRankingName("ab@example.com"))
+	// Only digit strings longer than six characters are masked.
+	require.Equal(t, "123**67", maskRankingName("1234567"))
+	require.Equal(t, "123456", maskRankingName("123456"))
 	require.Equal(t, "197***82", maskRankingName("1975702382"))
-	require.Equal(t, "123***89", maskRankingName("123456789"))
-	require.Equal(t, "123***78", maskRankingName("12345678"))
-	// Short digit strings and every other username keep only the first rune.
-	require.Equal(t, "1***", maskRankingName("1234567"))
-	require.Equal(t, "1***", maskRankingName("123456"))
+	// Plain English usernames remain readable; mixed/Chinese names retain the
+	// existing conservative first-rune masking.
+	require.Equal(t, "player", maskRankingName("player"))
 	require.Equal(t, "普***", maskRankingName("普通用户名"))
 	require.Equal(t, "p***", maskRankingName("player29369"))
 	require.Equal(t, "***", maskRankingName("   "))
@@ -130,7 +129,7 @@ func TestRankingMasksOtherUsersButNotCurrentUser(t *testing.T) {
 	for _, row := range rows {
 		byID[row.UserID] = row
 	}
-	require.Equal(t, "a***@example.com", byID[92060].DisplayName)
+	require.Equal(t, "a***e@example.com", byID[92060].DisplayName)
 	require.Equal(t, "bob-viewer", byID[92061].DisplayName)
 	require.True(t, byID[92061].IsCurrentUser)
 }
@@ -170,7 +169,7 @@ func TestWeeklyUserRankingAndIdempotentRewards(t *testing.T) {
 	require.Equal(t, 91001, rows[1].UserID)
 	require.True(t, rows[1].RewardEligible)
 	require.EqualValues(t, 200, rows[1].TotalTokens)
-	require.Equal(t, "a***@example.com", rows[1].DisplayName)
+	require.Equal(t, "a***e@example.com", rows[1].DisplayName)
 	require.Equal(t, 91002, rows[2].UserID)
 	require.EqualValues(t, 130, rows[2].TotalTokens)
 

@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -10,10 +12,165 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestProbeChannelMonitorModelFollowsRetryPriorities(t *testing.T) {
+	retryableError := func() testResult {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		err := types.NewOpenAIError(errors.New("upstream failed"), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+		return testResult{context: c, localErr: err, newAPIError: err}
+	}
+	success := func() testResult {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		return testResult{context: c}
+	}
+
+	tests := []struct {
+		name         string
+		retryTimes   int
+		results      map[int]testResult
+		wantAttempts []int
+		wantStatus   string
+	}{
+		{
+			name:         "highest priority succeeds",
+			retryTimes:   1,
+			results:      map[int]testResult{101: success()},
+			wantAttempts: []int{101},
+			wantStatus:   model.ChannelMonitorStatusSuccess,
+		},
+		{
+			name:         "second priority succeeds with one retry",
+			retryTimes:   1,
+			results:      map[int]testResult{101: retryableError(), 102: success()},
+			wantAttempts: []int{101, 102},
+			wantStatus:   model.ChannelMonitorStatusSuccess,
+		},
+		{
+			name:         "zero retries stops after first failure",
+			retryTimes:   0,
+			results:      map[int]testResult{101: retryableError(), 102: success()},
+			wantAttempts: []int{101},
+			wantStatus:   model.ChannelMonitorStatusFailed,
+		},
+		{
+			name:         "two failures are unavailable",
+			retryTimes:   1,
+			results:      map[int]testResult{101: retryableError(), 102: retryableError()},
+			wantAttempts: []int{101, 102},
+			wantStatus:   model.ChannelMonitorStatusFailed,
+		},
+		{
+			name:         "third priority succeeds with two retries",
+			retryTimes:   2,
+			results:      map[int]testResult{101: retryableError(), 102: retryableError(), 103: success()},
+			wantAttempts: []int{101, 102, 103},
+			wantStatus:   model.ChannelMonitorStatusSuccess,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			channels := []*model.Channel{{Id: 101}, {Id: 102}, {Id: 103}}
+			var selectedRetries []int
+			selector := func(group, modelName string, retry int, requestPath string) (*model.Channel, error) {
+				assert.Equal(t, "monitor-group", group)
+				assert.Equal(t, "model-a", modelName)
+				assert.Empty(t, requestPath)
+				selectedRetries = append(selectedRetries, retry)
+				return channels[retry], nil
+			}
+			var attempts []int
+			probe := func(probeCtx context.Context, channel *model.Channel, _ int, modelName, endpointType string, stream bool) testResult {
+				assert.Equal(t, "model-a", modelName)
+				assert.Empty(t, endpointType)
+				assert.False(t, stream)
+				_, monitorProbe := probeCtx.Value(channelMonitorProbeContextKey{}).(bool)
+				assert.True(t, monitorProbe)
+				attempts = append(attempts, channel.Id)
+				return tt.results[channel.Id]
+			}
+
+			check := probeChannelMonitorModel(context.Background(), 77, "monitor-group", "model-a", 9, tt.retryTimes, selector, probe)
+
+			assert.Equal(t, tt.wantAttempts, attempts)
+			assert.Equal(t, len(tt.wantAttempts), len(selectedRetries))
+			for retry := range selectedRetries {
+				assert.Equal(t, retry, selectedRetries[retry])
+			}
+			assert.Equal(t, tt.wantStatus, check.Status)
+			assert.Equal(t, int64(77), check.MonitorID)
+			assert.Equal(t, "model-a", check.Model)
+			assert.NotContains(t, check.ErrorBrief, "upstream failed")
+		})
+	}
+}
+
+func TestProbeChannelMonitorModelDoesNotRetryNonRetryableErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		err  *types.NewAPIError
+	}{
+		{
+			name: "status is not retryable",
+			err:  types.NewOpenAIError(errors.New("bad request"), types.ErrorCodeBadResponse, http.StatusBadRequest),
+		},
+		{
+			name: "skip retry",
+			err:  types.NewOpenAIError(errors.New("do not retry"), types.ErrorCodeChannelParamOverrideInvalid, http.StatusInternalServerError, types.ErrOptionWithSkipRetry()),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var selectedRetries []int
+			selector := func(_, _ string, retry int, _ string) (*model.Channel, error) {
+				selectedRetries = append(selectedRetries, retry)
+				return &model.Channel{Id: retry + 1}, nil
+			}
+			probe := func(_ context.Context, _ *model.Channel, _ int, _, _ string, _ bool) testResult {
+				c, _ := gin.CreateTestContext(httptest.NewRecorder())
+				return testResult{context: c, localErr: tt.err, newAPIError: tt.err}
+			}
+
+			check := probeChannelMonitorModel(context.Background(), 78, "monitor-group", "model-a", 9, 2, selector, probe)
+
+			assert.Equal(t, []int{0}, selectedRetries)
+			assert.Equal(t, model.ChannelMonitorStatusFailed, check.Status)
+		})
+	}
+}
+
+func TestMonitorChannelSelectionExcludesDisabledAndModelMismatch(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	previousMemoryCacheEnabled := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() { common.MemoryCacheEnabled = previousMemoryCacheEnabled })
+
+	priorityHigh := int64(30)
+	priorityMedium := int64(20)
+	priorityLow := int64(10)
+	channels := []*model.Channel{
+		{Name: "disabled-high", Status: common.ChannelStatusManuallyDisabled, Group: "monitor-group", Models: "model-a", Priority: &priorityHigh},
+		{Name: "wrong-model", Status: common.ChannelStatusEnabled, Group: "monitor-group", Models: "model-b", Priority: &priorityMedium},
+		{Name: "eligible", Status: common.ChannelStatusEnabled, Group: "monitor-group", Models: "model-a", Priority: &priorityLow},
+	}
+	for _, channel := range channels {
+		require.NoError(t, channel.Insert())
+	}
+	t.Cleanup(func() {
+		require.NoError(t, db.Where("name IN ?", []string{"disabled-high", "wrong-model", "eligible"}).Delete(&model.Channel{}).Error)
+	})
+
+	selected, err := model.GetRandomSatisfiedChannel("monitor-group", "model-a", 0, "")
+	require.NoError(t, err)
+	require.NotNil(t, selected)
+	assert.Equal(t, channels[2].Id, selected.Id)
+}
 
 func TestValidateMonitorFieldsAcceptsUnicodeNameAndValidModels(t *testing.T) {
 	extra, err := validateMonitorFields(strings.Repeat("中", 128), "default", "model-a", []string{"model-b", "model-b", "model-a"}, 60, []string{"model-a", "model-b"})

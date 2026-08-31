@@ -439,9 +439,16 @@ func DrawLottery(userID int) (*LotteryDraw, error) {
 		// and the draw record, so a draw is fulfilled exactly once: retries and
 		// concurrent draws each consume their own available_draw or fail.
 		if prizeQuota > 0 {
+			// MaxQuota is the billing conversion safety bound, not necessarily the
+			// database column's current upper bound. Existing accounts can be above
+			// it (for example after historical credits), and should still receive a
+			// valid small prize. Preserve the legacy guard for balances below the
+			// safety bound while also preventing overflow of the Go/SQL integer.
+			maxInt := int(^uint(0) >> 1)
 			maxAllowed := common.MaxQuota - prizeQuota
+			maxRepresentable := maxInt - prizeQuota
 			credit := tx.Model(&User{}).
-				Where("id = ? AND quota <= ?", userID, maxAllowed).
+				Where("id = ? AND (quota > ? OR quota <= ?) AND quota <= ?", userID, common.MaxQuota, maxAllowed, maxRepresentable).
 				Update("quota", gorm.Expr("quota + ?", prizeQuota))
 			if credit.Error != nil {
 				return credit.Error

@@ -126,10 +126,7 @@ func ShanghaiWeekRange(now time.Time, offset int) (startUnix, endUnix int64, key
 }
 
 // maskRankingName hides identifying account details from other signed-in
-// users. Every name form is masked unconditionally: emails keep only the first
-// rune of the local part plus the domain, long digit strings (phone-like) keep
-// at most the first 3 and last 2 digits, and any other name keeps only its
-// first rune.
+// users while retaining enough of the name to distinguish ranking rows.
 func maskRankingName(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -137,7 +134,11 @@ func maskRankingName(value string) string {
 	}
 	if at := strings.IndexByte(value, '@'); at > 0 {
 		local := []rune(value[:at])
-		return string(local[0]) + "***" + value[at:]
+		if len(local) <= 2 {
+			return value
+		}
+		masked := min(3, len(local)-2)
+		return string(local[:1]) + strings.Repeat("*", masked) + string(local[len(local)-1:]) + value[at:]
 	}
 	runes := []rune(value)
 	allDigits := true
@@ -147,8 +148,22 @@ func maskRankingName(value string) string {
 			break
 		}
 	}
-	if allDigits && len(runes) >= 8 {
-		return string(runes[:3]) + "***" + string(runes[len(runes)-2:])
+	if allDigits {
+		if len(runes) <= 6 {
+			return value
+		}
+		masked := min(3, len(runes)-5)
+		return string(runes[:3]) + strings.Repeat("*", masked) + string(runes[len(runes)-2:])
+	}
+	allEnglish := true
+	for _, r := range runes {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
+			allEnglish = false
+			break
+		}
+	}
+	if allEnglish {
+		return value
 	}
 	return string(runes[0]) + "***"
 }

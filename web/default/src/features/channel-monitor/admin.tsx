@@ -26,6 +26,11 @@ import {
   type AdminChannelMonitor,
   type MonitorInput,
 } from './api'
+import {
+  buildTimelineSlots,
+  HISTORY_SLOTS,
+  timelineTickClass,
+} from './timeline'
 
 const modelQueryStaleTime = 5 * 60 * 1000
 const knownMonitorErrors = new Set([
@@ -50,12 +55,6 @@ function statusLabel(status: string, t: (key: string) => string) {
   if (status === 'failed' || status === 'timeout') return t('Unavailable')
   return t('No result')
 }
-function statusColor(status: string) {
-  if (status === 'success') return 'bg-emerald-500'
-  if (status === 'failed' || status === 'timeout') return 'bg-red-500'
-  return 'bg-muted-foreground/40'
-}
-
 function monitorErrorMessage(
   error: unknown,
   fallback: string,
@@ -259,7 +258,9 @@ export function ChannelMonitorAdminPage() {
   })
   const save = useMutation({
     mutationFn: () => {
-      if (editing === null) return createChannelMonitor({ ...form, name: form.group })
+      if (editing === null) {
+        return createChannelMonitor({ ...form, name: form.group })
+      }
       return updateChannelMonitor(editing, form)
     },
     onSuccess: () => {
@@ -604,26 +605,37 @@ export function ChannelMonitorAdminPage() {
                     )}
                   </div>
                   <div className='text-muted-foreground mt-2 text-xs'>
-                    {t('Recent check history')}
+                    {t('Recent {{count}} records', { count: HISTORY_SLOTS })}
                   </div>
                   <div
-                    className='flex min-w-40 items-center gap-1'
+                    className='flex h-5 w-full min-w-0 items-end gap-px'
                     aria-label={t('Recent check history')}
                   >
-                    {(stat.history ?? [])
-                      .slice(0, 30)
-                      .reverse()
-                      .map((item) => (
-                        <span
-                          key={`${item.checked_at}-${item.status}`}
-                          className={`h-5 w-1.5 rounded-sm ${statusColor(item.status)}`}
-                          title={`${statusLabel(item.status, t)} · ${new Date(item.checked_at * 1000).toLocaleString()}`}
-                        />
-                      ))}
-                    {(!stat.history || stat.history.length === 0) && (
-                      <span className='text-muted-foreground text-xs'>
-                        {t('No check results yet')}
-                      </span>
+                    {buildTimelineSlots(stat.history, HISTORY_SLOTS).map(
+                      (item, position, slots) => {
+                        const sampleOccurrence = item
+                          ? slots
+                              .slice(0, position)
+                              .filter(
+                                (previous) =>
+                                  previous?.checked_at === item.checked_at
+                              ).length
+                          : 0
+                        const key = item
+                          ? `timeline-sample-${item.checked_at}-${sampleOccurrence}`
+                          : `timeline-empty-${position}`
+                        return (
+                          <span
+                            key={key}
+                            className={`block min-w-0 flex-1 rounded-sm ${timelineTickClass(item)}`}
+                            title={
+                              item
+                                ? `${statusLabel(item.status, t)} · ${new Date(item.checked_at * 1000).toLocaleString()}`
+                                : t('No samples yet')
+                            }
+                          />
+                        )
+                      }
                     )}
                   </div>
                   {stat.error_summary && (

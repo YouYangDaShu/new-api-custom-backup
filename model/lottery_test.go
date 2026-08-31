@@ -352,6 +352,8 @@ func TestLotteryPrizeQuotaLimitRollsBackDraw(t *testing.T) {
 	}{
 		{name: "reject overflow", userID: 991013, quota: common.MaxQuota - 5, wantError: true},
 		{name: "allow exact maximum", userID: 991014, quota: common.MaxQuota - 10},
+		{name: "allow existing balance over safety bound", userID: 991015, quota: common.MaxQuota + 100},
+		{name: "reject underlying integer overflow", userID: 991016, quota: int(^uint(0)>>1) - 5, wantError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			DB.Where("user_id = ?", tc.userID).Delete(&UserLotteryProgress{})
@@ -378,7 +380,7 @@ func TestLotteryPrizeQuotaLimitRollsBackDraw(t *testing.T) {
 				assert.Equal(t, 1, progress.AvailableDraws)
 				assert.Zero(t, draws)
 			} else {
-				assert.Equal(t, common.MaxQuota, user.Quota)
+				assert.Equal(t, tc.quota+10, user.Quota)
 				assert.Zero(t, progress.AvailableDraws)
 				assert.EqualValues(t, 1, draws)
 			}

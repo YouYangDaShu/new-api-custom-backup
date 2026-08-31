@@ -15,6 +15,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -479,6 +480,69 @@ func AdminRunChannelMonitor(c *gin.Context) {
 	common.ApiSuccess(c, monitorAdminView(*row, checks))
 }
 
+func probeChannelMonitorModel(
+	ctx context.Context,
+	monitorID int64,
+	group string,
+	modelName string,
+	userID int,
+	retryTimes int,
+	selectChannel func(string, string, int, string) (*model.Channel, error),
+	probe func(context.Context, *model.Channel, int, string, string, bool) testResult,
+) model.ChannelMonitorCheck {
+	if retryTimes < 0 {
+		retryTimes = 0
+	}
+	started := time.Now()
+	check := model.ChannelMonitorCheck{
+		MonitorID:  monitorID,
+		Model:      modelName,
+		CheckedAt:  started.Unix(),
+		Status:     model.ChannelMonitorStatusFailed,
+		ErrorCode:  "no_channel",
+		ErrorBrief: "no available channel",
+	}
+
+	for attempt := 0; attempt <= retryTimes; attempt++ {
+		channel, err := selectChannel(group, modelName, attempt, "")
+		if err != nil || channel == nil {
+			check.LatencyMS = time.Since(started).Milliseconds()
+			return check
+		}
+
+		probeCtx, cancel := context.WithTimeout(context.WithValue(ctx, channelMonitorProbeContextKey{}, true), 60*time.Second)
+		result := probe(probeCtx, channel, userID, modelName, "", false)
+		timedOut := errors.Is(result.localErr, context.DeadlineExceeded) || errors.Is(probeCtx.Err(), context.DeadlineExceeded)
+		cancel()
+
+		if result.localErr == nil && result.newAPIError == nil {
+			check.Status = model.ChannelMonitorStatusSuccess
+			check.ErrorCode = ""
+			check.ErrorBrief = ""
+			check.LatencyMS = time.Since(started).Milliseconds()
+			return check
+		}
+		if timedOut {
+			check.Status = model.ChannelMonitorStatusTimeout
+			check.ErrorCode = "timeout"
+			check.ErrorBrief = "probe timed out"
+		} else {
+			check.Status = model.ChannelMonitorStatusFailed
+			check.ErrorCode = "probe_failed"
+			check.ErrorBrief = "model request failed"
+		}
+
+		remainingRetries := retryTimes - attempt
+		if result.context == nil || types.IsSkipRetryError(result.newAPIError) || !shouldRetry(result.context, result.newAPIError, remainingRetries) {
+			check.LatencyMS = time.Since(started).Milliseconds()
+			return check
+		}
+	}
+
+	check.LatencyMS = time.Since(started).Milliseconds()
+	return check
+}
+
 func runMonitor(ctx context.Context, row *model.ChannelMonitor) {
 	monitorRunMu.Lock()
 	if monitorRunning[row.ID] {
@@ -492,66 +556,9 @@ func runMonitor(ctx context.Context, row *model.ChannelMonitor) {
 	if err != nil {
 		return
 	}
-	channels, err := model.GetAllChannels(0, 0, true, false)
-	if err != nil {
-		return
-	}
 	models := append([]string{row.PrimaryModel}, parseMonitorModels(row)...)
 	for _, modelName := range models {
-		var channel *model.Channel
-		for _, candidate := range channels {
-			if candidate.Status != common.ChannelStatusEnabled {
-				continue
-			}
-			groupMatch := false
-			for _, group := range strings.Split(candidate.Group, ",") {
-				if strings.TrimSpace(group) == row.Group {
-					groupMatch = true
-					break
-				}
-			}
-			if !groupMatch {
-				continue
-			}
-			modelMatch := candidate.Models == ""
-			if !modelMatch {
-				for _, candidateModel := range candidate.GetModels() {
-					if strings.TrimSpace(candidateModel) == modelName {
-						modelMatch = true
-						break
-					}
-				}
-			}
-			if modelMatch {
-				channel = candidate
-				break
-			}
-		}
-		check := model.ChannelMonitorCheck{MonitorID: row.ID, Model: modelName, CheckedAt: time.Now().Unix(), Status: model.ChannelMonitorStatusFailed, ErrorCode: "no_channel"}
-		if channel == nil {
-			check.ErrorBrief = "no available channel"
-			if err := model.DB.Create(&check).Error; err != nil {
-				common.SysError("channel monitor check write failed: " + err.Error())
-			}
-			continue
-		}
-		started := time.Now()
-		probeCtx, cancel := context.WithTimeout(context.WithValue(ctx, channelMonitorProbeContextKey{}, true), 60*time.Second)
-		result := testChannel(probeCtx, channel, userID, modelName, "", false)
-		timedOut := errors.Is(result.localErr, context.DeadlineExceeded) || errors.Is(probeCtx.Err(), context.DeadlineExceeded)
-		cancel()
-		check.LatencyMS = time.Since(started).Milliseconds()
-		if result.localErr == nil && result.newAPIError == nil {
-			check.Status = model.ChannelMonitorStatusSuccess
-			check.ErrorCode = ""
-		} else if timedOut {
-			check.Status = model.ChannelMonitorStatusTimeout
-			check.ErrorCode = "timeout"
-			check.ErrorBrief = "probe timed out"
-		} else {
-			check.ErrorCode = "probe_failed"
-			check.ErrorBrief = "model request failed"
-		}
+		check := probeChannelMonitorModel(ctx, row.ID, row.Group, modelName, userID, common.RetryTimes, model.GetRandomSatisfiedChannel, testChannel)
 		if err := model.DB.Create(&check).Error; err != nil {
 			common.SysError("channel monitor check write failed: " + err.Error())
 		}
