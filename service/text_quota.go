@@ -152,14 +152,32 @@ func noteQuotaClamp(relayInfo *relaycommon.RelayInfo, clamp *common.QuotaClamp) 
 }
 
 func composeTieredTextQuota(relayInfo *relaycommon.RelayInfo, summary textQuotaSummary, tieredQuota int, tieredResult *billingexpr.TieredResult) int {
+	if tieredQuota < 0 {
+		common.SysError("tiered settlement quota was negative; clamping to zero")
+		tieredQuota = 0
+	}
+	if summary.ToolCallSurchargeQuota.IsNegative() {
+		common.SysError("tool surcharge quota was negative; clamping to zero")
+		summary.ToolCallSurchargeQuota = decimal.Zero
+	}
 	if summary.ToolCallSurchargeQuota.IsZero() {
 		return tieredQuota
 	}
 
 	if tieredResult != nil {
 		if snap := relayInfo.TieredBillingSnapshot; snap != nil {
-			quota, clamp := common.QuotaFromDecimalChecked(decimal.NewFromFloat(tieredResult.ActualQuotaBeforeGroup).
-				Mul(decimal.NewFromFloat(snap.GroupRatio)).
+			base := tieredResult.ActualQuotaBeforeGroup
+			if base < 0 {
+				common.SysError("tiered base quota was negative; clamping to zero")
+				base = 0
+			}
+			groupRatio := snap.GroupRatio
+			if groupRatio < 0 {
+				common.SysError("negative group ratio during tiered settlement; clamping to zero")
+				groupRatio = 0
+			}
+			quota, clamp := common.QuotaFromDecimalChecked(decimal.NewFromFloat(base).
+				Mul(decimal.NewFromFloat(groupRatio)).
 				Add(summary.ToolCallSurchargeQuota))
 			noteQuotaClamp(relayInfo, clamp)
 			return quota
@@ -202,17 +220,28 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 			TotalTokens:      relayInfo.GetEstimatePromptTokens(),
 		}
 	}
-
-	summary.PromptTokens = usage.PromptTokens
-	summary.CompletionTokens = usage.CompletionTokens
-	summary.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-	summary.CacheTokens = usage.PromptTokensDetails.CachedTokens
-	summary.CacheCreationTokens = usage.PromptTokensDetails.CachedCreationTokens
-	summary.CacheCreationTokens5m = usage.ClaudeCacheCreation5mTokens
-	summary.CacheCreationTokens1h = usage.ClaudeCacheCreation1hTokens
-	summary.ImageTokens = usage.PromptTokensDetails.ImageTokens
-	summary.AudioTokens = usage.PromptTokensDetails.AudioTokens
 	legacyClaudeDerived := isLegacyClaudeDerivedOpenAIUsage(relayInfo, usage)
+
+	summary.PromptTokens = max(0, usage.PromptTokens)
+	summary.CompletionTokens = max(0, usage.CompletionTokens)
+	summary.CacheTokens = max(0, usage.PromptTokensDetails.CachedTokens)
+	summary.CacheCreationTokens = max(0, usage.PromptTokensDetails.CachedCreationTokens)
+	summary.CacheCreationTokens5m = max(0, usage.ClaudeCacheCreation5mTokens)
+	summary.CacheCreationTokens1h = max(0, usage.ClaudeCacheCreation1hTokens)
+	summary.ImageTokens = max(0, usage.PromptTokensDetails.ImageTokens)
+	summary.AudioTokens = max(0, usage.PromptTokensDetails.AudioTokens)
+	// GPT-format prompt_tokens is a total. Keep cache components bounded by it
+	// so contradictory upstream usage cannot create a negative base-input charge.
+	if !summary.IsClaudeUsageSemantic && !legacyClaudeDerived {
+		if summary.CacheTokens > summary.PromptTokens {
+			summary.CacheTokens = summary.PromptTokens
+		}
+		remainingPrompt := summary.PromptTokens - summary.CacheTokens
+		if summary.CacheCreationTokens > remainingPrompt {
+			summary.CacheCreationTokens = remainingPrompt
+		}
+	}
+	summary.TotalTokens = summary.PromptTokens + summary.CompletionTokens
 	isOpenRouterClaudeBilling := relayInfo.ChannelMeta != nil &&
 		relayInfo.ChannelType == constant.ChannelTypeOpenRouter &&
 		summary.IsClaudeUsageSemantic
@@ -240,11 +269,26 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 	dImageRatio := decimal.NewFromFloat(summary.ImageRatio)
 	dModelRatio := decimal.NewFromFloat(summary.ModelRatio)
 	dGroupRatio := decimal.NewFromFloat(summary.GroupRatio)
+	if summary.ModelRatio < 0 || summary.GroupRatio < 0 {
+		common.SysError("negative model/group ratio; failing closed to zero quota")
+		dModelRatio = decimal.Zero
+		dGroupRatio = decimal.Zero
+		summary.ModelRatio = 0
+		summary.GroupRatio = 0
+	}
 	dModelPrice := decimal.NewFromFloat(summary.ModelPrice)
 	dCacheCreationRatio := decimal.NewFromFloat(summary.CacheCreationRatio)
 	dCacheCreationRatio5m := decimal.NewFromFloat(summary.CacheCreationRatio5m)
 	dCacheCreationRatio1h := decimal.NewFromFloat(summary.CacheCreationRatio1h)
 	dQuotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
+	inputMultiplier := relayInfo.PriceData.InputRatioMultiplier
+	if inputMultiplier <= 0 {
+		inputMultiplier = 1
+	}
+	outputMultiplier := relayInfo.PriceData.OutputRatioMultiplier
+	if outputMultiplier <= 0 {
+		outputMultiplier = 1
+	}
 
 	ratio := dModelRatio.Mul(dGroupRatio)
 	summary.ToolCallSurchargeQuota = calculateTextToolCallSurcharge(ctx, relayInfo, &summary)
@@ -258,7 +302,7 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 			if !summary.IsClaudeUsageSemantic && !legacyClaudeDerived {
 				baseTokens = baseTokens.Sub(dCacheTokens)
 			}
-			cachedTokensWithRatio = dCacheTokens.Mul(dCacheRatio)
+			cachedTokensWithRatio = dCacheTokens.Mul(dCacheRatio).Mul(decimal.NewFromFloat(inputMultiplier))
 		}
 
 		var cachedCreationTokensWithRatio decimal.Decimal
@@ -266,15 +310,15 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 		if !dCachedCreationTokens.IsZero() || hasSplitCacheCreationTokens {
 			if !summary.IsClaudeUsageSemantic && !legacyClaudeDerived {
 				baseTokens = baseTokens.Sub(dCachedCreationTokens)
-				cachedCreationTokensWithRatio = dCachedCreationTokens.Mul(dCacheCreationRatio)
+				cachedCreationTokensWithRatio = dCachedCreationTokens.Mul(dCacheCreationRatio).Mul(decimal.NewFromFloat(inputMultiplier))
 			} else {
 				remaining := summary.CacheCreationTokens - summary.CacheCreationTokens5m - summary.CacheCreationTokens1h
 				if remaining < 0 {
 					remaining = 0
 				}
-				cachedCreationTokensWithRatio = decimal.NewFromInt(int64(remaining)).Mul(dCacheCreationRatio)
-				cachedCreationTokensWithRatio = cachedCreationTokensWithRatio.Add(decimal.NewFromInt(int64(summary.CacheCreationTokens5m)).Mul(dCacheCreationRatio5m))
-				cachedCreationTokensWithRatio = cachedCreationTokensWithRatio.Add(decimal.NewFromInt(int64(summary.CacheCreationTokens1h)).Mul(dCacheCreationRatio1h))
+				cachedCreationTokensWithRatio = decimal.NewFromInt(int64(remaining)).Mul(dCacheCreationRatio).Mul(decimal.NewFromFloat(inputMultiplier))
+				cachedCreationTokensWithRatio = cachedCreationTokensWithRatio.Add(decimal.NewFromInt(int64(summary.CacheCreationTokens5m)).Mul(dCacheCreationRatio5m).Mul(decimal.NewFromFloat(inputMultiplier)))
+				cachedCreationTokensWithRatio = cachedCreationTokensWithRatio.Add(decimal.NewFromInt(int64(summary.CacheCreationTokens1h)).Mul(dCacheCreationRatio1h).Mul(decimal.NewFromFloat(inputMultiplier)))
 			}
 		}
 
@@ -293,8 +337,8 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 			}
 		}
 
-		promptQuota := baseTokens.Add(cachedTokensWithRatio).Add(imageTokensWithRatio).Add(cachedCreationTokensWithRatio)
-		completionQuota := dCompletionTokens.Mul(dCompletionRatio)
+		promptQuota := baseTokens.Mul(decimal.NewFromFloat(inputMultiplier)).Add(cachedTokensWithRatio).Add(imageTokensWithRatio).Add(cachedCreationTokensWithRatio)
+		completionQuota := dCompletionTokens.Mul(dCompletionRatio).Mul(decimal.NewFromFloat(outputMultiplier))
 		quotaCalculateDecimal := promptQuota.Add(completionQuota).Mul(ratio)
 		quotaCalculateDecimal = quotaCalculateDecimal.Add(summary.ToolCallSurchargeQuota)
 		quotaCalculateDecimal = quotaCalculateDecimal.Add(audioInputQuota)
@@ -305,8 +349,12 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 			}
 		}
 
-		if !ratio.IsZero() && quotaCalculateDecimal.LessThanOrEqual(decimal.Zero) {
+		if ratio.GreaterThan(decimal.Zero) && quotaCalculateDecimal.LessThanOrEqual(decimal.Zero) {
 			quotaCalculateDecimal = decimal.NewFromInt(1)
+		}
+		if quotaCalculateDecimal.IsNegative() {
+			common.SysError("text settlement produced negative quota; clamping to zero")
+			quotaCalculateDecimal = decimal.Zero
 		}
 		quota, clamp := common.QuotaFromDecimalChecked(quotaCalculateDecimal)
 		summary.Quota = quota
@@ -319,6 +367,10 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 			for _, otherRatio := range relayInfo.PriceData.OtherRatios {
 				quotaCalculateDecimal = quotaCalculateDecimal.Mul(decimal.NewFromFloat(otherRatio))
 			}
+		}
+		if quotaCalculateDecimal.IsNegative() {
+			common.SysError("per-call settlement produced negative quota; clamping to zero")
+			quotaCalculateDecimal = decimal.Zero
 		}
 		quota, clamp := common.QuotaFromDecimalChecked(quotaCalculateDecimal)
 		summary.Quota = quota

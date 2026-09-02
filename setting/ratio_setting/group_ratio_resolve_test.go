@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/types"
+	"github.com/stretchr/testify/require"
 )
 
 func TestResolveGroupRatio_MembershipMultiply(t *testing.T) {
@@ -71,6 +72,24 @@ func TestResolveGroupRatio_MembershipMultiply(t *testing.T) {
 	if has || special != -1 || final != 0.05 {
 		t.Fatalf("svip=0 should ignore membership discount: final=%v special=%v has=%v", final, special, has)
 	}
+}
+
+func TestGPTContextModesByGroup(t *testing.T) {
+	original := GPTContextModes2JSONString()
+	t.Cleanup(func() { _ = UpdateGPTContextModesByJSONString(original) })
+	require.NoError(t, UpdateGPTContextModesByJSONString(`{"group-a":"standard","group-b":"gpt_long_context","group-c":"gpt_reject"}`))
+	for group, want := range map[string]string{"group-a": "standard", "group-b": "gpt_long_context", "group-c": "gpt_reject"} {
+		got, ok := GetGPTContextMode(group)
+		require.True(t, ok)
+		require.Equal(t, want, got)
+	}
+	mode, ok := GetGPTContextMode("unknown")
+	require.Equal(t, "standard", mode)
+	require.False(t, ok)
+	before := GPTContextModes2JSONString()
+	require.Error(t, CheckGPTContextModes(`{"group-a":"invalid"}`))
+	require.Error(t, UpdateGPTContextModesByJSONString(`{"group-a":"invalid"}`))
+	require.JSONEq(t, before, GPTContextModes2JSONString())
 }
 
 func TestIsMembershipGroup_HalfConfigFallback(t *testing.T) {

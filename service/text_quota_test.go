@@ -41,6 +41,54 @@ func TestMissingUpstreamUsageAlwaysSkipsTextBilling(t *testing.T) {
 	require.True(t, summary.MissingUpstreamUsage)
 }
 
+func TestCalculateTextQuotaSummaryAppliesGPTLongContextInputAndOutputMultipliers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	relayInfo := &relaycommon.RelayInfo{
+		OriginModelName: "gpt-5.5",
+		PriceData: types.PriceData{
+			ModelRatio: 2, CompletionRatio: 3, CacheRatio: 1, CacheCreationRatio: 4,
+			InputRatioMultiplier: 2, OutputRatioMultiplier: 1.5,
+			GroupRatioInfo: types.GroupRatioInfo{GroupRatio: 1},
+		},
+		StartTime: time.Now(),
+	}
+	usage := &dto.Usage{PromptTokens: 100, CompletionTokens: 30, PromptTokensDetails: dto.InputTokenDetails{
+		CachedTokens: 20, CachedCreationTokens: 10,
+	}}
+
+	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
+	// ((100-20-10)*2 + 20*1*2 + 10*4*2 + 30*3*1.5) * model ratio 2 = 790
+	require.Equal(t, 790, summary.Quota)
+}
+
+func TestCalculateTextQuotaSummarySanitizesInvalidOpenAIUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	relayInfo := &relaycommon.RelayInfo{
+		OriginModelName: "gpt-4.1",
+		PriceData:       types.PriceData{ModelRatio: 2, CompletionRatio: 3, CacheRatio: 0.1, GroupRatioInfo: types.GroupRatioInfo{GroupRatio: 1}},
+		StartTime:       time.Now(),
+	}
+	usage := &dto.Usage{PromptTokens: -10, CompletionTokens: -5, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 100, CachedCreationTokens: 50}}
+	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
+	require.Zero(t, summary.PromptTokens)
+	require.Zero(t, summary.CompletionTokens)
+	require.Zero(t, summary.CacheTokens)
+	require.Zero(t, summary.CacheCreationTokens)
+	require.Zero(t, summary.Quota)
+}
+
+func TestCalculateTextQuotaSummaryBoundsCacheComponentsToPrompt(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	relayInfo := &relaycommon.RelayInfo{OriginModelName: "gpt-4.1", PriceData: types.PriceData{ModelRatio: 1, CompletionRatio: 1, CacheRatio: 0.1, CacheCreationRatio: 2, GroupRatioInfo: types.GroupRatioInfo{GroupRatio: 1}}, StartTime: time.Now()}
+	summary := calculateTextQuotaSummary(ctx, relayInfo, &dto.Usage{PromptTokens: 100, CompletionTokens: 0, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 90, CachedCreationTokens: 50}})
+	require.Equal(t, 90, summary.CacheTokens)
+	require.Equal(t, 10, summary.CacheCreationTokens)
+	require.Equal(t, 29, summary.Quota)
+}
+
 func TestCalculateTextQuotaSummaryUnifiedForClaudeSemantic(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()

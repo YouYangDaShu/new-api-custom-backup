@@ -232,6 +232,11 @@ func UpdateOption(c *gin.Context) {
 			})
 			return
 		}
+	case "group_ratio_setting.gpt_context_modes":
+		if err := ratio_setting.CheckGPTContextModes(option.Value.(string)); err != nil {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
+			return
+		}
 	case "ImageRatio":
 		err = ratio_setting.UpdateImageRatioByJSONString(option.Value.(string))
 		if err != nil {

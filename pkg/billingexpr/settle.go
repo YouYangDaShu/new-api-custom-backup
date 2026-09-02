@@ -1,6 +1,8 @@
 package billingexpr
 
-import "github.com/QuantumNous/new-api/common"
+import (
+	"github.com/QuantumNous/new-api/common"
+)
 
 // quotaConversion converts raw expression output to quota based on the
 // expression version. This is the central dispatch point for future versions
@@ -25,7 +27,16 @@ func ComputeTieredQuotaWithRequest(snap *BillingSnapshot, params TokenParams, re
 	}
 
 	quotaBeforeGroup := quotaConversion(cost, snap)
-	afterGroup, clamp := common.QuotaRoundChecked(quotaBeforeGroup * snap.GroupRatio)
+	if quotaBeforeGroup < 0 {
+		common.SysError("tiered billing produced negative base quota; clamping settlement to zero")
+		quotaBeforeGroup = 0
+	}
+	afterGroupValue := quotaBeforeGroup * snap.GroupRatio
+	if afterGroupValue < 0 {
+		common.SysError("tiered billing produced negative quota; clamping settlement to zero")
+		afterGroupValue = 0
+	}
+	afterGroup, clamp := common.QuotaRoundChecked(afterGroupValue)
 	crossed := trace.MatchedTier != snap.EstimatedTier
 
 	return TieredResult{

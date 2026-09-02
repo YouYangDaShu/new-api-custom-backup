@@ -4,11 +4,11 @@ Encode/decode token.group for multi-group keys (汇流-compatible).
   single: "grok"
   multi:  "@manual:grok,gpt plus 号池,Claude"
   auto:   "auto"  (legacy fixed AutoGroups order)
-  smart:  "@smart:balanced" | "@smart:price"
+  smart:  "@smart:balanced" | "@smart:price" | "@smart:success_rate"
 */
 export type TokenGroupMode = 'auto' | 'manual' | 'single' | 'smart'
 
-export type SmartRouteMode = 'balanced' | 'price'
+export type SmartRouteMode = 'balanced' | 'price' | 'success_rate'
 
 export type ParsedTokenGroup = {
   mode: TokenGroupMode
@@ -33,6 +33,9 @@ export function parseSmartMode(value?: string | null): SmartRouteMode {
   if (!raw.startsWith(SMART_PREFIX)) return 'balanced'
   const mode = raw.slice(SMART_PREFIX.length).trim().toLowerCase()
   if (mode === 'price' || mode === 'cheap' || mode === 'cost') return 'price'
+  if (mode === 'success_rate' || mode === 'success' || mode === 'reliability') {
+    return 'success_rate'
+  }
   return 'balanced'
 }
 
@@ -77,8 +80,7 @@ export function encodeTokenGroupValue(input: {
 }): string {
   if (input.mode === 'auto') return 'auto'
   if (input.mode === 'smart') {
-    // UI only exposes 智能自动; always store balanced
-    return SMART_PREFIX + 'balanced'
+    return SMART_PREFIX + (input.smartMode || 'balanced')
   }
   const seen = new Set<string>()
   const groups: string[] = []

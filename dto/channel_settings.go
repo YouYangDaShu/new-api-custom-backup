@@ -30,6 +30,7 @@ const (
 )
 
 type ChannelOtherSettings struct {
+	GPTContextMode                        GPTContextMode        `json:"gpt_context_mode,omitempty"`
 	AzureResponsesVersion                 string                `json:"azure_responses_version,omitempty"`
 	VertexKeyType                         VertexKeyType         `json:"vertex_key_type,omitempty"` // "json" or "api_key"
 	OpenRouterEnterprise                  *bool                 `json:"openrouter_enterprise,omitempty"`
@@ -49,6 +50,25 @@ type ChannelOtherSettings struct {
 	UpstreamModelUpdateLastRemovedModels  []string              `json:"upstream_model_update_last_removed_models,omitempty"`  // 上次检测到的可删除模型
 	UpstreamModelUpdateIgnoredModels      []string              `json:"upstream_model_update_ignored_models,omitempty"`       // 手动忽略的模型
 	AdvancedCustom                        *AdvancedCustomConfig `json:"advanced_custom,omitempty"`
+}
+
+type GPTContextMode string
+
+const (
+	GPTContextModeStandard    GPTContextMode = "standard"
+	GPTContextModeLongContext GPTContextMode = "gpt_long_context"
+	GPTContextModeReject      GPTContextMode = "gpt_reject"
+)
+
+func (m GPTContextMode) Valid() bool {
+	return m == "" || m == GPTContextModeStandard || m == GPTContextModeLongContext || m == GPTContextModeReject
+}
+
+func (s ChannelOtherSettings) NormalizeGPTContextMode() GPTContextMode {
+	if s.GPTContextMode == "" {
+		return GPTContextModeStandard
+	}
+	return s.GPTContextMode
 }
 
 func (s *ChannelOtherSettings) IsOpenRouterEnterprise() bool {

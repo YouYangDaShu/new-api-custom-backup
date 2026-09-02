@@ -202,6 +202,7 @@ export function ModelMutateDrawer({
       CreateCacheRatio: '',
       'group_ratio_setting.group_special_usable_group': '{}',
       'group_ratio_setting.membership_groups': '{}',
+      'group_ratio_setting.gpt_context_modes': '{}',
       'grok.violation_deduction_enabled': false,
       'grok.violation_deduction_amount': 0,
       RetryTimes: 0,

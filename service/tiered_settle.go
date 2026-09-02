@@ -19,21 +19,30 @@ type TieredResultWrapper = billingexpr.TieredResult
 // report them as text-only. This function normalizes to text-only when
 // sub-categories are separately priced.
 func BuildTieredTokenParams(usage *dto.Usage, isClaudeUsageSemantic bool, usedVars map[string]bool) billingexpr.TokenParams {
-	p := float64(usage.PromptTokens)
-	c := float64(usage.CompletionTokens)
-	cr := float64(usage.PromptTokensDetails.CachedTokens)
-	cc5m := float64(usage.PromptTokensDetails.CachedCreationTokens)
+	p := float64(max(0, usage.PromptTokens))
+	c := float64(max(0, usage.CompletionTokens))
+	cr := float64(max(0, usage.PromptTokensDetails.CachedTokens))
+	cc5m := float64(max(0, usage.PromptTokensDetails.CachedCreationTokens))
 	cc1h := float64(0)
 
 	if usage.UsageSemantic == "anthropic" {
-		cc1h = float64(usage.ClaudeCacheCreation1hTokens)
-		cc5m = float64(usage.ClaudeCacheCreation5mTokens)
+		cc1h = float64(max(0, usage.ClaudeCacheCreation1hTokens))
+		cc5m = float64(max(0, usage.ClaudeCacheCreation5mTokens))
 	}
 
-	img := float64(usage.PromptTokensDetails.ImageTokens)
-	ai := float64(usage.PromptTokensDetails.AudioTokens)
-	imgO := float64(usage.CompletionTokenDetails.ImageTokens)
-	ao := float64(usage.CompletionTokenDetails.AudioTokens)
+	img := float64(max(0, usage.PromptTokensDetails.ImageTokens))
+	ai := float64(max(0, usage.PromptTokensDetails.AudioTokens))
+	imgO := float64(max(0, usage.CompletionTokenDetails.ImageTokens))
+	ao := float64(max(0, usage.CompletionTokenDetails.AudioTokens))
+	if !isClaudeUsageSemantic {
+		if cr > p {
+			cr = p
+		}
+		remaining := p - cr
+		if cc5m > remaining {
+			cc5m = remaining
+		}
+	}
 
 	// len = total input context length for tier condition evaluation.
 	// Non-Claude: prompt_tokens already includes everything.

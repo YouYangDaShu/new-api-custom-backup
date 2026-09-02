@@ -31,7 +31,13 @@ type HistoryRow = {
   reward_status: string
   created_at: number
 }
-type Config = { enabled: boolean; rewards: number[]; history: HistoryRow[] }
+type Config = {
+  enabled: boolean
+  rewards: number[]
+  history: HistoryRow[]
+  total_reward_count: number
+  total_reward_quota: number
+}
 
 function formatYuanFromQuota(quota: number, quotaPerUnit: number) {
   if (
@@ -58,6 +64,8 @@ export function TokenRankingAdminPage() {
     enabled: true,
     rewards: [],
     history: [],
+    total_reward_count: 0,
+    total_reward_quota: 0,
   })
   const [rewardInputs, setRewardInputs] = useState(() =>
     rewardInputsFromApi([])
@@ -114,6 +122,24 @@ export function TokenRankingAdminPage() {
         </p>
       </div>
       {loading && <p>{t('Loading')}</p>}
+      <section className='grid gap-3 sm:grid-cols-2'>
+        <div className='rounded-lg border p-4 text-sm'>
+          <div className='text-muted-foreground'>
+            {t('Settlement batches')}
+          </div>
+          <div className='mt-1 text-xl font-semibold'>
+            {config.total_reward_count}
+          </div>
+        </div>
+        <div className='rounded-lg border p-4 text-sm'>
+          <div className='text-muted-foreground'>
+            {t('Total reward amount')}
+          </div>
+          <div className='mt-1 text-xl font-semibold'>
+            {formatYuanFromQuota(config.total_reward_quota, quotaPerUnit)}
+          </div>
+        </div>
+      </section>
       <section className='flex flex-col gap-5 rounded-lg border p-4'>
         <Field orientation='horizontal' className='rounded-lg border p-3'>
           <FieldContent>

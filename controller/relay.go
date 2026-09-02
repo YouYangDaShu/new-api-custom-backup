@@ -187,6 +187,23 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	// Start lifecycle log once we know model/stream/group.
 	model.StartRequestLog(c, relayInfo.OriginModelName, relayInfo.IsStream, relayInfo.UsingGroup)
 	requestLogStarted = true
+	retryParam := &service.RetryParam{
+		Ctx:         c,
+		TokenGroup:  relayInfo.TokenGroup,
+		ModelName:   relayInfo.OriginModelName,
+		RequestPath: c.Request.URL.Path,
+		Retry:       common.GetPointer(0),
+	}
+	// Select the first channel before pricing so channel-specific settings are
+	// available for validation and billing. A rejected request must not preconsume
+	// quota or reach an upstream channel.
+	channel, channelErr := getChannel(c, relayInfo, retryParam)
+	if channelErr != nil {
+		newAPIError = channelErr
+		return
+	}
+	c.Set("preselected_channel", channel)
+	relayInfo.InitChannelMeta(c)
 
 	needSensitiveCheck := setting.ShouldCheckPromptSensitive()
 	needCountToken := constant.CountToken
@@ -217,7 +234,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	priceData, err := helper.ModelPriceHelper(c, relayInfo, tokens, meta)
 	if err != nil {
-		newAPIError = types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithStatusCode(http.StatusBadRequest))
+		if apiErr, ok := err.(*types.NewAPIError); ok {
+			newAPIError = apiErr
+		} else {
+			newAPIError = types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithStatusCode(http.StatusBadRequest))
+		}
 		return
 	}
 
@@ -243,13 +264,6 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 	}()
 
-	retryParam := &service.RetryParam{
-		Ctx:         c,
-		TokenGroup:  relayInfo.TokenGroup,
-		ModelName:   relayInfo.OriginModelName,
-		RequestPath: c.Request.URL.Path,
-		Retry:       common.GetPointer(0),
-	}
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
 
@@ -261,6 +275,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			newAPIError = channelErr
 			break
 		}
+		// getChannel may have switched groups/channels on retry; refresh the
+		// relay metadata before any handler or billing/response logic observes it.
+		relayInfo.InitChannelMeta(c)
 
 		addUsedChannel(c, channel.Id)
 		bodyStorage, bodyErr := common.GetBodyStorage(c)
@@ -356,6 +373,12 @@ func fastTokenCountMetaForPricing(request dto.Request) *types.TokenCountMeta {
 }
 
 func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service.RetryParam) (*model.Channel, *types.NewAPIError) {
+	if selected, exists := c.Get("preselected_channel"); exists {
+		c.Set("preselected_channel", nil)
+		if channel, ok := selected.(*model.Channel); ok && channel != nil {
+			return channel, nil
+		}
+	}
 	if info.ChannelMeta == nil {
 		autoBan := c.GetBool("auto_ban")
 		autoBanInt := 1
@@ -394,27 +417,27 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
 		return false
 	}
-	if types.IsChannelError(openaiErr) {
-		return true
-	}
 	if types.IsSkipRetryError(openaiErr) {
 		return false
 	}
-	if retryTimes <= 0 {
+	code := openaiErr.StatusCode
+	if operation_setting.IsAlwaysSkipRetryCode(openaiErr.GetErrorCode()) || operation_setting.IsAlwaysSkipRetryStatusCode(code) {
 		return false
 	}
 	if _, ok := c.Get("specific_channel_id"); ok {
 		return false
 	}
-	code := openaiErr.StatusCode
+	if retryTimes <= 0 {
+		return false
+	}
+	if types.IsChannelError(openaiErr) {
+		return true
+	}
 	if code >= 200 && code < 300 {
 		return false
 	}
 	if code < 100 || code > 599 {
 		return true
-	}
-	if operation_setting.IsAlwaysSkipRetryCode(openaiErr.GetErrorCode()) {
-		return false
 	}
 	return operation_setting.ShouldRetryByStatusCode(code)
 }

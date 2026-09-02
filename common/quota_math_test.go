@@ -17,6 +17,9 @@ const overflowingProduct = 2000 * 1.8446744073686647e19
 // instead of wrapping into a negative charge (credit). QuotaFromFloat
 // truncates toward zero.
 func TestQuotaFromFloat(t *testing.T) {
+	// Ratio units are raw quota units: with QuotaPerUnit=500000,
+	// 1000 tokens at ratio 1 remains 1000 raw quota (not a dollar amount).
+	assert.Equal(t, 1000, QuotaFromFloat(1000*1))
 	assert.Equal(t, 42, QuotaFromFloat(42.4))
 	assert.Equal(t, 42, QuotaFromFloat(42.9))
 	assert.Equal(t, -42, QuotaFromFloat(-42.9))

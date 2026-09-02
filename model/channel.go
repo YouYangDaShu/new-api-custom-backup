@@ -952,6 +952,9 @@ func (channel *Channel) ValidateSettings() error {
 			return err
 		}
 	}
+	if !channelOtherSettings.GPTContextMode.Valid() {
+		return fmt.Errorf("invalid gpt_context_mode: %q", channelOtherSettings.GPTContextMode)
+	}
 	if channel.Type == constant.ChannelTypeAdvancedCustom {
 		if channelOtherSettings.AdvancedCustom == nil {
 			return fmt.Errorf("advanced_custom is required")

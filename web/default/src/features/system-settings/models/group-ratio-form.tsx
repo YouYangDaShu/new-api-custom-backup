@@ -71,6 +71,7 @@ type GroupFormValues = {
   DefaultUseAutoGroup: boolean
   GroupSpecialUsableGroup: string
   MembershipGroups: string
+  GPTContextModes: string
 }
 
 type GroupRatioFormProps = {
@@ -180,6 +181,7 @@ export const GroupRatioForm = memo(function GroupRatioForm({
               autoGroups={form.watch('AutoGroups')}
               groupSpecialUsableGroup={form.watch('GroupSpecialUsableGroup')}
               membershipGroups={form.watch('MembershipGroups') || '{}'}
+              gptContextModes={form.watch('GPTContextModes') || '{}'}
               onChange={(field, value) =>
                 handleFieldChange(field as keyof GroupFormValues, value)
               }

@@ -62,6 +62,13 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 	modelPrice, usePrice := ratio_setting.GetModelPrice(info.OriginModelName, false)
 
 	groupRatioInfo := HandleGroupRatio(c, info)
+	if groupRatioInfo.GroupRatio < 0 {
+		common.SysError("negative group ratio; clamping pre-consume to zero")
+		groupRatioInfo.GroupRatio = 0
+	}
+	if gptErr := ValidateGPTContextRequest(info.OriginModelName, info.RelayMode, promptTokens, info.UsingGroup); gptErr != nil {
+		return types.PriceData{}, gptErr
+	}
 
 	// Check if this model uses tiered_expr billing
 	if billing_setting.GetBillingMode(info.OriginModelName) == billing_setting.BillingModeTieredExpr {
@@ -97,6 +104,10 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 			}
 		}
 		completionRatio = ratio_setting.GetCompletionRatio(info.OriginModelName)
+		if modelRatio < 0 {
+			common.SysError("negative model ratio; clamping pre-consume to zero")
+			modelRatio = 0
+		}
 		cacheRatio, _ = ratio_setting.GetCacheRatio(info.OriginModelName)
 		cacheCreationRatio, _ = ratio_setting.GetCreateCacheRatio(info.OriginModelName)
 		cacheCreationRatio5m = cacheCreationRatio
@@ -106,12 +117,20 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		audioRatio = ratio_setting.GetAudioRatio(info.OriginModelName)
 		audioCompletionRatio = ratio_setting.GetAudioCompletionRatio(info.OriginModelName)
 		ratio := modelRatio * groupRatioInfo.GroupRatio
-		preConsumedQuota = common.QuotaFromFloat(float64(preConsumedTokens) * ratio)
+		var clamp *common.QuotaClamp
+		preConsumedQuota, clamp = common.QuotaFromFloatChecked(float64(preConsumedTokens) * ratio)
+		if clamp != nil && info.QuotaClamp == nil {
+			info.QuotaClamp = clamp
+		}
 	} else {
 		if meta.ImagePriceRatio != 0 {
 			modelPrice = modelPrice * meta.ImagePriceRatio
 		}
-		preConsumedQuota = common.QuotaFromFloat(modelPrice * common.QuotaPerUnit * groupRatioInfo.GroupRatio)
+		var clamp *common.QuotaClamp
+		preConsumedQuota, clamp = common.QuotaFromFloatChecked(modelPrice * common.QuotaPerUnit * groupRatioInfo.GroupRatio)
+		if clamp != nil && info.QuotaClamp == nil {
+			info.QuotaClamp = clamp
+		}
 	}
 
 	// check if free model pre-consume is disabled
@@ -148,6 +167,34 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		CacheCreation5mRatio: cacheCreationRatio5m,
 		CacheCreation1hRatio: cacheCreationRatio1h,
 		QuotaToPreConsume:    preConsumedQuota,
+	}
+	if gptErr := ApplyGPTContextPricing(&priceData, info.OriginModelName, info.RelayMode, promptTokens, info.UsingGroup); gptErr != nil {
+		return types.PriceData{}, gptErr
+	}
+	// Long-context pre-consume must use the same per-component ratios as
+	// settlement. At this point no upstream cache breakdown exists, so the
+	// estimated prompt is ordinary input and estimated max_tokens is output.
+	if !usePrice && priceData.InputRatioMultiplier > 0 && priceData.ModelRatio != 0 &&
+		priceData.GroupRatioInfo.GroupRatio != 0 {
+		// Preserve the historical safety floor before adding the estimated
+		// output: long-context must never pre-consume less than the old path.
+		preConsumedTokens := common.Max(promptTokens, common.PreConsumedQuota)
+		estimatedCompletionTokens := 0
+		if meta != nil && meta.MaxTokens > 0 {
+			estimatedCompletionTokens = meta.MaxTokens
+		}
+		preConsumeBeforeGroup := float64(preConsumedTokens)*priceData.ModelRatio*priceData.InputRatioMultiplier +
+			float64(estimatedCompletionTokens)*priceData.CompletionRatio*priceData.OutputRatioMultiplier
+		preConsumeBeforeGroup *= priceData.GroupRatioInfo.GroupRatio
+		if preConsumeBeforeGroup < 0 {
+			common.SysError("long-context pre-consume produced negative quota; clamping to zero")
+			preConsumeBeforeGroup = 0
+		}
+		quota, clamp := common.QuotaRoundChecked(preConsumeBeforeGroup)
+		priceData.QuotaToPreConsume = quota
+		if clamp != nil && info.QuotaClamp == nil {
+			info.QuotaClamp = clamp
+		}
 	}
 
 	if common.DebugEnabled {
@@ -237,9 +284,13 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, promptT
 	if !ok {
 		return types.PriceData{}, fmt.Errorf("model %s is configured as tiered_expr but has no billing expression", info.OriginModelName)
 	}
-
+	if gptErr := ValidateGPTLongContextBillingExpr(info.OriginModelName, info.RelayMode, promptTokens, exprStr, info.UsingGroup); gptErr != nil {
+		return types.PriceData{}, gptErr
+	}
+	estimatedPromptTokens := common.Max(promptTokens, common.PreConsumedQuota)
+	estimatedPromptLen := promptTokens
 	estimatedCompletionTokens := 0
-	if meta.MaxTokens != 0 {
+	if meta != nil && meta.MaxTokens != 0 {
 		estimatedCompletionTokens = meta.MaxTokens
 	}
 
@@ -249,17 +300,28 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, promptT
 	}
 
 	rawCost, trace, err := billingexpr.RunExprWithRequest(exprStr, billingexpr.TokenParams{
-		P:   float64(promptTokens),
+		P:   float64(estimatedPromptTokens),
 		C:   float64(estimatedCompletionTokens),
-		Len: float64(promptTokens),
+		Len: float64(estimatedPromptLen),
 	}, requestInput)
 	if err != nil {
 		return types.PriceData{}, fmt.Errorf("model %s tiered expr run failed: %w", info.OriginModelName, err)
 	}
 
+	if rawCost < 0 {
+		common.SysError("tiered billing expression produced negative pre-consume cost; clamping to zero")
+		rawCost = 0
+	}
+	if groupRatioInfo.GroupRatio < 0 {
+		common.SysError("negative group ratio for tiered pre-consume; clamping to zero")
+		groupRatioInfo.GroupRatio = 0
+	}
 	// Expression coefficients are $/1M tokens prices; convert to quota the same way per-call billing does.
 	quotaBeforeGroup := rawCost / 1_000_000 * common.QuotaPerUnit
-	preConsumedQuota := billingexpr.QuotaRound(quotaBeforeGroup * groupRatioInfo.GroupRatio)
+	preConsumedQuota, clamp := common.QuotaRoundChecked(quotaBeforeGroup * groupRatioInfo.GroupRatio)
+	if clamp != nil && info.QuotaClamp == nil {
+		info.QuotaClamp = clamp
+	}
 
 	freeModel := false
 	if !operation_setting.GetQuotaSetting().EnableFreeModelPreConsume {
@@ -276,7 +338,8 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, promptT
 		ExprString:                exprStr,
 		ExprHash:                  exprHash,
 		GroupRatio:                groupRatioInfo.GroupRatio,
-		EstimatedPromptTokens:     promptTokens,
+		EstimatedPromptTokens:     estimatedPromptTokens,
+		EstimatedPromptLen:        estimatedPromptLen,
 		EstimatedCompletionTokens: estimatedCompletionTokens,
 		EstimatedQuotaBeforeGroup: quotaBeforeGroup,
 		EstimatedQuotaAfterGroup:  preConsumedQuota,

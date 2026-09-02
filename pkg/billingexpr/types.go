@@ -39,12 +39,16 @@ type TraceResult struct {
 // BillingSnapshot captures the billing rule state frozen at pre-consume time.
 // It is fully serializable and contains no compiled program pointers.
 type BillingSnapshot struct {
-	BillingMode               string  `json:"billing_mode"`
-	ModelName                 string  `json:"model_name"`
-	ExprString                string  `json:"expr_string"`
-	ExprHash                  string  `json:"expr_hash"`
-	GroupRatio                float64 `json:"group_ratio"`
-	EstimatedPromptTokens     int     `json:"estimated_prompt_tokens"`
+	BillingMode           string  `json:"billing_mode"`
+	ModelName             string  `json:"model_name"`
+	ExprString            string  `json:"expr_string"`
+	ExprHash              string  `json:"expr_hash"`
+	GroupRatio            float64 `json:"group_ratio"`
+	EstimatedPromptTokens int     `json:"estimated_prompt_tokens"`
+	// EstimatedPromptLen preserves the real request prompt length used for
+	// tier selection; EstimatedPromptTokens is the safety-floor estimate used
+	// as expression P during pre-consume.
+	EstimatedPromptLen        int     `json:"estimated_prompt_len"`
 	EstimatedCompletionTokens int     `json:"estimated_completion_tokens"`
 	EstimatedQuotaBeforeGroup float64 `json:"estimated_quota_before_group"`
 	EstimatedQuotaAfterGroup  int     `json:"estimated_quota_after_group"`

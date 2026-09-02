@@ -17,7 +17,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { type ColumnDef } from '@tanstack/react-table'
-import { CircleAlert, GitBranch, Sparkles, KeyRound } from 'lucide-react'
+import {
+  AlertTriangle,
+  CircleAlert,
+  GitBranch,
+  Sparkles,
+  KeyRound,
+} from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -43,7 +49,10 @@ import {
 } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-import { LOG_TYPE_ALL_VALUE } from '../../constants'
+import {
+  CONTEXT_TOKEN_WARNING_THRESHOLD,
+  LOG_TYPE_ALL_VALUE,
+} from '../../constants'
 import type { UsageLog } from '../../data/schema'
 import {
   formatModelName,
@@ -61,6 +70,7 @@ import {
   getLogTypeConfig,
   isPerCallBilling,
 } from '../../lib/utils'
+import { isGptLongContextWarningModel } from '../../lib/context-warning'
 import type { LogOtherData } from '../../types'
 import { DetailsDialog } from '../dialogs/details-dialog'
 import { ModelBadge } from '../model-badge'
@@ -772,13 +782,37 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
         const cacheWriteTokens = hasSplitCache
           ? cacheWrite5m + cacheWrite1h
           : other?.cache_creation_tokens || 0
+        const isContextWarning =
+          promptTokens > CONTEXT_TOKEN_WARNING_THRESHOLD &&
+          isGptLongContextWarningModel(log.model_name)
+        const contextWarningLabel = isContextWarning
+          ? `${promptTokens.toLocaleString()} / ${completionTokens.toLocaleString()}. ${t('Context over 272K')}`
+          : undefined
 
         return (
           <div className='flex flex-col gap-0.5'>
-            <span className='font-mono text-xs font-medium tabular-nums'>
+            <div
+              className={cn(
+                'flex items-center gap-1 font-mono text-xs font-medium tabular-nums',
+                isContextWarning && 'text-red-600 dark:text-red-400'
+              )}
+              title={contextWarningLabel}
+              aria-label={contextWarningLabel}
+            >
+              {isContextWarning && (
+                <AlertTriangle
+                  className='size-3.5 shrink-0 text-amber-600 dark:text-amber-400'
+                  aria-hidden='true'
+                />
+              )}
               {promptTokens.toLocaleString()} /{' '}
               {completionTokens.toLocaleString()}
-            </span>
+              {isContextWarning && (
+                <span className='font-sans text-[10px] font-semibold tracking-tight text-amber-700 dark:text-amber-300'>
+                  {t('Context over 272K')}
+                </span>
+              )}
+            </div>
             {(cacheReadTokens > 0 || cacheWriteTokens > 0) && (
               <div className='flex items-center gap-1 text-[11px]'>
                 {cacheReadTokens > 0 && (

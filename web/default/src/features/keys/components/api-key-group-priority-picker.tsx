@@ -29,6 +29,7 @@ import {
 import {
   encodeTokenGroupValue,
   parseTokenGroupValue,
+  type SmartRouteMode,
 } from '../lib/token-group-encoding'
 import type { ApiKeyGroupOption } from './api-key-group-combobox'
 
@@ -67,15 +68,15 @@ export function ApiKeyGroupPriorityPicker({
   const isSmart = parsed.mode === 'smart'
   // legacy auto / @smart:price 也当智能面板
   const isSmartLike = isAuto || isSmart
-  const selected = isSmartLike ? [] : parsed.groups
+  const selected = useMemo(
+    () => (isSmartLike ? [] : parsed.groups),
+    [isSmartLike, parsed.groups]
+  )
 
   const realOptions = useMemo(
     () =>
       options.filter(
-        (o) =>
-          o.value &&
-          o.value !== 'auto' &&
-          !o.value.startsWith('@smart:')
+        (o) => o.value && o.value !== 'auto' && !o.value.startsWith('@smart:')
       ),
     [options]
   )
@@ -134,7 +135,17 @@ export function ApiKeyGroupPriorityPicker({
 
   const switchToSmart = () => {
     onValueChange(
-      encodeTokenGroupValue({ mode: 'smart', groups: [], smartMode: 'balanced' })
+      encodeTokenGroupValue({
+        mode: 'smart',
+        groups: [],
+        smartMode: 'balanced',
+      })
+    )
+  }
+
+  const setSmartMode = (smartMode: SmartRouteMode) => {
+    onValueChange(
+      encodeTokenGroupValue({ mode: 'smart', groups: [], smartMode })
     )
   }
 
@@ -143,7 +154,7 @@ export function ApiKeyGroupPriorityPicker({
       <div className='flex flex-wrap items-center justify-between gap-2'>
         <div className='text-sm font-medium'>
           {t('Token Group')}
-          <span className='ml-1 text-destructive'>*</span>
+          <span className='text-destructive ml-1'>*</span>
         </div>
         {(hasSmartOption || hasAutoOption) && (
           <Button
@@ -162,23 +173,45 @@ export function ApiKeyGroupPriorityPicker({
 
       <div className='rounded-lg border p-3 sm:p-4'>
         {isSmartLike ? (
-          <div className='space-y-2 text-sm text-muted-foreground'>
+          <div className='text-muted-foreground space-y-2 text-sm'>
             <p className='text-foreground font-medium'>{t('Smart auto')}</p>
             <p>
               {t(
                 'Smart routing picks a model group for each request. Only groups that actually have the model are used.'
               )}
             </p>
-            <p>
-              {t(
-                'How it chooses: must support the model first, then balance price, speed, and success rate.'
-              )}
-            </p>
-            <Badge variant='outline'>@smart:balanced</Badge>
+            <div className='flex flex-wrap gap-2'>
+              {(
+                [
+                  ['balanced', t('Smart auto')],
+                  ['price', t('Price first')],
+                  ['success_rate', t('Success rate')],
+                ] as const
+              ).map(([mode, label]) => (
+                <Button
+                  key={mode}
+                  type='button'
+                  size='sm'
+                  variant={
+                    parsed.smartMode === mode ||
+                    (mode === 'balanced' && !parsed.smartMode)
+                      ? 'default'
+                      : 'outline'
+                  }
+                  disabled={disabled}
+                  onClick={() => setSmartMode(mode)}
+                >
+                  {label}
+                </Button>
+              ))}
+            </div>
+            <Badge variant='outline'>
+              @smart:{parsed.smartMode || 'balanced'}
+            </Badge>
           </div>
         ) : (
           <div className='space-y-3'>
-            <div className='flex flex-wrap items-center gap-2 text-xs text-muted-foreground'>
+            <div className='text-muted-foreground flex flex-wrap items-center gap-2 text-xs'>
               <span>
                 {t(
                   'Select groups; multiple selections are allowed and order determines priority'
@@ -235,7 +268,7 @@ export function ApiKeyGroupPriorityPicker({
                                 {opt.label}
                               </div>
                               {opt.desc && opt.desc !== opt.label && (
-                                <div className='truncate text-xs text-muted-foreground'>
+                                <div className='text-muted-foreground truncate text-xs'>
                                   {opt.desc}
                                 </div>
                               )}
@@ -262,7 +295,7 @@ export function ApiKeyGroupPriorityPicker({
                 {selected.map((g, idx) => (
                   <li
                     key={g}
-                    className='flex items-center gap-2 rounded-md border bg-muted/20 px-2 py-1.5'
+                    className='bg-muted/20 flex items-center gap-2 rounded-md border px-2 py-1.5'
                   >
                     <Badge variant='secondary' className='shrink-0 text-[10px]'>
                       {idx + 1}
@@ -270,7 +303,7 @@ export function ApiKeyGroupPriorityPicker({
                     <div className='min-w-0 flex-1'>
                       <div className='truncate text-sm font-medium'>{g}</div>
                       {formatRatio(ratioMap.get(g)) && (
-                        <div className='text-[10px] text-muted-foreground'>
+                        <div className='text-muted-foreground text-[10px]'>
                           {formatRatio(ratioMap.get(g))}
                         </div>
                       )}
@@ -325,7 +358,7 @@ export function ApiKeyGroupPriorityPicker({
             )}
 
             {selected.length === 0 && (
-              <p className='text-xs text-muted-foreground'>
+              <p className='text-muted-foreground text-xs'>
                 {t(
                   'In manual mode, select at least one group or this token cannot be used.'
                 )}

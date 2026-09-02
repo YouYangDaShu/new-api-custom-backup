@@ -66,7 +66,15 @@ func GetTokenRankingAdmin(c *gin.Context) {
 		return
 	}
 	history := adminRankingHistory(ledgers)
-	common.ApiSuccess(c, gin.H{"enabled": enabled, "rewards": rewards, "history": history})
+	var stats struct {
+		SettlementBatchCount int64
+		TotalQuota           int64
+	}
+	if err := model.DB.Model(&model.WeeklyRankingReward{}).Select("COUNT(DISTINCT week_start) AS settlement_batch_count, COALESCE(SUM(reward_quota), 0) AS total_quota").Scan(&stats).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"enabled": enabled, "rewards": rewards, "history": history, "total_reward_count": stats.SettlementBatchCount, "total_reward_quota": stats.TotalQuota})
 }
 
 func UpdateTokenRankingAdmin(c *gin.Context) {
