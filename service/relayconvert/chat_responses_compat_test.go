@@ -37,6 +37,21 @@ func TestChatCompletionsRequestToResponsesRequestInstructionsAndTools(t *testing
 	assert.Equal(t, "function_call_output", gjson.GetBytes(got.Input, "3.type").String())
 }
 
+func TestResponsesStreamStateDistinguishesExplicitZeroUsageFromMissing(t *testing.T) {
+	state := NewResponsesToChatStreamState("gpt-test", false)
+	event := &dto.ResponsesStreamResponse{
+		Type: "response.completed",
+		Response: &dto.OpenAIResponsesResponse{
+			Usage: &dto.Usage{},
+		},
+	}
+	_, err := ResponsesStreamEventToChatChunks(event, state)
+	require.NoError(t, err)
+	require.True(t, state.UsagePresent)
+	require.NotNil(t, state.Usage)
+	assert.Zero(t, state.Usage.TotalTokens)
+}
+
 func TestChatCompletionsRequestToResponsesRequestRejectsMultipleChoices(t *testing.T) {
 	_, err := ChatCompletionsRequestToResponsesRequest(&dto.GeneralOpenAIRequest{
 		Model: "gpt-test",

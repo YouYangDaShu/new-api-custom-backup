@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -29,8 +30,12 @@ const (
 	// unconditional wg.Wait() in cleanup can always finish. Without it, a slow
 	// but connected client (full TCP buffer, no server WriteTimeout) could hang
 	// the handler forever.
-	streamWriteTimeout = 30 * time.Second
+	streamWriteTimeout   = 30 * time.Second
+	streamDrainTimeout   = 1 * time.Second
+	streamDrainMaxEvents = 2048
 )
+
+var streamDrainSem = make(chan struct{}, 32)
 
 func getScannerBufferSize() int {
 	if constant.StreamScannerMaxBufferMB > 0 {
@@ -77,6 +82,8 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		wg          sync.WaitGroup // 用于等待所有 goroutine 退出
 		cleanupOnce sync.Once
 		stopOnce    sync.Once
+		scannerDone = make(chan struct{})
+		draining    atomic.Bool
 	)
 
 	stop := func() {
@@ -208,6 +215,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	common.RelayCtxGo(ctx, func() {
 		defer func() {
 			close(dataChan)
+			close(scannerDone)
 			if r := recover(); r != nil {
 				logger.LogError(c, fmt.Sprintf("scanner goroutine panic: %v", r))
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonPanic, fmt.Errorf("scanner panic: %v", r))
@@ -217,14 +225,22 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			wg.Done()
 		}()
 
+		events := 0
 		for scanner.Scan() {
+			events++
+			if draining.Load() && events > streamDrainMaxEvents {
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, fmt.Errorf("stream drain event limit reached"))
+				return
+			}
 			// 检查是否需要停止
-			select {
-			case <-stopChan:
-				return
-			case <-ctx.Done():
-				return
-			default:
+			if !draining.Load() {
+				select {
+				case <-stopChan:
+					return
+				case <-ctx.Done():
+					return
+				default:
+				}
 			}
 
 			ticker.Reset(streamingTimeout)
@@ -246,12 +262,19 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				info.SetFirstResponseTime()
 				info.ReceivedResponseCount++
 
-				select {
-				case dataChan <- data:
-				case <-ctx.Done():
-					return
-				case <-stopChan:
-					return
+				if draining.Load() {
+					select {
+					case dataChan <- data:
+					default:
+					}
+				} else {
+					select {
+					case dataChan <- data:
+					case <-ctx.Done():
+						return
+					case <-stopChan:
+						return
+					}
 				}
 			} else {
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
@@ -276,9 +299,26 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	case <-stopChan:
 		// EndReason already set by the goroutine that triggered stopChan
 	case <-c.Request.Context().Done():
-		// 客户端断开：立即 cleanup 关闭上游 resp.Body，解除 scanner 阻塞并让上游停止生成，
-		// 避免为已放弃的请求继续消费上游 token。
 		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, c.Request.Context().Err())
+		draining.Store(true)
+		select {
+		case streamDrainSem <- struct{}{}:
+			defer func() { <-streamDrainSem }()
+			t := time.NewTimer(streamDrainTimeout)
+			select {
+			case <-scannerDone:
+			case <-t.C:
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, fmt.Errorf("stream drain timeout"))
+			}
+			if !t.Stop() {
+				select {
+				case <-t.C:
+				default:
+				}
+			}
+		default:
+			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, fmt.Errorf("stream drain concurrency limit reached"))
+		}
 	}
 
 	cleanup()

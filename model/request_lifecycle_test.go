@@ -93,6 +93,28 @@ func TestRequestLifecycle_StartThenFinalizeSuccess(t *testing.T) {
 	assert.Equal(t, "completed", other["request_status"])
 }
 
+func TestRequestLifecycle_PendingBillingRemainsPendingOnZeroQuotaFinalize(t *testing.T) {
+	if LOG_DB == nil {
+		t.Skip("LOG_DB not initialized")
+	}
+	require.NoError(t, LOG_DB.AutoMigrate(&Log{}))
+	const reqID = "req-life-pending-zero"
+	LOG_DB.Where("request_id = ?", reqID).Delete(&Log{})
+	t.Cleanup(func() { LOG_DB.Where("request_id = ?", reqID).Delete(&Log{}) })
+	c := newTestGinContext(reqID, 43)
+	StartRequestLog(c, "gpt-test", true, "default")
+	RecordConsumeLog(c, 43, RecordConsumeLogParams{
+		ModelName: "gpt-test", TokenId: 7, IsStream: true, Group: "default", Other: map[string]interface{}{
+			"billing_status": "pending", "usage_source": "missing", "status_code": 200,
+		},
+	})
+	var log Log
+	require.NoError(t, LOG_DB.Where("request_id = ?", reqID).First(&log).Error)
+	other, err := common.StrToMap(log.Other)
+	require.NoError(t, err)
+	assert.Equal(t, "pending", other["billing_status"])
+}
+
 func TestRequestLifecycle_ClosesOnlyStalePendingRows(t *testing.T) {
 	if LOG_DB == nil {
 		t.Skip("LOG_DB not initialized")

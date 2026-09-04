@@ -355,6 +355,9 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 
 	adminRejectReason := common.GetContextKeyString(ctx, constant.ContextKeyAdminRejectReason)
 	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
+	if !summary.MissingUpstreamUsage && relayInfo != nil && !relayInfo.BillingFinalized.CompareAndSwap(false, true) {
+		return
+	}
 
 	var tieredResult *billingexpr.TieredResult
 	tieredBillingApplied := false
@@ -371,6 +374,7 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		}
 	}
 	if summary.MissingUpstreamUsage {
+		common.SetContextKey(ctx, constant.ContextKeyBillingPending, true)
 		// A tier expression may have calculated a non-zero quota from request-side
 		// data. Missing upstream usage is always a no-charge settlement.
 		summary.Quota = 0
@@ -400,8 +404,10 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		model.UpdateChannelUsedQuota(relayInfo.ChannelId, summary.Quota)
 	}
 
-	if err := SettleBilling(ctx, relayInfo, summary.Quota); err != nil {
-		logger.LogError(ctx, "error settling billing: "+err.Error())
+	if !summary.MissingUpstreamUsage {
+		if err := SettleBilling(ctx, relayInfo, summary.Quota); err != nil {
+			logger.LogError(ctx, "error settling billing: "+err.Error())
+		}
 	}
 
 	logModel := summary.ModelName
@@ -429,7 +435,7 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		other = GenerateTextOtherInfo(ctx, relayInfo, summary.ModelRatio, summary.GroupRatio, summary.CompletionRatio, summary.CacheTokens, summary.CacheRatio, summary.ModelPrice, relayInfo.PriceData.GroupRatioInfo.GroupSpecialRatio)
 	}
 	if summary.MissingUpstreamUsage {
-		other["billing_status"] = "no_charge"
+		other["billing_status"] = "pending"
 		other["usage_source"] = "missing"
 	}
 	if adminRejectReason != "" {

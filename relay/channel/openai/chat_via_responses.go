@@ -263,7 +263,7 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	}
 
 	usage := state.Usage
-	if usage == nil || (usage.PromptTokens == 0 && usage.CompletionTokens == 0) {
+	if !state.UsagePresent {
 		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 		usage = &dto.Usage{}
 		state.Usage = usage

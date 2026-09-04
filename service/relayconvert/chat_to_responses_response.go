@@ -134,10 +134,11 @@ type ChatToResponsesStreamEvent struct {
 }
 
 type ChatToResponsesStreamState struct {
-	ID      string
-	Model   string
-	Created int64
-	Usage   *dto.Usage
+	ID           string
+	Model        string
+	Created      int64
+	Usage        *dto.Usage
+	UsagePresent bool
 
 	status            string
 	incompleteDetails *dto.IncompleteDetails
@@ -197,6 +198,7 @@ func ChatCompletionsStreamChunkToResponsesEvents(chunk *dto.ChatCompletionsStrea
 		state.Created = chunk.Created
 	}
 	if chunk.Usage != nil {
+		state.UsagePresent = true
 		state.Usage = UsageFromChatUsage(chunk.Usage)
 	}
 

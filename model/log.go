@@ -553,7 +553,7 @@ func FinalizeRequestLog(c *gin.Context, params FinalizeRequestLogParams) bool {
 		otherMap["request_status"] = "completed"
 		if params.Quota > 0 {
 			otherMap["billing_status"] = "charged"
-		} else if v, ok := otherMap["billing_status"]; !ok || v == "pending" {
+		} else if _, ok := otherMap["billing_status"]; !ok {
 			otherMap["billing_status"] = "no_charge"
 		}
 	} else {

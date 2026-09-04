@@ -57,6 +57,7 @@ const (
 	// ContextKeyMissingUpstreamUsage marks relay responses that lack a usable
 	// upstream usage payload. They must be recorded and settled as no-charge.
 	ContextKeyMissingUpstreamUsage ContextKey = "missing_upstream_usage"
+	ContextKeyBillingPending       ContextKey = "billing_pending"
 
 	ContextKeySystemPromptOverride ContextKey = "system_prompt_override"
 

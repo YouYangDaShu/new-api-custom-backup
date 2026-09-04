@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -86,6 +87,7 @@ type TokenCountMeta struct {
 }
 
 type RelayInfo struct {
+	BillingFinalized  atomic.Bool
 	TokenId           int
 	TokenKey          string
 	TokenGroup        string

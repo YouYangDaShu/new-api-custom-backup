@@ -127,6 +127,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		// Success path normally finalizes via RecordConsumeLog. If consume logging
 		// is disabled or skipped, close the processing row here so it is not stuck.
+		billingStatus := "no_charge"
+		if common.GetContextKeyBool(c, constant.ContextKeyBillingPending) {
+			billingStatus = "pending"
+		}
 		model.FinalizeRequestLog(c, model.FinalizeRequestLogParams{
 			Success:        true,
 			StatusCode:     200,
@@ -141,7 +145,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			Other: map[string]interface{}{
 				"status_code":    200,
 				"request_status": "completed",
-				"billing_status": "no_charge",
+				"billing_status": billingStatus,
 			},
 			ForceType: model.LogTypeConsume,
 		})

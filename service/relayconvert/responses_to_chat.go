@@ -218,7 +218,8 @@ type ResponsesToChatStreamState struct {
 	Created      int64
 	IncludeUsage bool
 
-	Usage *dto.Usage
+	Usage        *dto.Usage
+	UsagePresent bool
 
 	sentStart                  bool
 	finalized                  bool
@@ -334,6 +335,7 @@ func (s *ResponsesToChatStreamState) applyResponseMetadata(response *dto.OpenAIR
 		s.Created = int64(response.CreatedAt)
 	}
 	if response.Usage != nil {
+		s.UsagePresent = true
 		s.Usage = UsageFromResponsesUsage(response.Usage)
 	}
 }

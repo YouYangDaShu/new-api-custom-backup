@@ -212,10 +212,8 @@ func TestStreamScannerHandler_DataWithExtraSpaces(t *testing.T) {
 }
 
 // TestStreamScannerHandler_ClientCancelAbortsUpstreamAndReturns pins the
-// disconnect contract: when the client goes away, the handler must return
-// promptly (all goroutines joined, so the gin.Context can never leak into a
-// pooled reuse), the upstream body must be closed to stop token generation,
-// and no data received after the disconnect may be processed or written.
+// disconnect contract: when the client goes away, the handler drains the
+// upstream for a bounded interval without writing further downstream data.
 func TestStreamScannerHandler_ClientCancelAbortsUpstreamAndReturns(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -260,21 +258,22 @@ func TestStreamScannerHandler_ClientCancelAbortsUpstreamAndReturns(t *testing.T)
 	}
 
 	cancel()
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := fmt.Fprint(pw, "data: second\n")
+		writeDone <- err
+	}()
 
-	// The handler must return without any further upstream input: cleanup
-	// closes resp.Body, which unblocks the scanner goroutine.
+	// The handler returns after the bounded drain interval.
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("handler did not return after client disconnect")
 	}
 
-	// Upstream read side must be closed so the provider stops generating
-	// (and billing) for a request nobody is listening to.
-	_, err = fmt.Fprint(pw, "data: second\n")
-	require.ErrorIs(t, err, io.ErrClosedPipe, "upstream body should be closed after client disconnect")
+	assert.NoError(t, <-writeDone, "bounded drain keeps upstream readable briefly")
 
-	assert.Equal(t, int64(1), count.Load(), "no chunk after disconnect should be processed")
+	assert.Equal(t, int64(2), count.Load(), "drain may parse upstream chunks but must not write downstream")
 	require.NotNil(t, info.StreamStatus)
 	assert.Equal(t, relaycommon.StreamEndReasonClientGone, info.StreamStatus.EndReason)
 
