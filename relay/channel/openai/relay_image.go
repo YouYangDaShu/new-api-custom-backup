@@ -38,6 +38,20 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 	if oaiError := usageResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
+	var imageResp dto.ImageResponse
+	if err := common.Unmarshal(responseBody, &imageResp); err != nil {
+		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+	}
+	hasImageResult := false
+	for _, image := range imageResp.Data {
+		if strings.TrimSpace(image.Url) != "" || strings.TrimSpace(image.B64Json) != "" {
+			hasImageResult = true
+			break
+		}
+	}
+	if !hasImageResult {
+		return nil, types.NewOpenAIError(fmt.Errorf("image response contained no result"), types.ErrorCodeBadResponse, http.StatusBadGateway)
+	}
 	// 写入新的 response body
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
@@ -117,7 +131,6 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 			_ = common.Unmarshal(raw, &fields)
 			if usageValue, present := fields["usage"]; present && usageValue != nil {
 				usage = &usageResp.Usage
-				validResult = true
 			}
 			validResult = validResult || isOpenAIImageCompletedEvent(fields)
 		}

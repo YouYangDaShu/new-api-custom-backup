@@ -8,7 +8,9 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -69,6 +71,8 @@ func TestOpenaiImageStreamHandlerForwardsSSEAndUsage(t *testing.T) {
 		``,
 		`data: {"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7,"input_tokens_details":{"image_tokens":2,"text_tokens":1}}}`,
 		``,
+		`data: {"type":"image_generation.completed","b64_json":"final"}`,
+		``,
 		`data: [DONE]`,
 		``,
 	}, "\n")
@@ -87,6 +91,49 @@ func TestOpenaiImageStreamHandlerForwardsSSEAndUsage(t *testing.T) {
 	require.Contains(t, recorder.Body.String(), `data: {"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7,"input_tokens_details":{"image_tokens":2,"text_tokens":1}}}`)
 	require.Contains(t, recorder.Body.String(), `data: [DONE]`)
 	require.Equal(t, "text/event-stream", recorder.Header().Get("Content-Type"))
+}
+
+func TestOpenaiImageHandlerRequiresImageResultForGenerationAndEdit(t *testing.T) {
+	tests := []struct {
+		name      string
+		relayMode int
+		path      string
+		body      string
+		wantError bool
+	}{
+		{name: "generation empty object", relayMode: relayconstant.RelayModeImagesGenerations, path: "/v1/images/generations", body: `{}`, wantError: true},
+		{name: "generation empty data", relayMode: relayconstant.RelayModeImagesGenerations, path: "/v1/images/generations", body: `{"data":[]}`, wantError: true},
+		{name: "generation usage only", relayMode: relayconstant.RelayModeImagesGenerations, path: "/v1/images/generations", body: `{"usage":{"total_tokens":7}}`, wantError: true},
+		{name: "generation empty image item", relayMode: relayconstant.RelayModeImagesGenerations, path: "/v1/images/generations", body: `{"data":[{}]}`, wantError: true},
+		{name: "generation URL", relayMode: relayconstant.RelayModeImagesGenerations, path: "/v1/images/generations", body: `{"data":[{"url":"https://example.com/image.png"}]}`},
+		{name: "generation base64", relayMode: relayconstant.RelayModeImagesGenerations, path: "/v1/images/generations", body: `{"data":[{"b64_json":"aW1hZ2U="}]}`},
+		{name: "edit empty object", relayMode: relayconstant.RelayModeImagesEdits, path: "/v1/images/edits", body: `{}`, wantError: true},
+		{name: "edit empty data", relayMode: relayconstant.RelayModeImagesEdits, path: "/v1/images/edits", body: `{"data":[]}`, wantError: true},
+		{name: "edit usage only", relayMode: relayconstant.RelayModeImagesEdits, path: "/v1/images/edits", body: `{"usage":{"total_tokens":7}}`, wantError: true},
+		{name: "edit empty image item", relayMode: relayconstant.RelayModeImagesEdits, path: "/v1/images/edits", body: `{"data":[{}]}`, wantError: true},
+		{name: "edit URL", relayMode: relayconstant.RelayModeImagesEdits, path: "/v1/images/edits", body: `{"data":[{"url":"https://example.com/image.png"}]}`},
+		{name: "edit base64", relayMode: relayconstant.RelayModeImagesEdits, path: "/v1/images/edits", body: `{"data":[{"b64_json":"aW1hZ2U="}]}`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c, recorder, resp, info := newImageTestContext(t, test.body, "application/json", false)
+			c.Request = httptest.NewRequest(http.MethodPost, test.path, nil)
+			info.RelayMode = test.relayMode
+
+			usage, err := (&Adaptor{}).DoResponse(c, resp, info)
+			if test.wantError {
+				require.Nil(t, usage)
+				require.NotNil(t, err)
+				require.Empty(t, recorder.Body.String())
+				return
+			}
+			require.Nil(t, err)
+			require.NotNil(t, usage)
+			require.Equal(t, "image_per_call", usage.(*dto.Usage).UsageSource)
+			require.JSONEq(t, test.body, recorder.Body.String())
+		})
+	}
 }
 
 // TestOpenaiImageStreamHandlerWrapsJSONResponse covers the non-SSE fallback:
@@ -200,6 +247,32 @@ func TestOpenaiImageStreamHandlerRejectsIncompleteStream(t *testing.T) {
 	require.NotNil(t, err)
 	reason, _ := info.StreamStatus.Snapshot()
 	require.Equal(t, relaycommon.StreamEndReasonEOF, reason)
+}
+
+func TestOpenaiImageStreamHandlerRejectsUsageWithoutCompletedEvent(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "usage only",
+			body: "data: {\"usage\":{\"input_tokens\":3,\"output_tokens\":4,\"total_tokens\":7}}\n\ndata: [DONE]\n\n",
+		},
+		{
+			name: "partial and usage",
+			body: "data: {\"type\":\"image_generation.partial_image\",\"b64_json\":\"partial\"}\n\ndata: {\"usage\":{\"total_tokens\":7}}\n\ndata: [DONE]\n\n",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c, _, resp, info := newImageTestContext(t, test.body, "text/event-stream", true)
+
+			usage, err := OpenaiImageStreamHandler(c, info, resp)
+			require.Nil(t, usage)
+			require.NotNil(t, err)
+		})
+	}
 }
 
 func TestOpenaiImageStreamHandlerAcceptsCompletedEventWithoutUsage(t *testing.T) {
