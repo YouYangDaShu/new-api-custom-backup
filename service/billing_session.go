@@ -32,6 +32,7 @@ type BillingSession struct {
 	fundingSettled   bool // funding.Settle 已成功，资金来源已提交
 	settled          bool // Settle 全部完成（资金 + 令牌）
 	refunded         bool // Refund 已调用
+	refundInProgress bool // refund child operations are running
 	mu               sync.Mutex
 }
 
@@ -73,15 +74,11 @@ func (s *BillingSession) Settle(actualQuota int) error {
 	// 2) 调整令牌额度
 	var tokenErr error
 	if !s.relayInfo.IsPlayground {
-		if delta > 0 {
-			tokenErr = model.ApplyTokenQuotaOperation(s.relayInfo.RequestId+":settlement:token", s.relayInfo.TokenId, -delta, s.relayInfo.RequestId, s.funding.Source(), int64(s.preConsumedQuota), int64(actualQuota))
-		} else {
-			tokenErr = model.ApplyTokenQuotaOperation(s.relayInfo.RequestId+":settlement:token", s.relayInfo.TokenId, -delta, s.relayInfo.RequestId, s.funding.Source(), int64(s.preConsumedQuota), int64(actualQuota))
-		}
+		tokenErr = model.ApplyTokenQuotaOperation(s.relayInfo.RequestId+":settlement:token", s.relayInfo.TokenId, -delta, s.relayInfo.RequestId, s.funding.Source(), int64(s.preConsumedQuota), int64(actualQuota))
 		if tokenErr != nil {
-			// 资金来源已提交，令牌调整失败只能记录日志；标记 settled 防止 Refund 误退资金
 			common.SysLog(fmt.Sprintf("error adjusting token quota after funding settled (userId=%d, tokenId=%d, delta=%d): %s",
 				s.relayInfo.UserId, s.relayInfo.TokenId, delta, tokenErr.Error()))
+			return tokenErr
 		}
 	}
 	// 3) 更新 relayInfo 上的订阅 PostDelta（用于日志）
@@ -95,11 +92,11 @@ func (s *BillingSession) Settle(actualQuota int) error {
 // Refund 退还所有预扣费，幂等安全，异步执行。
 func (s *BillingSession) Refund(c *gin.Context) {
 	s.mu.Lock()
-	if s.settled || s.refunded || !s.needsRefundLocked() {
+	if s.settled || s.refunded || s.refundInProgress || !s.needsRefundLocked() {
 		s.mu.Unlock()
 		return
 	}
-	s.refunded = true
+	s.refundInProgress = true
 	if s.relayInfo.RequestId == "" {
 		s.relayInfo.RequestId = common.NewRequestId()
 	}
@@ -121,11 +118,12 @@ func (s *BillingSession) Refund(c *gin.Context) {
 	funding := s.funding
 
 	gopool.Go(func() {
+		refundSucceeded := true
 		// 1) 退还资金来源
 		var fundingErr error
 		switch f := funding.(type) {
 		case *WalletFunding:
-			fundingErr = model.ApplyWalletQuotaOperation(requestID+":refund:funding", f.userId, f.consumed, requestID, f.Source(), int64(tokenConsumed), 0)
+			fundingErr = model.ApplyWalletQuotaOperationType(requestID+":refund:funding", f.userId, f.consumed, requestID, f.Source(), int64(tokenConsumed), 0, "refund")
 		case *SubscriptionFunding:
 			fundingErr = model.ApplySubscriptionRefundOperation(requestID+":refund:funding", requestID, f.Source(), f.preConsumed, 0)
 		default:
@@ -133,17 +131,30 @@ func (s *BillingSession) Refund(c *gin.Context) {
 		}
 		if fundingErr != nil {
 			common.SysLog("error refunding billing source: " + fundingErr.Error())
+			refundSucceeded = false
 		}
 		if extraReserved > 0 && funding.Source() == BillingSourceSubscription && subscriptionId > 0 {
-			if err := model.ApplySubscriptionQuotaOperation(requestID+":refund:subscription_extra", subscriptionId, -int64(extraReserved), requestID, funding.Source(), int64(extraReserved), 0); err != nil {
+			if err := model.ApplySubscriptionQuotaOperationType(requestID+":refund:subscription_extra", subscriptionId, -int64(extraReserved), requestID, funding.Source(), int64(extraReserved), 0, "refund"); err != nil {
 				common.SysLog("error refunding subscription extra reserved quota: " + err.Error())
+				refundSucceeded = false
 			}
 		}
 		// 2) 退还令牌额度
 		if tokenConsumed > 0 && !isPlayground {
-			if err := model.ApplyTokenQuotaOperation(requestID+":refund:token", tokenId, tokenConsumed, requestID, funding.Source(), int64(tokenConsumed), 0); err != nil {
+			if err := model.ApplyTokenQuotaOperationType(requestID+":refund:token", tokenId, tokenConsumed, requestID, funding.Source(), int64(tokenConsumed), 0, "refund"); err != nil {
 				common.SysLog("error refunding token quota: " + err.Error())
+				refundSucceeded = false
 			}
+		}
+		if refundSucceeded {
+			s.mu.Lock()
+			s.refunded = true
+			s.refundInProgress = false
+			s.mu.Unlock()
+		} else {
+			s.mu.Lock()
+			s.refundInProgress = false
+			s.mu.Unlock()
 		}
 	})
 }

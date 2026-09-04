@@ -84,7 +84,7 @@ func beginEconomicOperation(tx *gorm.DB, key string, fields EconomicBillingOpera
 	return &op, true, nil
 }
 
-func markEconomicFailure(key string, err error) {
+func markEconomicFailure(key string, fields EconomicBillingOperation, err error) {
 	if DB == nil || key == "" {
 		return
 	}
@@ -92,12 +92,51 @@ func markEconomicFailure(key string, err error) {
 	if err != nil {
 		msg = err.Error()
 	}
-	_ = DB.Model(&EconomicBillingOperation{}).Where("operation_key = ?", key).
-		Updates(map[string]any{"status": EconomicOperationFailed, "phase": "failed", "last_error": msg})
+	// Only a row that is still retryable may be marked failed. In particular,
+	// never overwrite a committed done/unknown result after an independent
+	// transaction has completed.
+	result := DB.Model(&EconomicBillingOperation{}).
+		Where("operation_key = ? AND status = ?", key, EconomicOperationFailed).
+		Updates(map[string]any{"phase": "failed", "last_error": msg})
+	if result.Error != nil || result.RowsAffected > 0 {
+		return
+	}
+	fields.OperationKey = key
+	fields.Status = EconomicOperationFailed
+	fields.Phase = "failed"
+	fields.LastError = msg
+	// The original insert may have rolled back, so create a durable retryable
+	// record. A concurrent successful retry wins the unique key and is never
+	// overwritten here.
+	_ = DB.Create(&fields).Error
+}
+
+func markEconomicUnknown(key string, fields EconomicBillingOperation, err error) {
+	if DB == nil || key == "" {
+		return
+	}
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	result := DB.Model(&EconomicBillingOperation{}).
+		Where("operation_key = ? AND status = ?", key, EconomicOperationInProgress).
+		Updates(map[string]any{"status": EconomicOperationUnknown, "phase": "manual", "terminal_reason": "commit outcome unknown", "last_error": msg})
+	if result.Error != nil || result.RowsAffected > 0 {
+		return
+	}
+	fields.OperationKey = key
+	fields.Status = EconomicOperationUnknown
+	fields.Phase = "manual"
+	fields.TerminalReason = "commit outcome unknown"
+	fields.LastError = msg
+	_ = DB.Create(&fields).Error
 }
 
 func applyEconomicOperation(key string, fields EconomicBillingOperation, mutate func(*gorm.DB) error) error {
 	var mutationErr error
+	callbackCompleted := false
+	mutationStarted := false
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		op, apply, err := beginEconomicOperation(tx, key, fields)
 		if err != nil {
@@ -109,49 +148,91 @@ func applyEconomicOperation(key string, fields EconomicBillingOperation, mutate 
 			}
 			return fmt.Errorf("economic operation %s is not replayable", key)
 		}
+		mutationStarted = true
 		if err := mutate(tx); err != nil {
 			mutationErr = err
-			return tx.Model(op).Updates(map[string]any{"status": EconomicOperationFailed, "phase": "failed", "last_error": err.Error()}).Error
+			// Returning the mutation error is intentional: GORM rolls back the
+			// whole transaction, including any partial economic mutation.
+			return err
 		}
-		return tx.Model(op).Updates(map[string]any{"status": EconomicOperationDone, "phase": "committed", "result": "applied", "last_error": ""}).Error
+		if err := tx.Model(op).Updates(map[string]any{"status": EconomicOperationDone, "phase": "committed", "result": "applied", "last_error": ""}).Error; err != nil {
+			return err
+		}
+		callbackCompleted = true
+		return nil
 	})
 	if mutationErr != nil {
+		markEconomicFailure(key, fields, mutationErr)
 		return mutationErr
 	}
 	if err != nil {
-		markEconomicFailure(key, err)
+		if callbackCompleted {
+			// A commit error is ambiguous: the mutation and done marker may have
+			// reached durable storage. Fail closed and require manual recovery.
+			markEconomicUnknown(key, fields, err)
+		} else if mutationStarted {
+			// The callback returned an error before commit, so the transaction is
+			// known to have rolled back and can be retried safely.
+			markEconomicFailure(key, fields, err)
+		}
 	}
 	return err
 }
 
 func ApplyWalletQuotaOperation(key string, userID, delta int, requestID, source string, pre, actual int64) error {
+	return ApplyWalletQuotaOperationType(key, userID, delta, requestID, source, pre, actual, "settlement")
+}
+
+func ApplyWalletQuotaOperationType(key string, userID, delta int, requestID, source string, pre, actual int64, operationType string) error {
 	if delta == 0 {
 		return nil
 	}
-	fields := EconomicBillingOperation{RequestID: requestID, OperationType: "settlement", FundingSource: source, PreConsumedQuota: pre, ActualQuota: actual, Delta: int64(delta), Phase: "mutation"}
+	fields := EconomicBillingOperation{RequestID: requestID, OperationType: operationType, FundingSource: source, PreConsumedQuota: pre, ActualQuota: actual, Delta: int64(delta), Phase: "mutation"}
 	return applyEconomicOperation(key, fields, func(tx *gorm.DB) error {
-		return tx.Model(&User{}).Where("id = ?", userID).Update("quota", gorm.Expr("quota + ?", delta)).Error
+		result := tx.Model(&User{}).Where("id = ?", userID).Update("quota", gorm.Expr("quota + ?", delta))
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return fmt.Errorf("user %d not found", userID)
+		}
+		return nil
 	})
 }
 
 func ApplyTokenQuotaOperation(key string, tokenID int, delta int, requestID, source string, pre, actual int64) error {
+	return ApplyTokenQuotaOperationType(key, tokenID, delta, requestID, source, pre, actual, "settlement")
+}
+
+func ApplyTokenQuotaOperationType(key string, tokenID int, delta int, requestID, source string, pre, actual int64, operationType string) error {
 	if delta == 0 {
 		return nil
 	}
-	fields := EconomicBillingOperation{RequestID: requestID, OperationType: "settlement", FundingSource: source, PreConsumedQuota: pre, ActualQuota: actual, Delta: int64(delta), Phase: "mutation"}
+	fields := EconomicBillingOperation{RequestID: requestID, OperationType: operationType, FundingSource: source, PreConsumedQuota: pre, ActualQuota: actual, Delta: int64(delta), Phase: "mutation"}
 	return applyEconomicOperation(key, fields, func(tx *gorm.DB) error {
-		return tx.Model(&Token{}).Where("id = ?", tokenID).Updates(map[string]any{
+		result := tx.Model(&Token{}).Where("id = ?", tokenID).Updates(map[string]any{
 			"remain_quota": gorm.Expr("remain_quota + ?", delta),
 			"used_quota":   gorm.Expr("used_quota - ?", delta),
-		}).Error
+		})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return fmt.Errorf("token %d not found", tokenID)
+		}
+		return nil
 	})
 }
 
 func ApplySubscriptionQuotaOperation(key string, subscriptionID int, delta int64, requestID, source string, pre, actual int64) error {
+	return ApplySubscriptionQuotaOperationType(key, subscriptionID, delta, requestID, source, pre, actual, "settlement")
+}
+
+func ApplySubscriptionQuotaOperationType(key string, subscriptionID int, delta int64, requestID, source string, pre, actual int64, operationType string) error {
 	if delta == 0 {
 		return nil
 	}
-	fields := EconomicBillingOperation{RequestID: requestID, OperationType: "settlement", FundingSource: source, PreConsumedQuota: pre, ActualQuota: actual, Delta: delta, Phase: "mutation"}
+	fields := EconomicBillingOperation{RequestID: requestID, OperationType: operationType, FundingSource: source, PreConsumedQuota: pre, ActualQuota: actual, Delta: delta, Phase: "mutation"}
 	return applyEconomicOperation(key, fields, func(tx *gorm.DB) error {
 		var sub UserSubscription
 		if err := lockForUpdate(tx).Where("id = ?", subscriptionID).First(&sub).Error; err != nil {
