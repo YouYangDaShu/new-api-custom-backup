@@ -234,6 +234,15 @@ func TestStreamScannerHandler_DataWithExtraSpaces(t *testing.T) {
 	assert.Equal(t, "{\"trimmed\":true}", got)
 }
 
+func TestStreamScannerHandler_BareDone(t *testing.T) {
+	c, resp, info := setupStreamTest(t, strings.NewReader("data: first\n[DONE]\ndata: second\n"))
+	var got []string
+	StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) { got = append(got, data) })
+	require.Equal(t, []string{"first"}, got)
+	reason, _ := info.StreamStatus.Snapshot()
+	assert.Equal(t, relaycommon.StreamEndReasonDone, reason)
+}
+
 // TestStreamScannerHandler_ClientCancelAbortsUpstreamAndReturns pins the
 // disconnect contract: when the client goes away, the handler drains the
 // upstream for a bounded interval without writing further downstream data.

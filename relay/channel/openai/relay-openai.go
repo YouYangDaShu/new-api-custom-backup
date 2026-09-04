@@ -234,7 +234,7 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 
 	var fields map[string]interface{}
 	_ = common.Unmarshal(responseBody, &fields)
-	if _, present := fields["usage"]; !present {
+	if usageValue, present := fields["usage"]; !present || usageValue == nil {
 		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 	}
 

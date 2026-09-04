@@ -220,6 +220,7 @@ type ResponsesToChatStreamState struct {
 
 	Usage        *dto.Usage
 	UsagePresent bool
+	TerminalStatus string
 
 	sentStart                  bool
 	finalized                  bool
@@ -304,10 +305,17 @@ func ResponsesStreamEventToChatChunks(event *dto.ResponsesStreamResponse, state 
 			response = ensureIncompleteResponse(response)
 		}
 		state.applyResponseMetadata(response)
+		if event.Type == responsesEventIncomplete {
+			state.TerminalStatus = responsesEventIncomplete
+		} else {
+			state.TerminalStatus = event.Type
+		}
 		chunks := state.terminalOutputChunks(response)
 		chunks = append(chunks, state.finalize(response)...)
 		return chunks, nil
-	case responsesEventFailed, responsesEventError:
+	case responsesEventFailed, responsesEventError, "response.cancelled":
+		state.TerminalStatus = event.Type
+		state.applyResponseMetadata(event.Response)
 		return nil, fmt.Errorf("responses stream error: %s", event.Type)
 	default:
 		return nil, nil

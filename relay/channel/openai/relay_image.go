@@ -41,7 +41,7 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 	}
 	var fields map[string]interface{}
 	_ = common.Unmarshal(responseBody, &fields)
-	if _, present := fields["usage"]; !present {
+	if usageValue, present := fields["usage"]; !present || usageValue == nil {
 		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 	}
 
@@ -225,7 +225,7 @@ func OpenaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 	_ = common.Unmarshal(responseBody, &usageResp)
 	var fields map[string]interface{}
 	_ = common.Unmarshal(responseBody, &fields)
-	if _, present := fields["usage"]; !present {
+	if usageValue, present := fields["usage"]; !present || usageValue == nil {
 		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 	}
 	if oaiError := usageResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {

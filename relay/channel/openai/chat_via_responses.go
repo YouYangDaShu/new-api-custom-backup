@@ -108,6 +108,7 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 		accumulator.ProcessEvent(&streamResp)
 		switch streamResp.Type {
 		case "response.completed", "response.done", "response.incomplete":
+			common.SetContextKey(c, constant.ContextKeyUpstreamTerminalStatus, streamResp.Type)
 			finalResponse = streamResp.Response
 			if streamResp.Type == "response.incomplete" {
 				if finalResponse == nil {
@@ -118,6 +119,8 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 				}
 			}
 		case "response.failed", "response.error", "response.cancelled":
+			common.SetContextKey(c, constant.ContextKeyUpstreamTerminalStatus, streamResp.Type)
+			finalResponse = streamResp.Response
 			if streamResp.Response != nil {
 				if oaiErr := streamResp.Response.GetOpenAIError(); oaiErr != nil && oaiErr.Type != "" {
 					streamErr = types.WithOpenAIError(*oaiErr, http.StatusInternalServerError)
@@ -131,6 +134,11 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 		}
 	}
 	if streamErr != nil {
+		if finalResponse != nil && finalResponse.Usage != nil {
+			common.SetContextKey(c, constant.ContextKeyBillingSettledOnError, true)
+			return relayconvert.UsageFromResponsesUsage(finalResponse.Usage), streamErr
+		}
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 		return nil, streamErr
 	}
 	if err := scanner.Err(); err != nil {
@@ -256,9 +264,22 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 				return
 			}
 		}
+		if streamResp.Type == "response.incomplete" {
+			streamErr = types.NewOpenAIError(fmt.Errorf("responses stream incomplete"), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+			sr.Stop(streamErr)
+		}
 	})
 
 	if streamErr != nil {
+		common.SetContextKey(c, constant.ContextKeyUpstreamTerminalStatus, state.TerminalStatus)
+		if state.UsagePresent {
+			usage := state.Usage
+			common.SetContextKey(c, constant.ContextKeyBillingSettledOnError, true)
+			return usage, streamErr
+		}
+		if !state.UsagePresent {
+			common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
+		}
 		return nil, streamErr
 	}
 

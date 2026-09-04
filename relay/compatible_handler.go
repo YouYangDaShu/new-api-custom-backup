@@ -78,6 +78,13 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		applySystemPromptIfNeeded(c, info, request)
 		usage, newApiErr := chatCompletionsViaResponses(c, info, adaptor, request)
 		if newApiErr != nil {
+			if usage != nil && common.GetContextKeyBool(c, constant.ContextKeyBillingSettledOnError) {
+				if usage.CompletionTokenDetails.AudioTokens > 0 || usage.PromptTokensDetails.AudioTokens > 0 {
+					service.PostAudioConsumeQuota(c, info, usage, "终态错误但上游已返回 usage")
+				} else {
+					service.PostTextConsumeQuota(c, info, usage, []string{"终态错误但上游已返回 usage"})
+				}
+			}
 			return newApiErr
 		}
 
@@ -206,6 +213,9 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 
 	usage, newApiErr := adaptor.DoResponse(c, httpResp, info)
 	if newApiErr != nil {
+		if usageValue, ok := usage.(*dto.Usage); ok && usageValue != nil && common.GetContextKeyBool(c, constant.ContextKeyBillingSettledOnError) {
+			service.PostTextConsumeQuota(c, info, usageValue, []string{"终态错误但上游已返回 usage"})
+		}
 		// reset status code 重置状态码
 		service.ResetStatusCode(newApiErr, statusCodeMappingStr)
 		return newApiErr

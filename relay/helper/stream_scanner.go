@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -23,6 +24,9 @@ const (
 	DefaultMaxScannerBufferSize = 128 << 20
 	DefaultPingInterval         = 10 * time.Second
 	streamWriteTimeout          = 30 * time.Second
+	defaultQueueMaxBytes      = 4 << 20
+	defaultQueueMaxEvents     = 256
+	defaultQueueMaxEventBytes = 1 << 20
 )
 
 var (
@@ -68,17 +72,43 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	activity := make(chan struct{}, 1)
 	var queueMu sync.Mutex
 	queued := make([]string, 0, 64)
+	queueBytes := 0
 	queueSignal := make(chan struct{}, 1)
 	queueClosed := false
-	enqueue := func(data string) {
-		queueMu.Lock()
-		if !queueClosed {
-			queued = append(queued, data)
+	parserStop := make(chan struct{})
+	var parserStopOnce sync.Once
+	queueMaxBytes := defaultQueueMaxBytes
+	queueMaxEvents := defaultQueueMaxEvents
+	queueEventMaxBytes := defaultQueueMaxEventBytes
+	enqueue := func(data string) bool {
+		if len(data) > queueEventMaxBytes {
+			info.StreamStatus.RecordError("stream event exceeds queue event limit")
+			if c != nil {
+				common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
+			}
+			return false
 		}
-		queueMu.Unlock()
-		select {
-		case queueSignal <- struct{}{}:
-		default:
+		for {
+			queueMu.Lock()
+			if queueClosed {
+				queueMu.Unlock()
+				return false
+			}
+			if len(queued) < queueMaxEvents && queueBytes+len(data) <= queueMaxBytes {
+				queued = append(queued, data)
+				queueBytes += len(data)
+				queueMu.Unlock()
+				select { case queueSignal <- struct{}{}: default: }
+				return true
+			}
+			queueMu.Unlock()
+			select {
+			case <-queueSignal:
+			case <-parserStop:
+				return false
+			case <-workCtx.Done():
+				return false
+			}
 		}
 	}
 	dequeue := func() (string, bool) {
@@ -87,14 +117,14 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		if len(queued) > 0 {
 			data := queued[0]
 			queued = queued[1:]
+			queueBytes -= len(data)
+			select { case queueSignal <- struct{}{}: default: }
 			return data, true
 		}
 		return "", false
 	}
 	scannerDone := make(chan struct{})
 	handlerDone := make(chan struct{})
-	parserStop := make(chan struct{})
-	var parserStopOnce sync.Once
 	var draining atomic.Bool
 	var drainEvents atomic.Int64
 	requestCtx := c.Request.Context()
@@ -167,14 +197,19 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			}
 			line := scanner.Text()
 			logger.LogDebug(c, "stream scanner data: %s", line)
-			if len(line) < 6 || (line[:5] != "data:" && line[:6] != "[DONE]") {
+			line = strings.TrimSpace(line)
+			if line == "[DONE]" {
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
+				return
+			}
+			if len(line) < 5 || line[:5] != "data:" {
 				continue
 			}
 			data := strings.TrimSpace(line[5:])
 			if data == "" {
 				continue
 			}
-			if strings.HasPrefix(data, "[DONE]") {
+			if data == "[DONE]" {
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
 				return
 			}
@@ -184,7 +219,14 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			}
 			info.SetFirstResponseTime()
 			info.ReceivedResponseCount++
-			enqueue(data)
+			if !enqueue(data) {
+				if workCtx.Err() != nil {
+					return
+				}
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, fmt.Errorf("stream queue event limit exceeded"))
+				common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
+				return
+			}
 		}
 		if err := scanner.Err(); err != nil && err != io.EOF && workCtx.Err() == nil {
 			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonScannerErr, err)
@@ -284,7 +326,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		drainTimer.Stop()
 	}
 	endReason, _ := info.StreamStatus.Snapshot()
-	if draining.Load() && endReason != relaycommon.StreamEndReasonTimeout && endReason != relaycommon.StreamEndReasonPanic && endReason != relaycommon.StreamEndReasonScannerErr {
+	if draining.Load() && endReason != relaycommon.StreamEndReasonTimeout && endReason != relaycommon.StreamEndReasonPanic && endReason != relaycommon.StreamEndReasonScannerErr && endReason != relaycommon.StreamEndReasonHandlerStop {
 		info.StreamStatus.ReplaceEndReason(relaycommon.StreamEndReasonClientGone, requestCtx.Err())
 	}
 	if info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors() {

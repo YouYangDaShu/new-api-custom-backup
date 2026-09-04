@@ -58,6 +58,8 @@ const (
 	// upstream usage payload. They must be recorded and settled as no-charge.
 	ContextKeyMissingUpstreamUsage ContextKey = "missing_upstream_usage"
 	ContextKeyBillingPending       ContextKey = "billing_pending"
+	ContextKeyBillingSettledOnError ContextKey = "billing_settled_on_error"
+	ContextKeyUpstreamTerminalStatus ContextKey = "upstream_terminal_status"
 
 	ContextKeySystemPromptOverride ContextKey = "system_prompt_override"
 

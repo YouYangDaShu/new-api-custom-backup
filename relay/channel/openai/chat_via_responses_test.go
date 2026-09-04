@@ -116,6 +116,17 @@ func TestOaiResponsesToChatBufferedStreamHandlerReturnsJSONFromSSE(t *testing.T)
 	require.Contains(t, got, `"finish_reason":"tool_calls"`)
 }
 
+func TestOaiResponsesToChatStreamHandlerIncompleteUsageIsPreserved(t *testing.T) {
+	body := "data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"total_tokens\":0}}}\ndata: [DONE]\n"
+	c, _, resp, info := newResponsesChatTestContext(t, body, true)
+	usage, err := OaiResponsesToChatStreamHandler(c, info, resp)
+	require.Error(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, 0, usage.TotalTokens)
+	require.Equal(t, "response.incomplete", common.GetContextKeyString(c, constant.ContextKeyUpstreamTerminalStatus))
+	require.False(t, common.GetContextKeyBool(c, constant.ContextKeyMissingUpstreamUsage))
+}
+
 func TestOaiChatToResponsesStreamHandlerConvertsSSEOrderAndUsage(t *testing.T) {
 	oldMode := gin.Mode()
 	gin.SetMode(gin.TestMode)
