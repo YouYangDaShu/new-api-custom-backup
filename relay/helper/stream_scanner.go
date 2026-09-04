@@ -24,9 +24,9 @@ const (
 	DefaultMaxScannerBufferSize = 128 << 20
 	DefaultPingInterval         = 10 * time.Second
 	streamWriteTimeout          = 30 * time.Second
-	defaultQueueMaxBytes      = 4 << 20
-	defaultQueueMaxEvents     = 256
-	defaultQueueMaxEventBytes = 1 << 20
+	defaultQueueMaxBytes        = 4 << 20
+	defaultQueueMaxEvents       = 256
+	defaultQueueMaxEventBytes   = 1 << 20
 )
 
 var (
@@ -54,6 +54,18 @@ func ExtendWriteDeadline(c *gin.Context) {
 }
 
 func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string, sr *StreamResult)) {
+	streamScannerHandler(c, resp, info, dataHandler, false)
+}
+
+// StreamScannerHandlerWithLines shares the bounded streaming lifecycle with
+// StreamScannerHandler while delivering each non-empty upstream line verbatim.
+// It is intended for providers whose SSE framing uses event/meta fields or
+// newline-delimited JSON rather than a simple data payload.
+func StreamScannerHandlerWithLines(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, lineHandler func(line string, sr *StreamResult)) {
+	streamScannerHandler(c, resp, info, lineHandler, true)
+}
+
+func streamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string, sr *StreamResult), rawLines bool) {
 	if c == nil || c.Request == nil || resp == nil || resp.Body == nil || info == nil || dataHandler == nil {
 		return
 	}
@@ -98,7 +110,10 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				queued = append(queued, data)
 				queueBytes += len(data)
 				queueMu.Unlock()
-				select { case queueSignal <- struct{}{}: default: }
+				select {
+				case queueSignal <- struct{}{}:
+				default:
+				}
 				return true
 			}
 			queueMu.Unlock()
@@ -118,7 +133,10 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			data := queued[0]
 			queued = queued[1:]
 			queueBytes -= len(data)
-			select { case queueSignal <- struct{}{}: default: }
+			select {
+			case queueSignal <- struct{}{}:
+			default:
+			}
 			return data, true
 		}
 		return "", false
@@ -202,12 +220,17 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
 				return
 			}
-			if len(line) < 5 || line[:5] != "data:" {
-				continue
-			}
-			data := strings.TrimSpace(line[5:])
-			if data == "" {
-				continue
+			var data string
+			if rawLines {
+				data = line
+			} else {
+				if len(line) < 5 || line[:5] != "data:" {
+					continue
+				}
+				data = strings.TrimSpace(line[5:])
+				if data == "" {
+					continue
+				}
 			}
 			if data == "[DONE]" {
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)

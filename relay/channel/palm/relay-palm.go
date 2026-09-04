@@ -50,25 +50,16 @@ func streamResponsePaLM2OpenAI(palmResponse *PaLMChatResponse) *dto.ChatCompleti
 	return &response
 }
 
-func palmStreamHandler(c *gin.Context, resp *http.Response) (*types.NewAPIError, string) {
+func palmStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*types.NewAPIError, string) {
 	responseText := ""
 	responseId := helper.GetResponseID(c)
 	createdTime := common.GetTimestamp()
-	dataChan := make(chan string)
-	stopChan := make(chan bool)
-	go func() {
-		responseBody, err := io.ReadAll(resp.Body)
-		if err != nil {
-			common.SysLog("error reading stream response: " + err.Error())
-			stopChan <- true
-			return
-		}
-		service.CloseResponseBodyGracefully(resp)
+	helper.StreamScannerHandlerWithLines(c, resp, info, func(line string, sr *helper.StreamResult) {
+		responseBody := []byte(line)
 		var palmResponse PaLMChatResponse
-		err = json.Unmarshal(responseBody, &palmResponse)
+		err := common.Unmarshal(responseBody, &palmResponse)
 		if err != nil {
-			common.SysLog("error unmarshalling stream response: " + err.Error())
-			stopChan <- true
+			sr.Error(err)
 			return
 		}
 		fullTextResponse := streamResponsePaLM2OpenAI(&palmResponse)
@@ -77,27 +68,14 @@ func palmStreamHandler(c *gin.Context, resp *http.Response) (*types.NewAPIError,
 		if len(palmResponse.Candidates) > 0 {
 			responseText = palmResponse.Candidates[0].Content
 		}
-		jsonResponse, err := json.Marshal(fullTextResponse)
+		jsonResponse, err := common.Marshal(fullTextResponse)
 		if err != nil {
-			common.SysLog("error marshalling stream response: " + err.Error())
-			stopChan <- true
+			sr.Error(err)
 			return
 		}
-		dataChan <- string(jsonResponse)
-		stopChan <- true
-	}()
-	helper.SetEventStreamHeaders(c)
-	c.Stream(func(w io.Writer) bool {
-		select {
-		case data := <-dataChan:
-			c.Render(-1, common.CustomEvent{Data: "data: " + data})
-			return true
-		case <-stopChan:
-			c.Render(-1, common.CustomEvent{Data: "data: [DONE]"})
-			return false
-		}
+		_ = helper.StringData(c, string(jsonResponse))
+		sr.Done()
 	})
-	service.CloseResponseBodyGracefully(resp)
 	return nil, responseText
 }
 

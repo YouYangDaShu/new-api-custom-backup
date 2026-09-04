@@ -221,6 +221,24 @@ func TestRequestLifecycle_BillingClaimIsPersistentAndSingleWinner(t *testing.T) 
 	assert.Equal(t, 77, row.PreConsumedQuota)
 }
 
+func TestBillingOperation_DurableClaimIsSingleWinner(t *testing.T) {
+	if LOG_DB == nil {
+		t.Skip("LOG_DB not initialized")
+	}
+	require.NoError(t, LOG_DB.AutoMigrate(&BillingOperation{}))
+	const reqID = "req-life-op-key"
+	LOG_DB.Where("request_id = ?", reqID).Delete(&BillingOperation{})
+	t.Cleanup(func() { LOG_DB.Where("request_id = ?", reqID).Delete(&BillingOperation{}) })
+	first, err := ClaimBillingOperation(reqID, "settlement", 1)
+	require.NoError(t, err)
+	second, err := ClaimBillingOperation(reqID, "settlement", 1)
+	require.NoError(t, err)
+	assert.True(t, first)
+	assert.False(t, second)
+	assert.True(t, CompleteBillingOperation(reqID, "settlement", 1, BillingOperationDone))
+	assert.False(t, CompleteBillingOperation(reqID, "settlement", 1, BillingOperationDone))
+}
+
 func TestRequestLifecycle_PendingSurvivesFinalizeAndStaleCloser(t *testing.T) {
 	if LOG_DB == nil {
 		t.Skip("LOG_DB not initialized")

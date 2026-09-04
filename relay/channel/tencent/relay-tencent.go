@@ -1,7 +1,6 @@
 package tencent
 
 import (
-	"bufio"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -92,15 +91,12 @@ func streamResponseTencent2OpenAI(TencentResponse *TencentChatResponse) *dto.Cha
 
 func tencentStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	var responseText string
-	scanner := helper.NewStreamScanner(resp.Body)
-	scanner.Split(bufio.ScanLines)
-
-	helper.SetEventStreamHeaders(c)
-
-	for scanner.Scan() {
-		data := scanner.Text()
+	var usage dto.Usage
+	usagePresent := false
+	helper.StreamScannerHandlerWithLines(c, resp, info, func(line string, _ *helper.StreamResult) {
+		data := strings.TrimSpace(line)
 		if len(data) < 5 || !strings.HasPrefix(data, "data:") {
-			continue
+			return
 		}
 		data = strings.TrimPrefix(data, "data:")
 
@@ -108,29 +104,26 @@ func tencentStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *htt
 		err := common.Unmarshal([]byte(data), &tencentResponse)
 		if err != nil {
 			common.SysLog("error unmarshalling stream response: " + err.Error())
-			continue
+			return
 		}
 
 		response := streamResponseTencent2OpenAI(&tencentResponse)
 		if len(response.Choices) != 0 {
 			responseText += response.Choices[0].Delta.GetContentString()
 		}
-
-		err = helper.ObjectData(c, response)
-		if err != nil {
-			common.SysLog(err.Error())
+		_ = helper.ObjectData(c, response)
+		var raw struct {
+			Usage *TencentUsage `json:"Usage"`
 		}
+		if common.Unmarshal([]byte(data), &raw) == nil && raw.Usage != nil {
+			usage = dto.Usage{PromptTokens: raw.Usage.PromptTokens, CompletionTokens: raw.Usage.CompletionTokens, TotalTokens: raw.Usage.TotalTokens}
+			usagePresent = true
+		}
+	})
+	if !usagePresent {
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 	}
-
-	if err := scanner.Err(); err != nil {
-		common.SysLog("error reading stream: " + err.Error())
-	}
-
-	helper.Done(c)
-
-	service.CloseResponseBodyGracefully(resp)
-
-	return service.ResponseText2Usage(c, responseText, info.UpstreamModelName, info.GetEstimatePromptTokens()), nil
+	return &usage, nil
 }
 
 func tencentHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {

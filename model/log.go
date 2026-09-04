@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -82,6 +83,56 @@ type Log struct {
 	BillingStatus     string `json:"billing_status,omitempty" gorm:"index"`
 	PreConsumedQuota  int    `json:"pre_consumed_quota,omitempty"`
 	UsageSource       string `json:"usage_source,omitempty"`
+}
+
+// BillingOperation records a durable idempotency key for money-changing
+// request operations. A unique request/kind/version tuple allows only one
+// worker to claim an operation across processes.
+type BillingOperation struct {
+	Id        int    `gorm:"primaryKey"`
+	RequestId string `gorm:"type:varchar(64);uniqueIndex:idx_billing_operation_key,priority:1"`
+	Kind      string `gorm:"type:varchar(32);uniqueIndex:idx_billing_operation_key,priority:2"`
+	Version   int    `gorm:"uniqueIndex:idx_billing_operation_key,priority:3"`
+	Status    string `gorm:"index"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+const (
+	BillingOperationClaimed = "claimed"
+	BillingOperationDone    = "done"
+	BillingOperationUnknown = "unknown"
+)
+
+var billingOperationMigrate sync.Once
+var billingOperationMigrateErr error
+
+// ClaimBillingOperation atomically claims a durable operation key.
+func ClaimBillingOperation(requestID, kind string, version int) (bool, error) {
+	if LOG_DB == nil || requestID == "" || kind == "" {
+		return false, nil
+	}
+	billingOperationMigrate.Do(func() { billingOperationMigrateErr = LOG_DB.AutoMigrate(&BillingOperation{}) })
+	if billingOperationMigrateErr != nil {
+		return false, billingOperationMigrateErr
+	}
+	op := &BillingOperation{RequestId: requestID, Kind: kind, Version: version, Status: BillingOperationClaimed}
+	err := LOG_DB.Create(op).Error
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, gorm.ErrDuplicatedKey) || strings.Contains(strings.ToLower(err.Error()), "unique constraint") || strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+		return false, nil
+	}
+	return false, err
+}
+
+func CompleteBillingOperation(requestID, kind string, version int, status string) bool {
+	if LOG_DB == nil {
+		return false
+	}
+	result := LOG_DB.Model(&BillingOperation{}).Where("request_id = ? AND kind = ? AND version = ? AND status = ?", requestID, kind, version, BillingOperationClaimed).Update("status", status)
+	return result.Error == nil && result.RowsAffected == 1
 }
 
 // don't use iota, avoid change log type value
@@ -492,14 +543,27 @@ func ClaimRequestBilling(c *gin.Context, actualQuota, preConsumedQuota int, usag
 	if requestID == "" {
 		return false, false
 	}
+	claimed, claimErr := ClaimBillingOperation(requestID, "settlement", 1)
+	if claimErr != nil {
+		logger.LogError(c, "failed to claim durable billing operation: "+claimErr.Error())
+		return false, true
+	}
+	if !claimed {
+		return false, true
+	}
 	result := LOG_DB.Model(&Log{}).
 		Where("request_id = ? AND type = ? AND billing_status IN ?", requestID, LogTypeProcessing, []string{"", BillingStatusInFlight}).
 		Updates(map[string]interface{}{"billing_status": BillingStatusSettling, "quota": actualQuota, "pre_consumed_quota": preConsumedQuota, "usage_source": usageSource})
 	if result.Error != nil {
+		_ = CompleteBillingOperation(requestID, "settlement", 1, BillingOperationUnknown)
 		logger.LogError(c, "failed to claim request billing: "+result.Error.Error())
 		return false, true
 	}
-	return result.RowsAffected == 1, true
+	if result.RowsAffected != 1 {
+		_ = CompleteBillingOperation(requestID, "settlement", 1, BillingOperationUnknown)
+		return false, true
+	}
+	return true, true
 }
 
 func CompleteRequestBilling(c *gin.Context, status string) bool {
@@ -511,7 +575,11 @@ func CompleteRequestBilling(c *gin.Context, status string) bool {
 		return false
 	}
 	result := LOG_DB.Model(&Log{}).Where("request_id = ? AND type = ? AND billing_status = ?", requestID, LogTypeProcessing, BillingStatusSettling).Update("billing_status", status)
-	return result.Error == nil && result.RowsAffected == 1
+	ok := result.Error == nil && result.RowsAffected == 1
+	if ok {
+		_ = CompleteBillingOperation(requestID, "settlement", 1, BillingOperationDone)
+	}
+	return ok
 }
 
 func FailRequestBilling(c *gin.Context, err error) bool {
@@ -527,7 +595,11 @@ func FailRequestBilling(c *gin.Context, err error) bool {
 		other["settlement_error"] = err.Error()
 	}
 	result := LOG_DB.Model(&Log{}).Where("request_id = ? AND type = ? AND billing_status = ?", requestID, LogTypeProcessing, BillingStatusSettling).Updates(map[string]interface{}{"billing_status": BillingStatusSettlementFail, "other": common.MapToJsonStr(other)})
-	return result.Error == nil && result.RowsAffected == 1
+	ok := result.Error == nil && result.RowsAffected == 1
+	if ok {
+		_ = CompleteBillingOperation(requestID, "settlement", 1, BillingOperationUnknown)
+	}
+	return ok
 }
 
 func MarkRequestBillingPending(c *gin.Context, preConsumedQuota int, usageSource string) bool {

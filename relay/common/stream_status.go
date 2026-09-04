@@ -29,11 +29,16 @@ type StreamErrorEntry struct {
 }
 
 type StreamStatus struct {
+	// Deprecated compatibility fields; use Snapshot/ErrorsSnapshot in concurrent code.
 	EndReason  StreamEndReason
 	EndError   error
-	mu         sync.Mutex
 	Errors     []StreamErrorEntry
 	ErrorCount int
+	endReason  StreamEndReason
+	endError   error
+	mu         sync.Mutex
+	errors     []StreamErrorEntry
+	errorCount int
 }
 
 func NewStreamStatus() *StreamStatus {
@@ -46,7 +51,8 @@ func (s *StreamStatus) SetEndReason(reason StreamEndReason, err error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.EndReason == StreamEndReasonNone || (reason == StreamEndReasonHandlerStop && (s.EndReason == StreamEndReasonDone || s.EndReason == StreamEndReasonEOF)) {
+	if s.endReason == StreamEndReasonNone || (reason == StreamEndReasonHandlerStop && (s.endReason == StreamEndReasonDone || s.endReason == StreamEndReasonEOF)) {
+		s.endReason, s.endError = reason, err
 		s.EndReason, s.EndError = reason, err
 	}
 }
@@ -57,9 +63,10 @@ func (s *StreamStatus) ReplaceEndReason(reason StreamEndReason, err error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.EndReason == StreamEndReasonClientGone && reason == StreamEndReasonTimeout {
+	if s.endReason == StreamEndReasonClientGone && reason == StreamEndReasonTimeout {
 		return
 	}
+	s.endReason, s.endError = reason, err
 	s.EndReason, s.EndError = reason, err
 }
 
@@ -69,7 +76,7 @@ func (s *StreamStatus) Snapshot() (StreamEndReason, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.EndReason, s.EndError
+	return s.endReason, s.endError
 }
 
 func (s *StreamStatus) RecordError(msg string) {
@@ -78,12 +85,14 @@ func (s *StreamStatus) RecordError(msg string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.ErrorCount++
-	if len(s.Errors) < maxStreamErrorEntries {
-		s.Errors = append(s.Errors, StreamErrorEntry{
+	s.errorCount++
+	s.ErrorCount = s.errorCount
+	if len(s.errors) < maxStreamErrorEntries {
+		s.errors = append(s.errors, StreamErrorEntry{
 			Message:   msg,
 			Timestamp: time.Now(),
 		})
+		s.Errors = append([]StreamErrorEntry(nil), s.errors...)
 	}
 }
 
@@ -93,7 +102,7 @@ func (s *StreamStatus) HasErrors() bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.ErrorCount > 0
+	return s.errorCount > 0
 }
 
 func (s *StreamStatus) TotalErrorCount() int {
@@ -102,7 +111,7 @@ func (s *StreamStatus) TotalErrorCount() int {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.ErrorCount
+	return s.errorCount
 }
 
 func (s *StreamStatus) ErrorsSnapshot() (int, []StreamErrorEntry) {
@@ -111,8 +120,8 @@ func (s *StreamStatus) ErrorsSnapshot() (int, []StreamErrorEntry) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	errs := append([]StreamErrorEntry(nil), s.Errors...)
-	return s.ErrorCount, errs
+	errs := append([]StreamErrorEntry(nil), s.errors...)
+	return s.errorCount, errs
 }
 
 func (s *StreamStatus) IsNormalEnd() bool {
@@ -134,8 +143,8 @@ func (s *StreamStatus) Summary() string {
 		fmt.Fprintf(b, " end_error=%q", endErr.Error())
 	}
 	s.mu.Lock()
-	if s.ErrorCount > 0 {
-		fmt.Fprintf(b, " soft_errors=%d", s.ErrorCount)
+	if s.errorCount > 0 {
+		fmt.Fprintf(b, " soft_errors=%d", s.errorCount)
 	}
 	s.mu.Unlock()
 	return b.String()

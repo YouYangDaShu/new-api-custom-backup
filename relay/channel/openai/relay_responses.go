@@ -105,6 +105,8 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		}
 		switch streamResponse.Type {
 		case "response.completed":
+			terminalStatus = streamResponse.Type
+			common.SetContextKey(c, constant.ContextKeyUpstreamTerminalStatus, streamResponse.Type)
 			if streamResponse.Response != nil {
 				if streamResponse.Response.HasImageGenerationCall() {
 					c.Set("image_generation_call", true)
@@ -127,6 +129,9 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 					}
 				}
 			}
+		case "response.done":
+			terminalStatus = streamResponse.Type
+			common.SetContextKey(c, constant.ContextKeyUpstreamTerminalStatus, streamResponse.Type)
 		case "response.failed", "response.error", "response.cancelled":
 			terminalStatus = streamResponse.Type
 			common.SetContextKey(c, constant.ContextKeyUpstreamTerminalStatus, streamResponse.Type)

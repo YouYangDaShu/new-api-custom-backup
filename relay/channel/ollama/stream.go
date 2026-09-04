@@ -98,8 +98,8 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	defer service.CloseResponseBodyGracefully(resp)
 
 	helper.SetEventStreamHeaders(c)
-	scanner := helper.NewStreamScanner(resp.Body)
 	usage := &dto.Usage{}
+	usagePresent := false
 	var model = info.UpstreamModelName
 	var responseId = common.GetUUID()
 	var created = time.Now().Unix()
@@ -109,16 +109,16 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		_ = helper.StringData(c, string(data))
 	}
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	helper.StreamScannerHandlerWithLines(c, resp, info, func(line string, sr *helper.StreamResult) {
 		line = strings.TrimSpace(line)
 		if line == "" {
-			continue
+			return
 		}
 		var chunk ollamaChatStreamChunk
 		if err := common.Unmarshal([]byte(line), &chunk); err != nil {
 			logger.LogError(c, "ollama stream json decode error: "+err.Error()+" line="+line)
-			return usage, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+			sr.Stop(types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError))
+			return
 		}
 		if chunk.Model != "" {
 			model = chunk.Model
@@ -166,13 +166,19 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 			if data, err := common.Marshal(delta); err == nil {
 				_ = helper.StringData(c, string(data))
 			}
-			continue
+			return
 		}
 		// done frame
 		// finalize once and break loop
 		usage.PromptTokens = chunk.PromptEvalCount
 		usage.CompletionTokens = chunk.EvalCount
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+		var raw map[string]json.RawMessage
+		if common.Unmarshal([]byte(line), &raw) == nil {
+			_, p := raw["prompt_eval_count"]
+			_, e := raw["eval_count"]
+			usagePresent = p || e
+		}
 		finishReason := chunk.DoneReason
 		if finishReason == "" {
 			finishReason = "stop"
@@ -194,10 +200,10 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		}
 		// send [DONE]
 		helper.Done(c)
-		break
-	}
-	if err := scanner.Err(); err != nil && err != io.EOF {
-		logger.LogError(c, "ollama stream scan error: "+err.Error())
+		sr.Done()
+	})
+	if !usagePresent {
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 	}
 	return usage, nil
 }

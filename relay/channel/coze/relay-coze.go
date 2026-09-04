@@ -1,7 +1,6 @@
 package coze
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -98,58 +98,44 @@ func cozeChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Res
 }
 
 func cozeChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
-	scanner := helper.NewStreamScanner(resp.Body)
-	scanner.Split(bufio.ScanLines)
-	helper.SetEventStreamHeaders(c)
 	id := helper.GetResponseID(c)
 	var responseText string
-
 	var currentEvent string
 	var currentData string
-	var usage = &dto.Usage{}
-
-	for scanner.Scan() {
-		line := scanner.Text()
-
+	var usage dto.Usage
+	usagePresent := false
+	handler := func(line string, _ *helper.StreamResult) {
 		if line == "" {
 			if currentEvent != "" && currentData != "" {
-				// handle last event
-				handleCozeEvent(c, currentEvent, currentData, &responseText, usage, id, info)
+				handleCozeEvent(c, currentEvent, currentData, &responseText, &usage, &usagePresent, id, info)
 				currentEvent = ""
 				currentData = ""
 			}
-			continue
+			return
 		}
-
 		if strings.HasPrefix(line, "event:") {
 			currentEvent = strings.TrimSpace(line[6:])
-			continue
+			return
 		}
-
 		if strings.HasPrefix(line, "data:") {
-			currentData = strings.TrimSpace(line[5:])
-			continue
+			part := strings.TrimSpace(line[5:])
+			if currentData != "" {
+				currentData += "\n"
+			}
+			currentData += part
 		}
 	}
-
-	// Last event
+	helper.StreamScannerHandlerWithLines(c, resp, info, handler)
 	if currentEvent != "" && currentData != "" {
-		handleCozeEvent(c, currentEvent, currentData, &responseText, usage, id, info)
+		handleCozeEvent(c, currentEvent, currentData, &responseText, &usage, &usagePresent, id, info)
 	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+	if !usagePresent {
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 	}
-	helper.Done(c)
-
-	if usage.TotalTokens == 0 {
-		usage = service.ResponseText2Usage(c, responseText, info.UpstreamModelName, c.GetInt("coze_input_count"))
-	}
-
-	return usage, nil
+	return &usage, nil
 }
 
-func handleCozeEvent(c *gin.Context, event string, data string, responseText *string, usage *dto.Usage, id string, info *relaycommon.RelayInfo) {
+func handleCozeEvent(c *gin.Context, event string, data string, responseText *string, usage *dto.Usage, usagePresent *bool, id string, info *relaycommon.RelayInfo) {
 	switch event {
 	case "conversation.chat.completed":
 		// 将 data 解析为 CozeChatResponseData
@@ -163,6 +149,7 @@ func handleCozeEvent(c *gin.Context, event string, data string, responseText *st
 		usage.PromptTokens = chatData.Usage.InputCount
 		usage.CompletionTokens = chatData.Usage.OutputCount
 		usage.TotalTokens = chatData.Usage.TokenCount
+		*usagePresent = true
 
 		finishReason := "stop"
 		stopResponse := helper.GenerateStopResponse(id, common.GetTimestamp(), info.UpstreamModelName, finishReason)

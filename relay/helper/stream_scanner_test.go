@@ -122,6 +122,18 @@ func TestStreamScannerHandler_EmptyBody(t *testing.T) {
 	assert.False(t, called.Load(), "handler should not be called for empty body")
 }
 
+func TestStreamScannerHandlerWithLines_PreservesProviderFraming(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("GET", "/", nil)
+	info := &relaycommon.RelayInfo{}
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader("event: message\ndata: {\"x\":1}\ndata: {\"y\":2}\n\n"))}
+	var got []string
+	StreamScannerHandlerWithLines(c, resp, info, func(line string, _ *StreamResult) { got = append(got, line) })
+	require.Contains(t, got, "event: message")
+	require.Contains(t, got, "data: {\"x\":1}")
+	require.Contains(t, got, "data: {\"y\":2}")
+}
+
 func TestStreamScannerHandler_1000Chunks(t *testing.T) {
 	t.Parallel()
 
