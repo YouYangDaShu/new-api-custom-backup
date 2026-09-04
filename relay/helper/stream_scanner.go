@@ -54,7 +54,17 @@ func ExtendWriteDeadline(c *gin.Context) {
 }
 
 func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string, sr *StreamResult)) {
-	streamScannerHandler(c, resp, info, dataHandler, false)
+	StreamScannerHandlerWithOptions(c, resp, info, StreamScannerOptions{}, dataHandler)
+}
+
+type StreamScannerOptions struct {
+	RawLines        bool
+	DisableDelivery bool
+	IdleTimeout     time.Duration
+}
+
+func StreamScannerHandlerWithOptions(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, options StreamScannerOptions, dataHandler func(data string, sr *StreamResult)) {
+	streamScannerHandler(c, resp, info, dataHandler, options)
 }
 
 // StreamScannerHandlerWithLines shares the bounded streaming lifecycle with
@@ -62,22 +72,28 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 // It is intended for providers whose SSE framing uses event/meta fields or
 // newline-delimited JSON rather than a simple data payload.
 func StreamScannerHandlerWithLines(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, lineHandler func(line string, sr *StreamResult)) {
-	streamScannerHandler(c, resp, info, lineHandler, true)
+	StreamScannerHandlerWithOptions(c, resp, info, StreamScannerOptions{RawLines: true}, lineHandler)
 }
 
-func streamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string, sr *StreamResult), rawLines bool) {
+func streamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string, sr *StreamResult), options StreamScannerOptions) {
 	if c == nil || c.Request == nil || resp == nil || resp.Body == nil || info == nil || dataHandler == nil {
 		return
 	}
 	info.StreamStatus = relaycommon.NewStreamStatus()
-	delivery := installStreamDeliveryWriter(c)
-	SetEventStreamHeaders(c)
+	var delivery *streamDeliveryWriter
+	if !options.DisableDelivery {
+		delivery = installStreamDeliveryWriter(c)
+		SetEventStreamHeaders(c)
+	}
 	workCtx, cancelWork := context.WithCancel(context.Background())
 	defer cancelWork()
 	var closeOnce sync.Once
 	closeBody := func() { closeOnce.Do(func() { _ = resp.Body.Close() }) }
 	defer closeBody()
 	streamingTimeout := time.Duration(constant.StreamingTimeout) * time.Second
+	if options.IdleTimeout > 0 {
+		streamingTimeout = options.IdleTimeout
+	}
 	if streamingTimeout <= 0 {
 		streamingTimeout = 30 * time.Second
 	}
@@ -146,14 +162,16 @@ func streamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	var draining atomic.Bool
 	var drainEvents atomic.Int64
 	requestCtx := c.Request.Context()
-	go func() {
-		select {
-		case <-requestCtx.Done():
-			draining.Store(true)
-			delivery.disable()
-		case <-workCtx.Done():
-		}
-	}()
+	if delivery != nil {
+		go func() {
+			select {
+			case <-requestCtx.Done():
+				draining.Store(true)
+				delivery.disable()
+			case <-workCtx.Done():
+			}
+		}()
+	}
 	go func() {
 		defer close(handlerDone)
 		defer func() {
@@ -221,7 +239,7 @@ func streamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				return
 			}
 			var data string
-			if rawLines {
+			if options.RawLines {
 				data = line
 			} else {
 				if len(line) < 5 || line[:5] != "data:" {
@@ -261,7 +279,7 @@ func streamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	}()
 
 	settings := operation_setting.GetGeneralSetting()
-	pingEnabled := settings.PingIntervalEnabled && !info.DisablePing
+	pingEnabled := !options.DisableDelivery && settings.PingIntervalEnabled && !info.DisablePing
 	pingInterval := time.Duration(settings.PingIntervalSeconds) * time.Second
 	if pingInterval <= 0 {
 		pingInterval = DefaultPingInterval
@@ -291,11 +309,17 @@ func streamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		idleTimer.Reset(streamingTimeout)
 	}
 	finished := false
+	var deliveryDone <-chan struct{}
+	if delivery != nil {
+		deliveryDone = delivery.deliveryDone()
+	} else {
+		deliveryDone = requestCtx.Done()
+	}
 	for !finished {
 		select {
 		case <-activity:
 			resetIdle()
-		case <-delivery.deliveryDone():
+		case <-deliveryDone:
 			if drainTimerC != nil {
 				continue
 			}
@@ -330,7 +354,9 @@ func streamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			drainTimerC = nil
 		case <-currentStreamServiceContext().Done():
 			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, fmt.Errorf("stream drain canceled by service shutdown"))
-			delivery.disable()
+			if delivery != nil {
+				delivery.disable()
+			}
 			cancelWork()
 			closeBody()
 		case <-func() <-chan time.Time {

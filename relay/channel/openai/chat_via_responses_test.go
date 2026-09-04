@@ -1,11 +1,13 @@
 package openai
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -101,6 +103,7 @@ func TestOaiResponsesToChatBufferedStreamHandlerReturnsJSONFromSSE(t *testing.T)
 	}, "\n")
 
 	c, recorder, resp, info := newResponsesChatTestContext(t, body, false)
+	writerBefore := c.Writer
 
 	usage, err := OaiResponsesToChatBufferedStreamHandler(c, info, resp)
 	require.Nil(t, err)
@@ -108,6 +111,9 @@ func TestOaiResponsesToChatBufferedStreamHandlerReturnsJSONFromSSE(t *testing.T)
 	require.Equal(t, 3, usage.TotalTokens)
 
 	got := recorder.Body.String()
+	require.Same(t, writerBefore, c.Writer)
+	require.Equal(t, "application/json", recorder.Header().Get("Content-Type"))
+	require.Empty(t, recorder.Header().Get("Transfer-Encoding"))
 	require.NotContains(t, got, `data:`)
 	require.Contains(t, got, `"object":"chat.completion"`)
 	require.Contains(t, got, `"content":"buffered text"`)
@@ -116,15 +122,133 @@ func TestOaiResponsesToChatBufferedStreamHandlerReturnsJSONFromSSE(t *testing.T)
 	require.Contains(t, got, `"finish_reason":"tool_calls"`)
 }
 
-func TestOaiResponsesToChatStreamHandlerIncompleteUsageIsPreserved(t *testing.T) {
+func TestOaiResponsesToChatHandlerTerminalStatuses(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      string
+		withUsage   bool
+		wantError   bool
+		wantSettled bool
+		wantMissing bool
+		wantTotal   int
+	}{
+		{name: "completed", status: "completed", withUsage: true, wantTotal: 3},
+		{name: "failed with usage", status: "failed", withUsage: true, wantError: true, wantSettled: true, wantTotal: 3},
+		{name: "error missing usage", status: "error", wantError: true, wantMissing: true},
+		{name: "cancelled with usage", status: "cancelled", withUsage: true, wantError: true, wantSettled: true, wantTotal: 3},
+		{name: "incomplete missing usage", status: "incomplete", wantError: true, wantMissing: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			usageJSON := ""
+			if tt.withUsage {
+				usageJSON = `,"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}`
+			}
+			body := `{"id":"resp_1","model":"gpt-test","status":"` + tt.status + `"` + usageJSON + `}`
+			c, _, resp, info := newResponsesChatTestContext(t, body, false)
+			resp.Header.Set("Content-Type", "application/json")
+
+			usage, newAPIError := OaiResponsesToChatHandler(c, info, resp)
+			if tt.wantError {
+				require.Error(t, newAPIError)
+			} else {
+				require.Nil(t, newAPIError)
+			}
+			require.Equal(t, tt.status, common.GetContextKeyString(c, constant.ContextKeyUpstreamTerminalStatus))
+			require.Equal(t, tt.wantSettled, common.GetContextKeyBool(c, constant.ContextKeyBillingSettledOnError))
+			require.Equal(t, tt.wantMissing, common.GetContextKeyBool(c, constant.ContextKeyMissingUpstreamUsage))
+			if tt.withUsage {
+				require.NotNil(t, usage)
+				require.Equal(t, tt.wantTotal, usage.TotalTokens)
+			} else if tt.wantError {
+				require.Nil(t, usage)
+			}
+		})
+	}
+}
+
+func TestOaiResponsesToChatBufferedStreamHandlerTerminalStatuses(t *testing.T) {
+	tests := []struct {
+		status      string
+		withUsage   bool
+		wantError   bool
+		wantSettled bool
+		wantMissing bool
+	}{
+		{status: "response.completed", withUsage: true},
+		{status: "response.done", withUsage: true},
+		{status: "response.failed", withUsage: true, wantError: true, wantSettled: true},
+		{status: "response.error", wantError: true, wantMissing: true},
+		{status: "response.cancelled", withUsage: true, wantError: true, wantSettled: true},
+		{status: "response.incomplete", wantError: true, wantMissing: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.status, func(t *testing.T) {
+			usageJSON := ""
+			if tt.withUsage {
+				usageJSON = `,"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}`
+			}
+			body := `data: {"type":"` + tt.status + `","response":{"status":"completed"` + usageJSON + `}}` + "\n"
+			c, recorder, resp, info := newResponsesChatTestContext(t, body, false)
+
+			usage, newAPIError := OaiResponsesToChatBufferedStreamHandler(c, info, resp)
+			if tt.wantError {
+				require.Error(t, newAPIError)
+			} else {
+				require.Nil(t, newAPIError)
+				require.Equal(t, "application/json", recorder.Header().Get("Content-Type"))
+			}
+			require.Equal(t, tt.status, common.GetContextKeyString(c, constant.ContextKeyUpstreamTerminalStatus))
+			require.Equal(t, tt.wantSettled, common.GetContextKeyBool(c, constant.ContextKeyBillingSettledOnError))
+			require.Equal(t, tt.wantMissing, common.GetContextKeyBool(c, constant.ContextKeyMissingUpstreamUsage))
+			if tt.withUsage {
+				require.NotNil(t, usage)
+				require.Equal(t, 3, usage.TotalTokens)
+			}
+		})
+	}
+}
+
+func TestOaiResponsesToChatBufferedStreamHandlerRejectsEOFWithoutTerminal(t *testing.T) {
+	c, _, resp, info := newResponsesChatTestContext(t, `data: {"type":"response.output_text.delta","delta":"partial"}`+"\n", false)
+	usage, err := OaiResponsesToChatBufferedStreamHandler(c, info, resp)
+	require.Error(t, err)
+	require.Nil(t, usage)
+	require.True(t, common.GetContextKeyBool(c, constant.ContextKeyMissingUpstreamUsage))
+}
+
+func TestOaiResponsesToChatBufferedStreamHandlerShortTimeout(t *testing.T) {
+	previousTimeout := responsesBufferedStreamTimeout
+	responsesBufferedStreamTimeout = 10 * time.Millisecond
+	t.Cleanup(func() { responsesBufferedStreamTimeout = previousTimeout })
+
+	reader, writer := io.Pipe()
+	t.Cleanup(func() { _ = writer.Close() })
+	c, _, resp, info := newResponsesChatTestContext(t, "", false)
+	resp.Body = reader
+	ctx, cancel := context.WithTimeout(c.Request.Context(), time.Second)
+	t.Cleanup(cancel)
+	c.Request = c.Request.WithContext(ctx)
+
+	usage, err := OaiResponsesToChatBufferedStreamHandler(c, info, resp)
+	require.Error(t, err)
+	require.Nil(t, usage)
+	require.True(t, common.GetContextKeyBool(c, constant.ContextKeyMissingUpstreamUsage))
+	reason, _ := info.StreamStatus.Snapshot()
+	require.Equal(t, relaycommon.StreamEndReasonTimeout, reason)
+}
+
+func TestOaiResponsesToChatStreamHandlerIncompleteUsageIsPreservedWithoutFinalChunk(t *testing.T) {
 	body := "data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"total_tokens\":0}}}\ndata: [DONE]\n"
-	c, _, resp, info := newResponsesChatTestContext(t, body, true)
+	c, recorder, resp, info := newResponsesChatTestContext(t, body, true)
 	usage, err := OaiResponsesToChatStreamHandler(c, info, resp)
 	require.Error(t, err)
 	require.NotNil(t, usage)
 	require.Equal(t, 0, usage.TotalTokens)
 	require.Equal(t, "response.incomplete", common.GetContextKeyString(c, constant.ContextKeyUpstreamTerminalStatus))
 	require.False(t, common.GetContextKeyBool(c, constant.ContextKeyMissingUpstreamUsage))
+	require.True(t, common.GetContextKeyBool(c, constant.ContextKeyBillingSettledOnError))
+	require.NotContains(t, recorder.Body.String(), `"finish_reason"`)
 }
 
 func TestOaiChatToResponsesStreamHandlerConvertsSSEOrderAndUsage(t *testing.T) {
