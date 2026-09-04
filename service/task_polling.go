@@ -824,6 +824,10 @@ func finishTerminalTaskBillingWithLease(ctx context.Context, task *model.Task, w
 		if completed && operationKey != "" {
 			won, err := model.CompleteTaskBillingOperation(operationKey, workerID)
 			if err != nil || !won {
+				// The mutation may already have committed. Never downgrade this
+				// ambiguity to pending, which would replay the debit/refund.
+				_ = model.MarkTaskBillingOperationManual(operationKey, workerID, "economic mutation completed but durable completion marker failed")
+				_ = task.UpdateBillingState(model.TaskBillingStateManual)
 				completed = false
 			}
 		}

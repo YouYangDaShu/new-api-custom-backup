@@ -20,15 +20,23 @@ const (
 // unknown. Once its operation lease expires, Begin marks it manual for
 // reconciliation instead of risking a second debit/refund.
 type TaskBillingOperation struct {
-	ID           int64  `gorm:"primaryKey"`
-	OperationKey string `gorm:"column:operation_key;type:varchar(191);uniqueIndex;not null"`
-	TaskID       int64  `gorm:"column:task_id;index;not null"`
-	State        string `gorm:"column:state;type:varchar(16);index;not null"`
-	Owner        string `gorm:"column:owner;type:varchar(128);index"`
-	LeaseUntil   int64  `gorm:"column:lease_until;index"`
-	LastError    string `gorm:"column:last_error;type:text"`
-	CreatedAt    int64  `gorm:"column:created_at;autoCreateTime"`
-	UpdatedAt    int64  `gorm:"column:updated_at;autoUpdateTime"`
+	ID               int64  `gorm:"primaryKey"`
+	OperationKey     string `gorm:"column:operation_key;type:varchar(191);uniqueIndex;not null"`
+	TaskID           int64  `gorm:"column:task_id;index;not null"`
+	State            string `gorm:"column:state;type:varchar(16);index;not null"`
+	Owner            string `gorm:"column:owner;type:varchar(128);index"`
+	LeaseUntil       int64  `gorm:"column:lease_until;index"`
+	LastError        string `gorm:"column:last_error;type:text"`
+	PreConsumedQuota int64  `gorm:"column:pre_consumed_quota"`
+	ActualQuota      int64  `gorm:"column:actual_quota"`
+	FundingSource    string `gorm:"column:funding_source;type:varchar(32)"`
+	OperationType    string `gorm:"column:operation_type;type:varchar(32)"`
+	Phase            string `gorm:"column:phase;type:varchar(32)"`
+	Result           string `gorm:"column:result;type:text"`
+	UsageSource      string `gorm:"column:usage_source;type:varchar(64)"`
+	TerminalReason   string `gorm:"column:terminal_reason;type:text"`
+	CreatedAt        int64  `gorm:"column:created_at;autoCreateTime"`
+	UpdatedAt        int64  `gorm:"column:updated_at;autoUpdateTime"`
 }
 
 // BeginTaskBillingOperation claims the stable operation key. The returned
@@ -124,4 +132,15 @@ func FailTaskBillingOperation(operationKey, owner string, err error) error {
 	return DB.Model(&TaskBillingOperation{}).
 		Where("operation_key = ? AND state = ? AND owner = ?", operationKey, TaskBillingOperationInProgress, owner).
 		Updates(map[string]any{"state": TaskBillingOperationPending, "owner": "", "lease_until": 0, "last_error": lastError}).Error
+}
+
+// MarkTaskBillingOperationManual is fail-closed when the economic mutation may
+// have committed but the completion marker could not be written.
+func MarkTaskBillingOperationManual(operationKey, owner, reason string) error {
+	if operationKey == "" {
+		return nil
+	}
+	return DB.Model(&TaskBillingOperation{}).
+		Where("operation_key = ? AND state = ? AND (owner = ? OR owner = '')", operationKey, TaskBillingOperationInProgress, owner).
+		Updates(map[string]any{"state": TaskBillingOperationManual, "owner": "", "lease_until": 0, "last_error": reason, "phase": "unknown", "terminal_reason": reason}).Error
 }

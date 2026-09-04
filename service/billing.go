@@ -37,6 +37,11 @@ func SettleBilling(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, actualQuo
 	}
 	if relayInfo.Billing != nil {
 		preConsumed := relayInfo.Billing.GetPreConsumedQuota()
+		if actualQuota == 0 && preConsumed > 0 {
+			// Zero usage is ambiguous for providers that omit counters. Never
+			// turn an unknown outcome into an implicit refund.
+			return fmt.Errorf("missing usage for pre-consumed billing; manual reconciliation required")
+		}
 		delta := actualQuota - preConsumed
 
 		if delta > 0 {

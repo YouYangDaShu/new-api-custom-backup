@@ -89,13 +89,21 @@ type Log struct {
 // request operations. A unique request/kind/version tuple allows only one
 // worker to claim an operation across processes.
 type BillingOperation struct {
-	Id        int    `gorm:"primaryKey"`
-	RequestId string `gorm:"type:varchar(64);uniqueIndex:idx_billing_operation_key,priority:1"`
-	Kind      string `gorm:"type:varchar(32);uniqueIndex:idx_billing_operation_key,priority:2"`
-	Version   int    `gorm:"uniqueIndex:idx_billing_operation_key,priority:3"`
-	Status    string `gorm:"index"`
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	Id               int    `gorm:"primaryKey"`
+	RequestId        string `gorm:"type:varchar(64);uniqueIndex:idx_billing_operation_key,priority:1"`
+	Kind             string `gorm:"type:varchar(32);uniqueIndex:idx_billing_operation_key,priority:2"`
+	Version          int    `gorm:"uniqueIndex:idx_billing_operation_key,priority:3"`
+	Status           string `gorm:"index"`
+	ActualQuota      int64  `gorm:"column:actual_quota"`
+	PreConsumedQuota int64  `gorm:"column:pre_consumed_quota"`
+	FundingSource    string `gorm:"column:funding_source;type:varchar(32)"`
+	OperationType    string `gorm:"column:operation_type;type:varchar(32)"`
+	Phase            string `gorm:"column:phase;type:varchar(32)"`
+	UsageSource      string `gorm:"column:usage_source;type:varchar(64)"`
+	TerminalReason   string `gorm:"column:terminal_reason;type:text"`
+	Result           string `gorm:"column:result;type:text"`
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 const (
@@ -195,7 +203,7 @@ func CloseStaleProcessingLogs(now time.Time) (int64, error) {
 		"error_type":     "new_api_error",
 	})
 	result := LOG_DB.Model(&Log{}).
-		Where("type = ? AND quota = ? AND content = ? AND billing_status IN ? AND (((last_activity_at IS NULL OR last_activity_at = 0) AND created_at < ?) OR (last_activity_at > 0 AND last_activity_at < ?))", LogTypeProcessing, 0, "processing", []string{"", BillingStatusInFlight}, cutoff, cutoff).
+		Where("type = ? AND quota = ? AND pre_consumed_quota = ? AND content = ? AND billing_status IN ? AND (((last_activity_at IS NULL OR last_activity_at = 0) AND created_at < ?) OR (last_activity_at > 0 AND last_activity_at < ?))", LogTypeProcessing, 0, 0, "processing", []string{"", BillingStatusInFlight}, cutoff, cutoff).
 		Updates(map[string]interface{}{
 			"type":    LogTypeError,
 			"content": "status_code=408, 请求超时已关闭（未扣费）",
@@ -554,6 +562,10 @@ func ClaimRequestBilling(c *gin.Context, actualQuota, preConsumedQuota int, usag
 	result := LOG_DB.Model(&Log{}).
 		Where("request_id = ? AND type = ? AND billing_status IN ?", requestID, LogTypeProcessing, []string{"", BillingStatusInFlight}).
 		Updates(map[string]interface{}{"billing_status": BillingStatusSettling, "quota": actualQuota, "pre_consumed_quota": preConsumedQuota, "usage_source": usageSource})
+	if result.Error == nil {
+		_ = LOG_DB.Model(&BillingOperation{}).Where("request_id = ? AND kind = ? AND version = ?", requestID, "settlement", 1).
+			Updates(map[string]interface{}{"actual_quota": actualQuota, "pre_consumed_quota": preConsumedQuota, "operation_type": "settlement", "phase": "claimed", "usage_source": usageSource})
+	}
 	if result.Error != nil {
 		_ = CompleteBillingOperation(requestID, "settlement", 1, BillingOperationUnknown)
 		logger.LogError(c, "failed to claim request billing: "+result.Error.Error())
@@ -577,6 +589,8 @@ func CompleteRequestBilling(c *gin.Context, status string) bool {
 	result := LOG_DB.Model(&Log{}).Where("request_id = ? AND type = ? AND billing_status = ?", requestID, LogTypeProcessing, BillingStatusSettling).Update("billing_status", status)
 	ok := result.Error == nil && result.RowsAffected == 1
 	if ok {
+		_ = LOG_DB.Model(&BillingOperation{}).Where("request_id = ? AND kind = ? AND version = ?", requestID, "settlement", 1).
+			Updates(map[string]interface{}{"phase": "completed", "result": status, "terminal_reason": ""})
 		_ = CompleteBillingOperation(requestID, "settlement", 1, BillingOperationDone)
 	}
 	return ok
@@ -597,6 +611,8 @@ func FailRequestBilling(c *gin.Context, err error) bool {
 	result := LOG_DB.Model(&Log{}).Where("request_id = ? AND type = ? AND billing_status = ?", requestID, LogTypeProcessing, BillingStatusSettling).Updates(map[string]interface{}{"billing_status": BillingStatusSettlementFail, "other": common.MapToJsonStr(other)})
 	ok := result.Error == nil && result.RowsAffected == 1
 	if ok {
+		_ = LOG_DB.Model(&BillingOperation{}).Where("request_id = ? AND kind = ? AND version = ?", requestID, "settlement", 1).
+			Updates(map[string]interface{}{"phase": "unknown", "result": "unknown", "terminal_reason": other["settlement_error"]})
 		_ = CompleteBillingOperation(requestID, "settlement", 1, BillingOperationUnknown)
 	}
 	return ok

@@ -44,14 +44,28 @@ func (s *BillingSession) Settle(actualQuota int) error {
 	if s.settled {
 		return nil
 	}
+	if s.relayInfo.RequestId == "" {
+		s.relayInfo.RequestId = common.NewRequestId()
+	}
 	delta := actualQuota - s.preConsumedQuota
 	if delta == 0 {
 		s.settled = true
 		return nil
 	}
-	// 1) 调整资金来源（仅在尚未提交时执行，防止重复调用）
+	// 1) 调整资金来源。每个经济效果有独立 durable child key，
+	// mutation 与 ledger done 标记在同一数据库事务内提交。
 	if !s.fundingSettled {
-		if err := s.funding.Settle(delta); err != nil {
+		key := s.relayInfo.RequestId + ":settlement:funding"
+		var err error
+		switch funding := s.funding.(type) {
+		case *WalletFunding:
+			err = model.ApplyWalletQuotaOperation(key, funding.userId, -delta, s.relayInfo.RequestId, funding.Source(), int64(s.preConsumedQuota), int64(actualQuota))
+		case *SubscriptionFunding:
+			err = model.ApplySubscriptionQuotaOperation(key, funding.subscriptionId, int64(delta), s.relayInfo.RequestId, funding.Source(), int64(s.preConsumedQuota), int64(actualQuota))
+		default:
+			err = s.funding.Settle(delta)
+		}
+		if err != nil {
 			return err
 		}
 		s.fundingSettled = true
@@ -60,9 +74,9 @@ func (s *BillingSession) Settle(actualQuota int) error {
 	var tokenErr error
 	if !s.relayInfo.IsPlayground {
 		if delta > 0 {
-			tokenErr = model.DecreaseTokenQuota(s.relayInfo.TokenId, s.relayInfo.TokenKey, delta)
+			tokenErr = model.ApplyTokenQuotaOperation(s.relayInfo.RequestId+":settlement:token", s.relayInfo.TokenId, -delta, s.relayInfo.RequestId, s.funding.Source(), int64(s.preConsumedQuota), int64(actualQuota))
 		} else {
-			tokenErr = model.IncreaseTokenQuota(s.relayInfo.TokenId, s.relayInfo.TokenKey, -delta)
+			tokenErr = model.ApplyTokenQuotaOperation(s.relayInfo.RequestId+":settlement:token", s.relayInfo.TokenId, -delta, s.relayInfo.RequestId, s.funding.Source(), int64(s.preConsumedQuota), int64(actualQuota))
 		}
 		if tokenErr != nil {
 			// 资金来源已提交，令牌调整失败只能记录日志；标记 settled 防止 Refund 误退资金
@@ -86,6 +100,9 @@ func (s *BillingSession) Refund(c *gin.Context) {
 		return
 	}
 	s.refunded = true
+	if s.relayInfo.RequestId == "" {
+		s.relayInfo.RequestId = common.NewRequestId()
+	}
 	s.mu.Unlock()
 
 	logger.LogInfo(c, fmt.Sprintf("用户 %d 请求失败, 返还预扣费（token_quota=%s, funding=%s）",
@@ -96,26 +113,35 @@ func (s *BillingSession) Refund(c *gin.Context) {
 
 	// 复制需要的值到闭包中
 	tokenId := s.relayInfo.TokenId
-	tokenKey := s.relayInfo.TokenKey
 	isPlayground := s.relayInfo.IsPlayground
 	tokenConsumed := s.tokenConsumed
 	extraReserved := s.extraReserved
 	subscriptionId := s.relayInfo.SubscriptionId
+	requestID := s.relayInfo.RequestId
 	funding := s.funding
 
 	gopool.Go(func() {
 		// 1) 退还资金来源
-		if err := funding.Refund(); err != nil {
-			common.SysLog("error refunding billing source: " + err.Error())
+		var fundingErr error
+		switch f := funding.(type) {
+		case *WalletFunding:
+			fundingErr = model.ApplyWalletQuotaOperation(requestID+":refund:funding", f.userId, f.consumed, requestID, f.Source(), int64(tokenConsumed), 0)
+		case *SubscriptionFunding:
+			fundingErr = model.ApplySubscriptionRefundOperation(requestID+":refund:funding", requestID, f.Source(), f.preConsumed, 0)
+		default:
+			fundingErr = funding.Refund()
+		}
+		if fundingErr != nil {
+			common.SysLog("error refunding billing source: " + fundingErr.Error())
 		}
 		if extraReserved > 0 && funding.Source() == BillingSourceSubscription && subscriptionId > 0 {
-			if err := model.PostConsumeUserSubscriptionDelta(subscriptionId, -int64(extraReserved)); err != nil {
+			if err := model.ApplySubscriptionQuotaOperation(requestID+":refund:subscription_extra", subscriptionId, -int64(extraReserved), requestID, funding.Source(), int64(extraReserved), 0); err != nil {
 				common.SysLog("error refunding subscription extra reserved quota: " + err.Error())
 			}
 		}
 		// 2) 退还令牌额度
 		if tokenConsumed > 0 && !isPlayground {
-			if err := model.IncreaseTokenQuota(tokenId, tokenKey, tokenConsumed); err != nil {
+			if err := model.ApplyTokenQuotaOperation(requestID+":refund:token", tokenId, tokenConsumed, requestID, funding.Source(), int64(tokenConsumed), 0); err != nil {
 				common.SysLog("error refunding token quota: " + err.Error())
 			}
 		}

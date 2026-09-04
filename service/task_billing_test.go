@@ -39,6 +39,7 @@ func TestMain(m *testing.M) {
 	if err := db.AutoMigrate(
 		&model.Task{},
 		&model.TaskBillingOperation{},
+		&model.EconomicBillingOperation{},
 		&model.User{},
 		&model.Token{},
 		&model.Log{},
