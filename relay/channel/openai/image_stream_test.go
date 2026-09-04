@@ -13,6 +13,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type failingImageResponseWriter struct {
+	header http.Header
+}
+
+func (w *failingImageResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *failingImageResponseWriter) WriteHeader(int) {}
+
+func (w *failingImageResponseWriter) Write([]byte) (int, error) {
+	return 0, nil
+}
+
+func (w *failingImageResponseWriter) Flush() {
+	panic("client write failed")
+}
+
 func newImageTestContext(t *testing.T, body, contentType string, isStream bool) (*gin.Context, *httptest.ResponseRecorder, *http.Response, *relaycommon.RelayInfo) {
 	t.Helper()
 
@@ -158,16 +176,66 @@ func TestOpenaiImageStreamHandlerRecordsUpstreamErrorEvent(t *testing.T) {
 	c, recorder, resp, info := newImageTestContext(t, body, "text/event-stream", true)
 
 	usage, err := OpenaiImageStreamHandler(c, info, resp)
-	require.Nil(t, err)
-	require.NotNil(t, usage)
 	require.NotNil(t, info.StreamStatus)
-	require.Equal(t, relaycommon.StreamEndReasonEOF, info.StreamStatus.EndReason)
-	require.True(t, info.StreamStatus.HasErrors())
-	require.Equal(t, 1, info.StreamStatus.TotalErrorCount())
-	require.Contains(t, info.StreamStatus.Errors[0].Message, "INTERNAL_ERROR")
+	require.Nil(t, usage)
+	require.NotNil(t, err)
+	reason, _ := info.StreamStatus.Snapshot()
+	require.Equal(t, relaycommon.StreamEndReasonHandlerStop, reason)
+	errorCount, errors := info.StreamStatus.ErrorsSnapshot()
+	require.Equal(t, 1, errorCount)
+	require.Contains(t, errors[0].Message, "INTERNAL_ERROR")
 	// The scanner strips the upstream "event: error" line; the event name is
 	// rebuilt from the JSON "type" field (upstream_error). The error message
 	// is still forwarded in the data: payload (stream ID 77).
 	require.Contains(t, recorder.Body.String(), `event: upstream_error`)
 	require.Contains(t, recorder.Body.String(), `stream ID 77`)
+}
+
+func TestOpenaiImageStreamHandlerRejectsIncompleteStream(t *testing.T) {
+	body := "data: {\"type\":\"image_generation.partial_image\",\"b64_json\":\"partial\"}\n\n"
+	c, _, resp, info := newImageTestContext(t, body, "text/event-stream", true)
+
+	usage, err := OpenaiImageStreamHandler(c, info, resp)
+	require.Nil(t, usage)
+	require.NotNil(t, err)
+	reason, _ := info.StreamStatus.Snapshot()
+	require.Equal(t, relaycommon.StreamEndReasonEOF, reason)
+}
+
+func TestOpenaiImageStreamHandlerAcceptsCompletedEventWithoutUsage(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"type":"image_generation.completed","b64_json":"final"}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	c, _, resp, info := newImageTestContext(t, body, "text/event-stream", true)
+
+	usage, err := OpenaiImageStreamHandler(c, info, resp)
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Zero(t, usage.PromptTokens)
+	require.Zero(t, usage.CompletionTokens)
+	require.Zero(t, usage.TotalTokens)
+	require.Equal(t, "image_per_call", usage.UsageSource)
+}
+
+func TestOpenaiImageJSONAsStreamWriteFailurePreservesValidResult(t *testing.T) {
+	writer := &failingImageResponseWriter{header: make(http.Header)}
+	c, _ := gin.CreateTestContext(writer)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`{"data":[{"b64_json":"final"}]}`)),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	}
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}, IsStream: true, StreamStatus: relaycommon.NewStreamStatus()}
+
+	usage, err := OpenaiImageJSONAsStreamHandler(c, info, resp)
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, "image_per_call", usage.UsageSource)
+	reason, endErr := info.StreamStatus.Snapshot()
+	require.Equal(t, relaycommon.StreamEndReasonClientGone, reason)
+	require.ErrorContains(t, endErr, "client write failed")
 }

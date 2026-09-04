@@ -98,14 +98,17 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 	// field (real OpenAI image events keep event == type).
 	usage := &dto.Usage{}
 	var lastStreamData []byte
+	var streamError error
+	validResult := false
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		raw := common.StringToByteSlice(data)
 		lastStreamData = raw
 		if isOpenAIImageStreamErrorEvent(raw) {
-			// Record the error as a soft error; the scanner drives the final
-			// EndReason. HasErrors() flags the failure for logging/handling.
-			sr.Error(fmt.Errorf("%s", extractOpenAIImageStreamErrorMessage(raw)))
+			streamError = fmt.Errorf("%s", extractOpenAIImageStreamErrorMessage(raw))
+			sr.Stop(streamError)
+			writeOpenaiImageStreamChunk(c, raw)
+			return
 		}
 		var usageResp dto.SimpleResponse
 		if err := common.Unmarshal(raw, &usageResp); err == nil {
@@ -114,23 +117,41 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 			_ = common.Unmarshal(raw, &fields)
 			if usageValue, present := fields["usage"]; present && usageValue != nil {
 				usage = &usageResp.Usage
+				validResult = true
 			}
+			validResult = validResult || isOpenAIImageCompletedEvent(fields)
 		}
 		writeOpenaiImageStreamChunk(c, raw)
 	})
+	if streamError != nil {
+		return nil, types.NewOpenAIError(streamError, types.ErrorCodeBadResponse, http.StatusBadGateway)
+	}
 
 	// StreamScannerHandler consumes the upstream [DONE]; re-emit it so the
 	// client still receives a terminal data: [DONE].
+	var endReason relaycommon.StreamEndReason
+	var endErr error
 	if info != nil && info.StreamStatus != nil {
-		reason, _ := info.StreamStatus.Snapshot()
-		if reason == relaycommon.StreamEndReasonDone {
+		endReason, endErr = info.StreamStatus.Snapshot()
+		if endReason == relaycommon.StreamEndReasonDone {
 			helper.Done(c)
 		}
+	}
+	if !validResult || (endReason != relaycommon.StreamEndReasonDone && endReason != relaycommon.StreamEndReasonClientGone) {
+		if endErr == nil {
+			endErr = fmt.Errorf("image stream ended without a completed result")
+		}
+		return nil, types.NewOpenAIError(endErr, types.ErrorCodeBadResponse, http.StatusBadGateway)
 	}
 
 	applyUsagePostProcessing(info, usage, lastStreamData)
 	usage.UsageSource = "image_per_call"
 	return usage, nil
+}
+
+func isOpenAIImageCompletedEvent(fields map[string]interface{}) bool {
+	eventType, _ := fields["type"].(string)
+	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(eventType)), ".completed")
 }
 
 // writeOpenaiImageStreamChunk rebuilds the SSE frame for an image stream chunk:
@@ -217,6 +238,9 @@ func OpenaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 	_ = common.Unmarshal(responseBody, &fields)
 	if oaiError := usageResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
+	}
+	if len(imageResp.Data) == 0 {
+		return nil, types.NewOpenAIError(fmt.Errorf("image response contained no result"), types.ErrorCodeBadResponse, http.StatusBadGateway)
 	}
 	normalizeOpenAIUsage(&usageResp.Usage)
 	usageResp.Usage.UsageSource = "image_per_call"

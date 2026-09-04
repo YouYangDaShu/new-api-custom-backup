@@ -41,6 +41,30 @@ func TestMissingUpstreamUsageAlwaysSkipsTextBilling(t *testing.T) {
 	require.True(t, summary.MissingUpstreamUsage)
 }
 
+func TestImagePerCallFixedPriceWithoutUsageAndNAppliedOnce(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	relayInfo := &relaycommon.RelayInfo{
+		OriginModelName: "image-model",
+		PriceData: types.PriceData{
+			UsePrice:   true,
+			ModelPrice: 0.01,
+			GroupRatioInfo: types.GroupRatioInfo{
+				GroupRatio: 0.5,
+			},
+			OtherRatios: map[string]float64{"n": 2},
+		},
+		StartTime: time.Now(),
+	}
+
+	summary := calculateTextQuotaSummary(ctx, relayInfo, &dto.Usage{UsageSource: "image_per_call"})
+
+	require.Zero(t, summary.PromptTokens)
+	require.Zero(t, summary.CompletionTokens)
+	require.Zero(t, summary.TotalTokens)
+	require.Equal(t, common.QuotaFromFloat(0.01*0.5*2*common.QuotaPerUnit), summary.Quota)
+}
+
 func TestCalculateTextQuotaSummaryUnifiedForClaudeSemantic(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
