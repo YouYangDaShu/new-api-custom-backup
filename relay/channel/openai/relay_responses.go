@@ -53,6 +53,8 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		if responsesResponse.Usage.InputTokensDetails != nil {
 			usage.PromptTokensDetails.CachedTokens = responsesResponse.Usage.InputTokensDetails.CachedTokens
 		}
+	} else {
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 	}
 	if info == nil || info.ResponsesUsageInfo == nil || info.ResponsesUsageInfo.BuiltInTools == nil {
 		return &usage, nil
@@ -79,6 +81,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 
 	var usage = &dto.Usage{}
 	containUsage := false
+	terminalFailure := false
 	var responseTextBuilder strings.Builder
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
@@ -124,10 +127,19 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 					}
 				}
 			}
+		case "response.failed", "response.error", "response.cancelled":
+			terminalFailure = true
+			sr.Stop(fmt.Errorf("responses stream terminal event: %s", streamResponse.Type))
 		}
 	})
+	if info != nil && info.StreamStatus != nil {
+		reason, endErr := info.StreamStatus.Snapshot()
+		if reason == relaycommon.StreamEndReasonHandlerStop && endErr != nil {
+			return nil, types.NewOpenAIError(endErr, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+		}
+	}
 
-	if !containUsage {
+	if !containUsage || terminalFailure {
 		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 	}
 

@@ -46,6 +46,29 @@ func setupStreamTest(t *testing.T, body io.Reader) (*gin.Context, *http.Response
 	return c, resp, info
 }
 
+func TestStreamScannerHandler_ClientGoneQueuePressurePreservesUsageTail(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < 64; i++ {
+		fmt.Fprintf(&b, "data: {\"choices\":[{\"delta\":{\"content\":\"%d\"}}]}\n\n", i)
+	}
+	b.WriteString("data: {\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0}}\n\n")
+	b.WriteString("data: [DONE]\n\n")
+	c, resp, info := setupStreamTest(t, strings.NewReader(b.String()))
+	requestCtx, cancel := context.WithCancel(c.Request.Context())
+	c.Request = c.Request.WithContext(requestCtx)
+	var sawUsage atomic.Bool
+	StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+		if strings.Contains(data, `"usage"`) {
+			sawUsage.Store(true)
+		}
+		if !sawUsage.Load() {
+			time.Sleep(time.Millisecond)
+			cancel()
+		}
+	})
+	assert.True(t, sawUsage.Load())
+}
+
 func buildSSEBody(n int) string {
 	var b strings.Builder
 	for i := 0; i < n; i++ {

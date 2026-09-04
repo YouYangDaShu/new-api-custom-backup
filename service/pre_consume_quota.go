@@ -16,11 +16,10 @@ import (
 
 func ReturnPreConsumedQuota(c *gin.Context, relayInfo *relaycommon.RelayInfo) {
 	if relayInfo.FinalPreConsumedQuota != 0 {
-		logger.LogInfo(c, fmt.Sprintf("用户 %d 请求失败, 返还预扣费额度 %s", relayInfo.UserId, logger.FormatQuota(relayInfo.FinalPreConsumedQuota)))
+		preConsumedQuota := relayInfo.FinalPreConsumedQuota
+		logger.LogInfo(c, fmt.Sprintf("用户 %d 请求失败, 返还预扣费额度 %s", relayInfo.UserId, logger.FormatQuota(preConsumedQuota)))
 		gopool.Go(func() {
-			relayInfoCopy := *relayInfo
-
-			err := PostConsumeQuota(&relayInfoCopy, -relayInfoCopy.FinalPreConsumedQuota, 0, false)
+			err := PostConsumeQuota(relayInfo, -preConsumedQuota, 0, false)
 			if err != nil {
 				common.SysLog("error return pre-consumed quota: " + err.Error())
 			}

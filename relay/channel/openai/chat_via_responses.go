@@ -117,7 +117,7 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 					finalResponse.Status = []byte(`"incomplete"`)
 				}
 			}
-		case "response.failed", "response.error":
+		case "response.failed", "response.error", "response.cancelled":
 			if streamResp.Response != nil {
 				if oaiErr := streamResp.Response.GetOpenAIError(); oaiErr != nil && oaiErr.Type != "" {
 					streamErr = types.WithOpenAIError(*oaiErr, http.StatusInternalServerError)

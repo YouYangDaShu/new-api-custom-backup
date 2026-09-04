@@ -1,6 +1,7 @@
 package common
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -63,6 +64,22 @@ func TestStreamStatus_SetEndReason_Concurrent(t *testing.T) {
 	wg.Wait()
 
 	assert.NotEqual(t, StreamEndReasonNone, s.EndReason)
+}
+
+func TestStreamStatus_ClientGoneWinsDrainTimeout(t *testing.T) {
+	s := NewStreamStatus()
+	s.SetEndReason(StreamEndReasonClientGone, context.Canceled)
+	s.SetEndReason(StreamEndReasonTimeout, fmt.Errorf("drain timeout"))
+	reason, err := s.Snapshot()
+	assert.Equal(t, StreamEndReasonClientGone, reason)
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
+func TestStreamStatus_HandlerStopWithFatalErrorIsNotNormal(t *testing.T) {
+	s := NewStreamStatus()
+	fatal := fmt.Errorf("handler failed")
+	s.SetEndReason(StreamEndReasonHandlerStop, fatal)
+	assert.False(t, s.IsNormalEnd())
 }
 
 func TestStreamStatus_RecordError_Basic(t *testing.T) {

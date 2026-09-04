@@ -38,22 +38,27 @@ func OpenaiTTSHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 	c.Writer.WriteHeader(resp.StatusCode)
 
 	if info.IsStream {
+		usagePresent := false
 		helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 			if service.SundaySearch(data, "usage") {
-				var simpleResponse dto.SimpleResponse
+				var simpleResponse struct {
+					Usage *dto.Usage `json:"usage"`
+				}
 				if err := common.Unmarshal([]byte(data), &simpleResponse); err != nil {
 					logger.LogError(c, err.Error())
 					sr.Error(err)
-				} else if simpleResponse.Usage.TotalTokens != 0 {
-					usage.PromptTokens = simpleResponse.Usage.InputTokens
-					usage.CompletionTokens = simpleResponse.OutputTokens
-					usage.TotalTokens = simpleResponse.TotalTokens
+				} else if simpleResponse.Usage != nil {
+					usagePresent = true
+					usage = simpleResponse.Usage
 				}
 			}
 			if err := helper.StringData(c, data); err != nil {
 				sr.Error(err)
 			}
 		})
+		if !usagePresent {
+			common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
+		}
 	} else {
 		common.SetContextKey(c, constant.ContextKeyLocalCountTokens, true)
 		// 读取响应体到缓冲区
@@ -129,16 +134,14 @@ func OpenaiSTTHandler(c *gin.Context, resp *http.Response, info *relaycommon.Rel
 		Usage *dto.Usage `json:"usage"`
 	}
 	if err := common.Unmarshal(responseBody, &responseData); err == nil && responseData.Usage != nil {
-		if responseData.Usage.TotalTokens > 0 {
-			usage := responseData.Usage
-			if usage.PromptTokens == 0 {
-				usage.PromptTokens = usage.InputTokens
-			}
-			if usage.CompletionTokens == 0 {
-				usage.CompletionTokens = usage.OutputTokens
-			}
-			return nil, usage
+		usage := responseData.Usage
+		if usage.PromptTokens == 0 {
+			usage.PromptTokens = usage.InputTokens
 		}
+		if usage.CompletionTokens == 0 {
+			usage.CompletionTokens = usage.OutputTokens
+		}
+		return nil, usage
 	}
 
 	usage := &dto.Usage{}

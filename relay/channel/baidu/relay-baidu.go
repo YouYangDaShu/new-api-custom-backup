@@ -116,6 +116,7 @@ func embeddingResponseBaidu2OpenAI(response *BaiduEmbeddingResponse) *dto.OpenAI
 
 func baiduStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*types.NewAPIError, *dto.Usage) {
 	usage := &dto.Usage{}
+	usagePresent := false
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		var baiduResponse BaiduChatStreamResponse
 		if err := common.Unmarshal([]byte(data), &baiduResponse); err != nil {
@@ -125,7 +126,8 @@ func baiduStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 		}
 		var raw map[string]interface{}
 		_ = common.Unmarshal([]byte(data), &raw)
-		if _, present := raw["usage"]; present {
+		if usageValue, present := raw["usage"]; present && usageValue != nil {
+			usagePresent = true
 			usage.TotalTokens = baiduResponse.Usage.TotalTokens
 			usage.PromptTokens = baiduResponse.Usage.PromptTokens
 			usage.CompletionTokens = baiduResponse.Usage.TotalTokens - baiduResponse.Usage.PromptTokens
@@ -137,6 +139,9 @@ func baiduStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 		}
 	})
 	service.CloseResponseBodyGracefully(resp)
+	if !usagePresent {
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
+	}
 	return nil, usage
 }
 

@@ -29,10 +29,8 @@ type StreamErrorEntry struct {
 }
 
 type StreamStatus struct {
-	EndReason StreamEndReason
-	EndError  error
-	endOnce   sync.Once
-
+	EndReason  StreamEndReason
+	EndError   error
 	mu         sync.Mutex
 	Errors     []StreamErrorEntry
 	ErrorCount int
@@ -46,18 +44,32 @@ func (s *StreamStatus) SetEndReason(reason StreamEndReason, err error) {
 	if s == nil {
 		return
 	}
-	s.endOnce.Do(func() {
-		s.EndReason = reason
-		s.EndError = err
-	})
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.EndReason == StreamEndReasonNone || (reason == StreamEndReasonHandlerStop && (s.EndReason == StreamEndReasonDone || s.EndReason == StreamEndReasonEOF)) {
+		s.EndReason, s.EndError = reason, err
+	}
 }
 
 func (s *StreamStatus) ReplaceEndReason(reason StreamEndReason, err error) {
 	if s == nil {
 		return
 	}
-	s.EndReason = reason
-	s.EndError = err
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.EndReason == StreamEndReasonClientGone && reason == StreamEndReasonTimeout {
+		return
+	}
+	s.EndReason, s.EndError = reason, err
+}
+
+func (s *StreamStatus) Snapshot() (StreamEndReason, error) {
+	if s == nil {
+		return StreamEndReasonNone, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.EndReason, s.EndError
 }
 
 func (s *StreamStatus) RecordError(msg string) {
@@ -93,13 +105,22 @@ func (s *StreamStatus) TotalErrorCount() int {
 	return s.ErrorCount
 }
 
+func (s *StreamStatus) ErrorsSnapshot() (int, []StreamErrorEntry) {
+	if s == nil {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	errs := append([]StreamErrorEntry(nil), s.Errors...)
+	return s.ErrorCount, errs
+}
+
 func (s *StreamStatus) IsNormalEnd() bool {
 	if s == nil {
 		return true
 	}
-	return s.EndReason == StreamEndReasonDone ||
-		s.EndReason == StreamEndReasonEOF ||
-		s.EndReason == StreamEndReasonHandlerStop
+	reason, err := s.Snapshot()
+	return (reason == StreamEndReasonDone || reason == StreamEndReasonEOF || reason == StreamEndReasonHandlerStop) && err == nil
 }
 
 func (s *StreamStatus) Summary() string {
@@ -107,9 +128,10 @@ func (s *StreamStatus) Summary() string {
 		return "StreamStatus<nil>"
 	}
 	b := &strings.Builder{}
-	fmt.Fprintf(b, "reason=%s", s.EndReason)
-	if s.EndError != nil {
-		fmt.Fprintf(b, " end_error=%q", s.EndError.Error())
+	reason, endErr := s.Snapshot()
+	fmt.Fprintf(b, "reason=%s", reason)
+	if endErr != nil {
+		fmt.Fprintf(b, " end_error=%q", endErr.Error())
 	}
 	s.mu.Lock()
 	if s.ErrorCount > 0 {

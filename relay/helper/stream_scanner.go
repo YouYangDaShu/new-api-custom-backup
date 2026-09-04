@@ -66,7 +66,31 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		streamingTimeout = 30 * time.Second
 	}
 	activity := make(chan struct{}, 1)
-	dataChan := make(chan string, 10)
+	var queueMu sync.Mutex
+	queued := make([]string, 0, 64)
+	queueSignal := make(chan struct{}, 1)
+	queueClosed := false
+	enqueue := func(data string) {
+		queueMu.Lock()
+		if !queueClosed {
+			queued = append(queued, data)
+		}
+		queueMu.Unlock()
+		select {
+		case queueSignal <- struct{}{}:
+		default:
+		}
+	}
+	dequeue := func() (string, bool) {
+		queueMu.Lock()
+		defer queueMu.Unlock()
+		if len(queued) > 0 {
+			data := queued[0]
+			queued = queued[1:]
+			return data, true
+		}
+		return "", false
+	}
 	scannerDone := make(chan struct{})
 	handlerDone := make(chan struct{})
 	parserStop := make(chan struct{})
@@ -90,7 +114,25 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			}
 		}()
 		sr := newStreamResult(info.StreamStatus)
-		for data := range dataChan {
+		for {
+			data, ok := dequeue()
+			if !ok {
+				select {
+				case <-queueSignal:
+					continue
+				case <-scannerDone:
+					queueMu.Lock()
+					queueClosed = true
+					hasQueued := len(queued) > 0
+					queueMu.Unlock()
+					if hasQueued {
+						continue
+					}
+					return
+				case <-parserStop:
+					return
+				}
+			}
 			sr.reset()
 			ExtendWriteDeadline(c)
 			dataHandler(data, sr)
@@ -102,7 +144,15 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	}()
 	go func() {
 		defer close(scannerDone)
-		defer close(dataChan)
+		defer func() {
+			queueMu.Lock()
+			queueClosed = true
+			queueMu.Unlock()
+			select {
+			case queueSignal <- struct{}{}:
+			default:
+			}
+		}()
 		defer func() {
 			if r := recover(); r != nil {
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonPanic, fmt.Errorf("scanner panic: %v", r))
@@ -134,11 +184,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			}
 			info.SetFirstResponseTime()
 			info.ReceivedResponseCount++
-			select {
-			case dataChan <- data:
-			case <-workCtx.Done():
-				return
-			}
+			enqueue(data)
 		}
 		if err := scanner.Err(); err != nil && err != io.EOF && workCtx.Err() == nil {
 			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonScannerErr, err)
@@ -196,6 +242,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				drainTimer = time.NewTimer(streamDrainTimeout)
 				drainTimerC = drainTimer.C
 			default:
+				info.StreamStatus.RecordError("stream drain concurrency limit reached")
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, fmt.Errorf("stream drain concurrency limit reached"))
 				cancelWork()
 				closeBody()
@@ -211,6 +258,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			cancelWork()
 			closeBody()
 		case <-drainTimerC:
+			info.StreamStatus.RecordError("stream drain timeout")
 			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, fmt.Errorf("stream drain timeout"))
 			cancelWork()
 			closeBody()
@@ -235,7 +283,8 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	if drainTimer != nil {
 		drainTimer.Stop()
 	}
-	if draining.Load() && info.StreamStatus.EndReason != relaycommon.StreamEndReasonTimeout && info.StreamStatus.EndReason != relaycommon.StreamEndReasonPanic && info.StreamStatus.EndReason != relaycommon.StreamEndReasonScannerErr {
+	endReason, _ := info.StreamStatus.Snapshot()
+	if draining.Load() && endReason != relaycommon.StreamEndReasonTimeout && endReason != relaycommon.StreamEndReasonPanic && endReason != relaycommon.StreamEndReasonScannerErr {
 		info.StreamStatus.ReplaceEndReason(relaycommon.StreamEndReasonClientGone, requestCtx.Err())
 	}
 	if info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors() {
