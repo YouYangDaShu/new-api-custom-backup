@@ -21,7 +21,6 @@ import (
 )
 
 func TestGeminiResponsesHandlerReturnsOpenAIResponsesJSON(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
@@ -68,7 +67,6 @@ func TestGeminiResponsesHandlerReturnsOpenAIResponsesJSON(t *testing.T) {
 }
 
 func TestGeminiResponsesHandlerClosesBodyOnReadError(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
@@ -82,16 +80,64 @@ func TestGeminiResponsesHandlerClosesBodyOnReadError(t *testing.T) {
 	assert.True(t, body.closed)
 }
 
+func TestGeminiResponsesHandlerUsagePresence(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name        string
+		usageJSON   string
+		wantMissing bool
+	}{
+		{name: "missing", usageJSON: "", wantMissing: true},
+		{name: "null", usageJSON: `,"usageMetadata":null`, wantMissing: true},
+		{name: "explicit zero", usageJSON: `,"usageMetadata":{}`, wantMissing: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			body := `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]}}]` + tt.usageJSON + `}`
+
+			usage, newAPIError := GeminiResponsesHandler(c, newGeminiResponsesRelayInfo(false), &http.Response{Body: io.NopCloser(strings.NewReader(body))})
+			require.Nil(t, newAPIError)
+			require.Equal(t, &dto.Usage{}, usage)
+			require.Equal(t, tt.wantMissing, common.GetContextKeyBool(c, constant.ContextKeyMissingUpstreamUsage))
+		})
+	}
+}
+
+func TestGeminiResponsesHandlerEmptyCandidatesPreservesOnlyReportedUsage(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name        string
+		usageJSON   string
+		wantUsage   dto.Usage
+		wantMissing bool
+	}{
+		{name: "missing", usageJSON: "", wantMissing: true},
+		{name: "reported", usageJSON: `,"usageMetadata":{"promptTokenCount":4,"totalTokenCount":4}`, wantUsage: dto.Usage{PromptTokens: 4, TotalTokens: 4, PromptTokensDetails: dto.InputTokenDetails{TextTokens: 4}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			body := `{"candidates":[]` + tt.usageJSON + `}`
+
+			usage, newAPIError := GeminiResponsesHandler(c, newGeminiResponsesRelayInfo(false), &http.Response{Body: io.NopCloser(strings.NewReader(body))})
+			require.NotNil(t, newAPIError)
+			require.Equal(t, tt.wantUsage, *usage)
+			require.Equal(t, tt.wantMissing, common.GetContextKeyBool(c, constant.ContextKeyMissingUpstreamUsage))
+		})
+	}
+}
+
 func TestGeminiResponsesStreamHandlerReturnsOpenAIResponsesSSE(t *testing.T) {
-	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	c.Set(common.RequestIdKey, "gemini-responses-stream-test")
-
-	oldStreamingTimeout := constant.StreamingTimeout
-	constant.StreamingTimeout = 300
-	t.Cleanup(func() { constant.StreamingTimeout = oldStreamingTimeout })
 
 	info := newGeminiResponsesRelayInfo(true)
 	first := dto.GeminiChatResponse{

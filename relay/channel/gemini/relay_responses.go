@@ -31,14 +31,9 @@ func GeminiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 	if err := common.Unmarshal(responseBody, &geminiResponse); err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
-	var raw map[string]interface{}
-	_ = common.Unmarshal(responseBody, &raw)
-	usagePresent := false
-	if value, ok := raw["usageMetadata"]; ok && value != nil {
-		usagePresent = true
-	}
+	usagePresent := hasGeminiUsageMetadata(responseBody)
 	if len(geminiResponse.Candidates) == 0 {
-		usage := buildUsageFromGeminiMetadata(geminiResponse.UsageMetadata, 0)
+		usage := buildUsageFromGeminiMetadata(geminiResponse.UsageMetadata)
 		if !usagePresent {
 			common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 			usage = dto.Usage{}
@@ -61,7 +56,7 @@ func GeminiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 
 	chatResp := responseGeminiChat2OpenAI(c, &geminiResponse)
 	chatResp.Model = info.UpstreamModelName
-	usage := buildUsageFromGeminiMetadata(geminiResponse.UsageMetadata, 0)
+	usage := buildUsageFromGeminiMetadata(geminiResponse.UsageMetadata)
 	if !usagePresent {
 		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 		usage = dto.Usage{}

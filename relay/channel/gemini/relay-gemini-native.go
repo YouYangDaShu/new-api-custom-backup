@@ -39,8 +39,12 @@ func GeminiTextGenerationHandler(c *gin.Context, info *relaycommon.RelayInfo, re
 		common.SetContextKey(c, constant.ContextKeyAdminRejectReason, fmt.Sprintf("gemini_block_reason=%s", *geminiResponse.PromptFeedback.BlockReason))
 	}
 
-	// 计算使用量（基于 UsageMetadata）
-	usage := buildUsageFromGeminiMetadata(geminiResponse.UsageMetadata, info.GetEstimatePromptTokens())
+	usage := dto.Usage{}
+	if hasGeminiUsageMetadata(responseBody) {
+		usage = buildUsageFromGeminiMetadata(geminiResponse.UsageMetadata)
+	} else {
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
+	}
 
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 

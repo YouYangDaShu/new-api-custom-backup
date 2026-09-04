@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1011,11 +1012,19 @@ func getResponseToolCall(item *dto.GeminiPart) *dto.ToolCallResponse {
 	}
 }
 
-func buildUsageFromGeminiMetadata(metadata dto.GeminiUsageMetadata, fallbackPromptTokens int) dto.Usage {
-	promptTokens := metadata.PromptTokenCount + metadata.ToolUsePromptTokenCount
-	if promptTokens <= 0 && fallbackPromptTokens > 0 {
-		promptTokens = fallbackPromptTokens
+func hasGeminiUsageMetadata(data []byte) bool {
+	var envelope struct {
+		UsageMetadata json.RawMessage `json:"usageMetadata"`
 	}
+	if err := common.Unmarshal(data, &envelope); err != nil {
+		return false
+	}
+	rawUsage := bytes.TrimSpace(envelope.UsageMetadata)
+	return len(rawUsage) > 0 && !bytes.Equal(rawUsage, []byte("null"))
+}
+
+func buildUsageFromGeminiMetadata(metadata dto.GeminiUsageMetadata) dto.Usage {
+	promptTokens := metadata.PromptTokenCount + metadata.ToolUsePromptTokenCount
 
 	usage := dto.Usage{
 		PromptTokens:     promptTokens,
@@ -1357,11 +1366,9 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		}
 
 		// 更新使用量统计
-		var raw map[string]interface{}
-		_ = common.Unmarshal([]byte(data), &raw)
-		if value, present := raw["usageMetadata"]; present && value != nil {
+		if hasGeminiUsageMetadata([]byte(data)) {
 			usagePresent = true
-			mappedUsage := buildUsageFromGeminiMetadata(geminiResponse.UsageMetadata, 0)
+			mappedUsage := buildUsageFromGeminiMetadata(geminiResponse.UsageMetadata)
 			*usage = mappedUsage
 		}
 
@@ -1494,8 +1501,14 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
+	usagePresent := hasGeminiUsageMetadata(responseBody)
+	usage := dto.Usage{}
+	if usagePresent {
+		usage = buildUsageFromGeminiMetadata(geminiResponse.UsageMetadata)
+	} else {
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
+	}
 	if len(geminiResponse.Candidates) == 0 {
-		usage := buildUsageFromGeminiMetadata(geminiResponse.UsageMetadata, info.GetEstimatePromptTokens())
 
 		var newAPIError *types.NewAPIError
 		if geminiResponse.PromptFeedback != nil && geminiResponse.PromptFeedback.BlockReason != nil {
@@ -1531,8 +1544,6 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 	}
 	fullTextResponse := responseGeminiChat2OpenAI(c, &geminiResponse)
 	fullTextResponse.Model = info.UpstreamModelName
-	usage := buildUsageFromGeminiMetadata(geminiResponse.UsageMetadata, info.GetEstimatePromptTokens())
-
 	fullTextResponse.Usage = usage
 
 	switch info.RelayFormat {

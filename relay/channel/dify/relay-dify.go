@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -223,9 +224,23 @@ func streamResponseDify2OpenAI(difyResponse DifyChunkChatCompletionResponse) *dt
 	return &response
 }
 
+func hasDifyUsage(data []byte) bool {
+	var envelope struct {
+		MetaData struct {
+			Usage json.RawMessage `json:"usage"`
+		} `json:"metadata"`
+	}
+	if err := common.Unmarshal(data, &envelope); err != nil {
+		return false
+	}
+	rawUsage := bytes.TrimSpace(envelope.MetaData.Usage)
+	return len(rawUsage) > 0 && !bytes.Equal(rawUsage, []byte("null"))
+}
+
 func difyStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	usage := &dto.Usage{}
 	usagePresent := false
+	var streamErr *types.NewAPIError
 	helper.SetEventStreamHeaders(c)
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		var difyResponse DifyChunkChatCompletionResponse
@@ -235,13 +250,9 @@ func difyStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 			return
 		}
 		if difyResponse.Event == "message_end" {
-			var raw map[string]interface{}
-			_ = common.Unmarshal([]byte(data), &raw)
-			if metadata, ok := raw["metadata"].(map[string]interface{}); ok {
-				if _, present := metadata["usage"]; present {
-					usagePresent = true
-					usage = &difyResponse.MetaData.Usage
-				}
+			if hasDifyUsage([]byte(data)) {
+				usagePresent = true
+				usage = &difyResponse.MetaData.Usage
 			}
 			if !usagePresent {
 				common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
@@ -249,21 +260,23 @@ func difyStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 			sr.Done()
 			return
 		} else if difyResponse.Event == "error" {
-			sr.Stop(fmt.Errorf("dify error event"))
+			streamErr = types.NewError(errors.New("dify error event"), types.ErrorCodeBadResponse)
+			sr.Stop(streamErr)
 			return
 		}
 		openaiResponse := *streamResponseDify2OpenAI(difyResponse)
-		if len(openaiResponse.Choices) != 0 {
-		}
 		if err := helper.ObjectData(c, openaiResponse); err != nil {
 			common.SysLog(err.Error())
 			sr.Error(err)
 		}
 	})
-	helper.Done(c)
 	if !usagePresent {
 		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 	}
+	if streamErr != nil {
+		return usage, streamErr
+	}
+	helper.Done(c)
 	return usage, nil
 }
 
@@ -273,6 +286,10 @@ func difyHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respons
 
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+	}
+	usagePresent := hasDifyUsage(responseBody)
+	if !usagePresent {
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 	}
 	service.CloseResponseBodyGracefully(resp)
 	err = json.Unmarshal(responseBody, &difyResponse)
@@ -301,5 +318,8 @@ func difyHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respons
 	c.Writer.Header().Set("Content-Type", "application/json")
 	c.Writer.WriteHeader(resp.StatusCode)
 	c.Writer.Write(jsonResponse)
+	if !usagePresent {
+		return &dto.Usage{}, nil
+	}
 	return &difyResponse.MetaData.Usage, nil
 }
