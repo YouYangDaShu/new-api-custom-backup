@@ -120,7 +120,7 @@ func markEconomicUnknown(key string, fields EconomicBillingOperation, err error)
 		msg = err.Error()
 	}
 	result := DB.Model(&EconomicBillingOperation{}).
-		Where("operation_key = ? AND status = ?", key, EconomicOperationInProgress).
+		Where("operation_key = ? AND status IN ?", key, []string{EconomicOperationInProgress, EconomicOperationFailed}).
 		Updates(map[string]any{"status": EconomicOperationUnknown, "phase": "manual", "terminal_reason": "commit outcome unknown", "last_error": msg})
 	if result.Error != nil || result.RowsAffected > 0 {
 		return
