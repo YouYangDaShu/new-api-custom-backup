@@ -145,26 +145,30 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			common.SetContextKey(c, constant.ContextKeyUpstreamTerminalStatus, streamResponse.Type)
 		}
 	})
+	reason := relaycommon.StreamEndReasonNone
+	var endErr error
+	streamHasErrors := false
 	if info != nil && info.StreamStatus != nil {
-		reason, endErr := info.StreamStatus.Snapshot()
-		if terminalErr != nil || (reason == relaycommon.StreamEndReasonHandlerStop && endErr != nil) {
-			if !containUsage {
-				common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
-				return nil, terminalErr
-			}
-			common.SetContextKey(c, constant.ContextKeyBillingSettledOnError, true)
-			if terminalErr != nil {
-				return usage, terminalErr
-			}
-			return nil, types.NewOpenAIError(endErr, types.ErrorCodeBadResponse, http.StatusInternalServerError)
-		}
-		if terminalStatus == "" || endErr != nil {
-			common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
+		reason, endErr = info.StreamStatus.Snapshot()
+		streamHasErrors = info.StreamStatus.HasErrors()
+	}
+	if terminalErr != nil || reason == relaycommon.StreamEndReasonHandlerStop || endErr != nil || streamHasErrors || terminalStatus == "" {
+		if terminalErr == nil {
 			if endErr == nil {
-				endErr = fmt.Errorf("responses stream ended without terminal event (%s)", reason)
+				if terminalStatus == "" {
+					endErr = fmt.Errorf("responses stream ended without terminal event (%s)", reason)
+				} else {
+					endErr = fmt.Errorf("responses stream ended abnormally (%s)", reason)
+				}
 			}
-			return nil, types.NewOpenAIError(endErr, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+			terminalErr = types.NewOpenAIError(endErr, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 		}
+		if !containUsage {
+			common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
+			return nil, terminalErr
+		}
+		common.SetContextKey(c, constant.ContextKeyBillingSettledOnError, true)
+		return usage, terminalErr
 	}
 
 	if !containUsage {
