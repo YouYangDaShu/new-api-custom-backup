@@ -123,7 +123,9 @@ func baiduStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 			sr.Error(err)
 			return
 		}
-		if baiduResponse.Usage.TotalTokens != 0 {
+		var raw map[string]interface{}
+		_ = common.Unmarshal([]byte(data), &raw)
+		if _, present := raw["usage"]; present {
 			usage.TotalTokens = baiduResponse.Usage.TotalTokens
 			usage.PromptTokens = baiduResponse.Usage.PromptTokens
 			usage.CompletionTokens = baiduResponse.Usage.TotalTokens - baiduResponse.Usage.PromptTokens

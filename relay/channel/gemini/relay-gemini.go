@@ -1370,7 +1370,9 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		}
 
 		// 更新使用量统计
-		if geminiResponse.UsageMetadata.TotalTokenCount != 0 {
+		var raw map[string]interface{}
+		_ = common.Unmarshal([]byte(data), &raw)
+		if _, present := raw["usageMetadata"]; present {
 			mappedUsage := buildUsageFromGeminiMetadata(geminiResponse.UsageMetadata, info.GetEstimatePromptTokens())
 			*usage = mappedUsage
 		}

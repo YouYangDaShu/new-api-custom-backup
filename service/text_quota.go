@@ -344,6 +344,16 @@ func usageSemanticFromUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) 
 	return "openai"
 }
 
+func usageSourceForBilling(usage *dto.Usage) string {
+	if usage == nil {
+		return "missing"
+	}
+	if usage.UsageSource != "" {
+		return usage.UsageSource
+	}
+	return "provider"
+}
+
 func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []string) {
 	originUsage := usage
 	if usage == nil {
@@ -355,8 +365,19 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 
 	adminRejectReason := common.GetContextKeyString(ctx, constant.ContextKeyAdminRejectReason)
 	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
-	if !summary.MissingUpstreamUsage && relayInfo != nil && !relayInfo.BillingFinalized.CompareAndSwap(false, true) {
+	if summary.MissingUpstreamUsage {
+		common.SetContextKey(ctx, constant.ContextKeyBillingPending, true)
+		model.MarkRequestBillingPending(ctx, relayInfo.FinalPreConsumedQuota, "missing")
 		return
+	}
+	if relayInfo != nil {
+		claimed, persistent := model.ClaimRequestBilling(ctx, 0, relayInfo.FinalPreConsumedQuota, usageSourceForBilling(usage))
+		if persistent && !claimed {
+			return
+		}
+		if !persistent && !relayInfo.BillingFinalized.CompareAndSwap(false, true) {
+			return
+		}
 	}
 
 	var tieredResult *billingexpr.TieredResult
@@ -373,13 +394,6 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 			summary.Quota = composeTieredTextQuota(relayInfo, summary, tieredQuota, tieredRes)
 		}
 	}
-	if summary.MissingUpstreamUsage {
-		common.SetContextKey(ctx, constant.ContextKeyBillingPending, true)
-		// A tier expression may have calculated a non-zero quota from request-side
-		// data. Missing upstream usage is always a no-charge settlement.
-		summary.Quota = 0
-	}
-
 	if summary.WebSearchCallCount > 0 {
 		extraContent = append(extraContent, fmt.Sprintf("Web Search 调用 %d 次，调用花费 %s", summary.WebSearchCallCount, decimal.NewFromFloat(summary.WebSearchPrice).Mul(decimal.NewFromInt(int64(summary.WebSearchCallCount))).Div(decimal.NewFromInt(1000)).Mul(decimal.NewFromFloat(summary.GroupRatio)).Mul(decimal.NewFromFloat(common.QuotaPerUnit)).String()))
 	}
@@ -404,10 +418,17 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		model.UpdateChannelUsedQuota(relayInfo.ChannelId, summary.Quota)
 	}
 
-	if !summary.MissingUpstreamUsage {
-		if err := SettleBilling(ctx, relayInfo, summary.Quota); err != nil {
-			logger.LogError(ctx, "error settling billing: "+err.Error())
+	if err := SettleBilling(ctx, relayInfo, summary.Quota); err != nil {
+		logger.LogError(ctx, "error settling billing: "+err.Error())
+		model.FailRequestBilling(ctx, err)
+		return
+	}
+	if relayInfo != nil {
+		status := model.BillingStatusCharged
+		if summary.Quota == 0 {
+			status = model.BillingStatusNoCharge
 		}
+		model.CompleteRequestBilling(ctx, status)
 	}
 
 	logModel := summary.ModelName
@@ -433,10 +454,6 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		other["usage_semantic"] = "anthropic"
 	} else {
 		other = GenerateTextOtherInfo(ctx, relayInfo, summary.ModelRatio, summary.GroupRatio, summary.CompletionRatio, summary.CacheTokens, summary.CacheRatio, summary.ModelPrice, relayInfo.PriceData.GroupRatioInfo.GroupSpecialRatio)
-	}
-	if summary.MissingUpstreamUsage {
-		other["billing_status"] = "pending"
-		other["usage_source"] = "missing"
 	}
 	if adminRejectReason != "" {
 		other["reject_reason"] = adminRejectReason

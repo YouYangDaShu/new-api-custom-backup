@@ -79,6 +79,9 @@ type Log struct {
 	RequestId         string `json:"request_id,omitempty" gorm:"type:varchar(64);index:idx_logs_request_id;default:''"`
 	UpstreamRequestId string `json:"upstream_request_id,omitempty" gorm:"type:varchar(128);index:idx_logs_upstream_request_id;default:''"`
 	Other             string `json:"other"`
+	BillingStatus     string `json:"billing_status,omitempty" gorm:"index"`
+	PreConsumedQuota  int    `json:"pre_consumed_quota,omitempty"`
+	UsageSource       string `json:"usage_source,omitempty"`
 }
 
 // don't use iota, avoid change log type value
@@ -92,6 +95,15 @@ const (
 	LogTypeRefund     = 6
 	LogTypeLogin      = 7
 	LogTypeProcessing = 8 // in-flight request lifecycle row (updated on finish)
+)
+
+const (
+	BillingStatusInFlight       = "in_flight"
+	BillingStatusPending        = "billing_pending"
+	BillingStatusSettling       = "settling"
+	BillingStatusCharged        = "charged"
+	BillingStatusNoCharge       = "no_charge"
+	BillingStatusSettlementFail = "settlement_failed"
 )
 
 func ensureLogRequestId(log *Log) {
@@ -132,7 +144,7 @@ func CloseStaleProcessingLogs(now time.Time) (int64, error) {
 		"error_type":     "new_api_error",
 	})
 	result := LOG_DB.Model(&Log{}).
-		Where("type = ? AND quota = ? AND content = ? AND (((last_activity_at IS NULL OR last_activity_at = 0) AND created_at < ?) OR (last_activity_at > 0 AND last_activity_at < ?)) AND (other LIKE ? OR other = ? OR other IS NULL)", LogTypeProcessing, 0, "processing", cutoff, cutoff, "%\"billing_status\":\"pending\"%", "").
+		Where("type = ? AND quota = ? AND content = ? AND billing_status IN ? AND (((last_activity_at IS NULL OR last_activity_at = 0) AND created_at < ?) OR (last_activity_at > 0 AND last_activity_at < ?))", LogTypeProcessing, 0, "processing", []string{"", BillingStatusInFlight}, cutoff, cutoff).
 		Updates(map[string]interface{}{
 			"type":    LogTypeError,
 			"content": "status_code=408, 请求超时已关闭（未扣费）",
@@ -449,6 +461,7 @@ func StartRequestLog(c *gin.Context, modelName string, isStream bool, group stri
 		Ip:             lifecycleClientIP(c),
 		RequestId:      requestId,
 		Other:          common.MapToJsonStr(other),
+		BillingStatus:  BillingStatusInFlight,
 	}
 	if err := createLog(log); err != nil {
 		logger.LogError(c, "failed to start request log: "+err.Error())
@@ -468,6 +481,74 @@ func TouchRequestLog(requestId string) bool {
 	result := LOG_DB.Model(&Log{}).
 		Where("request_id = ? AND type = ?", requestId, LogTypeProcessing).
 		Update("last_activity_at", common.GetTimestamp())
+	return result.Error == nil && result.RowsAffected == 1
+}
+
+func ClaimRequestBilling(c *gin.Context, actualQuota, preConsumedQuota int, usageSource string) (bool, bool) {
+	if c == nil || LOG_DB == nil {
+		return false, false
+	}
+	requestID := c.GetString(common.RequestIdKey)
+	if requestID == "" {
+		return false, false
+	}
+	result := LOG_DB.Model(&Log{}).
+		Where("request_id = ? AND type = ? AND billing_status IN ?", requestID, LogTypeProcessing, []string{"", BillingStatusInFlight}).
+		Updates(map[string]interface{}{"billing_status": BillingStatusSettling, "quota": actualQuota, "pre_consumed_quota": preConsumedQuota, "usage_source": usageSource})
+	if result.Error != nil {
+		logger.LogError(c, "failed to claim request billing: "+result.Error.Error())
+		return false, true
+	}
+	return result.RowsAffected == 1, true
+}
+
+func CompleteRequestBilling(c *gin.Context, status string) bool {
+	if c == nil || LOG_DB == nil {
+		return false
+	}
+	requestID := c.GetString(common.RequestIdKey)
+	if requestID == "" {
+		return false
+	}
+	result := LOG_DB.Model(&Log{}).Where("request_id = ? AND type = ? AND billing_status = ?", requestID, LogTypeProcessing, BillingStatusSettling).Update("billing_status", status)
+	return result.Error == nil && result.RowsAffected == 1
+}
+
+func FailRequestBilling(c *gin.Context, err error) bool {
+	if c == nil || LOG_DB == nil {
+		return false
+	}
+	requestID := c.GetString(common.RequestIdKey)
+	if requestID == "" {
+		return false
+	}
+	other := map[string]interface{}{"billing_status": "pending", "settlement_error": "settlement failed"}
+	if err != nil {
+		other["settlement_error"] = err.Error()
+	}
+	result := LOG_DB.Model(&Log{}).Where("request_id = ? AND type = ? AND billing_status = ?", requestID, LogTypeProcessing, BillingStatusSettling).Updates(map[string]interface{}{"billing_status": BillingStatusSettlementFail, "other": common.MapToJsonStr(other)})
+	return result.Error == nil && result.RowsAffected == 1
+}
+
+func MarkRequestBillingPending(c *gin.Context, preConsumedQuota int, usageSource string) bool {
+	if c == nil || LOG_DB == nil {
+		return false
+	}
+	requestID := c.GetString(common.RequestIdKey)
+	if requestID == "" {
+		return false
+	}
+	var log Log
+	if err := LOG_DB.Where("request_id = ? AND type = ?", requestID, LogTypeProcessing).First(&log).Error; err != nil {
+		return false
+	}
+	other, _ := common.StrToMap(log.Other)
+	if other == nil {
+		other = map[string]interface{}{}
+	}
+	other["billing_status"] = "pending"
+	other["usage_source"] = usageSource
+	result := LOG_DB.Model(&Log{}).Where("id = ? AND type = ? AND billing_status NOT IN ?", log.Id, LogTypeProcessing, []string{BillingStatusCharged, BillingStatusNoCharge}).Updates(map[string]interface{}{"billing_status": BillingStatusPending, "pre_consumed_quota": preConsumedQuota, "usage_source": usageSource, "other": common.MapToJsonStr(other)})
 	return result.Error == nil && result.RowsAffected == 1
 }
 
@@ -551,14 +632,16 @@ func FinalizeRequestLog(c *gin.Context, params FinalizeRequestLogParams) bool {
 	otherMap["status_code"] = statusCode
 	if params.Success {
 		otherMap["request_status"] = "completed"
-		if params.Quota > 0 {
+		if log.BillingStatus == BillingStatusPending || log.BillingStatus == BillingStatusSettlementFail || otherMap["billing_status"] == "pending" {
+			otherMap["billing_status"] = "pending"
+		} else if params.Quota > 0 {
 			otherMap["billing_status"] = "charged"
 		} else if _, ok := otherMap["billing_status"]; !ok {
 			otherMap["billing_status"] = "no_charge"
 		}
 	} else {
 		otherMap["request_status"] = "failed"
-		if v, ok := otherMap["billing_status"]; !ok || v == "pending" {
+		if log.BillingStatus != BillingStatusPending && log.BillingStatus != BillingStatusSettlementFail {
 			otherMap["billing_status"] = "no_charge"
 		}
 	}
@@ -590,6 +673,13 @@ func FinalizeRequestLog(c *gin.Context, params FinalizeRequestLogParams) bool {
 		"use_time":          params.UseTimeSeconds,
 		"is_stream":         params.IsStream,
 		"other":             common.MapToJsonStr(otherMap),
+	}
+	if log.BillingStatus != BillingStatusSettling && log.BillingStatus != BillingStatusPending && log.BillingStatus != BillingStatusSettlementFail {
+		if params.Quota > 0 {
+			updates["billing_status"] = BillingStatusCharged
+		} else {
+			updates["billing_status"] = BillingStatusNoCharge
+		}
 	}
 	if params.ChannelId > 0 {
 		updates["channel_id"] = params.ChannelId

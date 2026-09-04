@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -190,6 +191,55 @@ func TestRequestLifecycle_FinalizeIsIdempotent(t *testing.T) {
 	require.NoError(t, LOG_DB.Where("request_id = ?", reqID).Find(&rows).Error)
 	require.Len(t, rows, 1)
 	assert.Equal(t, 77, rows[0].Quota)
+}
+
+func TestRequestLifecycle_BillingClaimIsPersistentAndSingleWinner(t *testing.T) {
+	if LOG_DB == nil {
+		t.Skip("LOG_DB not initialized")
+	}
+	require.NoError(t, LOG_DB.AutoMigrate(&Log{}))
+	const reqID = "req-life-billing-claim"
+	LOG_DB.Where("request_id = ?", reqID).Delete(&Log{})
+	t.Cleanup(func() { LOG_DB.Where("request_id = ?", reqID).Delete(&Log{}) })
+	c := newTestGinContext(reqID, 99123)
+	StartRequestLog(c, "claim-model", true, "default")
+	ctxs := make([]*gin.Context, 2)
+	for i := range ctxs {
+		ctxs[i] = newTestGinContext(reqID, 99123)
+	}
+	var wg sync.WaitGroup
+	results := make([]bool, 2)
+	for i := range ctxs {
+		wg.Add(1)
+		go func(i int) { defer wg.Done(); results[i], _ = ClaimRequestBilling(ctxs[i], 42, 77, "provider") }(i)
+	}
+	wg.Wait()
+	assert.NotEqual(t, results[0], results[1])
+	var row Log
+	require.NoError(t, LOG_DB.Where("request_id = ?", reqID).First(&row).Error)
+	assert.Equal(t, BillingStatusSettling, row.BillingStatus)
+	assert.Equal(t, 77, row.PreConsumedQuota)
+}
+
+func TestRequestLifecycle_PendingSurvivesFinalizeAndStaleCloser(t *testing.T) {
+	if LOG_DB == nil {
+		t.Skip("LOG_DB not initialized")
+	}
+	require.NoError(t, LOG_DB.AutoMigrate(&Log{}))
+	const reqID = "req-life-billing-pending"
+	LOG_DB.Where("request_id = ?", reqID).Delete(&Log{})
+	t.Cleanup(func() { LOG_DB.Where("request_id = ?", reqID).Delete(&Log{}) })
+	c := newTestGinContext(reqID, 99124)
+	StartRequestLog(c, "pending-model", true, "default")
+	require.True(t, MarkRequestBillingPending(c, 88, "missing"))
+	assert.True(t, FinalizeRequestLog(c, FinalizeRequestLogParams{Success: true, Content: "completed"}))
+	var row Log
+	require.NoError(t, LOG_DB.Where("request_id = ?", reqID).First(&row).Error)
+	assert.Equal(t, BillingStatusPending, row.BillingStatus)
+	_, err := CloseStaleProcessingLogs(time.Now().Add(24 * time.Hour))
+	require.NoError(t, err)
+	require.NoError(t, LOG_DB.Where("request_id = ?", reqID).First(&row).Error)
+	assert.Equal(t, BillingStatusPending, row.BillingStatus)
 }
 
 func TestRequestLifecycle_ClientCancellationReleasesLease(t *testing.T) {

@@ -32,6 +32,8 @@ func OaiChatToResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	if err := common.Unmarshal(body, &chatResp); err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
+	var rawFields map[string]interface{}
+	_ = common.Unmarshal(body, &rawFields)
 	if oaiError := chatResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
@@ -41,7 +43,7 @@ func OaiChatToResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
-	if usage == nil || (usage.PromptTokens == 0 && usage.CompletionTokens == 0) {
+	if _, present := rawFields["usage"]; !present {
 		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 		usage = &dto.Usage{}
 		responsesResp.Usage = relayconvert.UsageFromChatUsage(usage)

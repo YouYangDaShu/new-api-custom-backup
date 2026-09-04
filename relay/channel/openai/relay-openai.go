@@ -232,7 +232,9 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		forceFormat = true
 	}
 
-	if simpleResponse.Usage.PromptTokens == 0 && simpleResponse.Usage.CompletionTokens == 0 {
+	var fields map[string]interface{}
+	_ = common.Unmarshal(responseBody, &fields)
+	if _, present := fields["usage"]; !present {
 		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 	}
 

@@ -48,7 +48,7 @@ func OaiResponsesToChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 
-	if usage == nil || (usage.PromptTokens == 0 && usage.CompletionTokens == 0) {
+	if responsesResp.Usage == nil {
 		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 		usage = &dto.Usage{}
 		chatResp.Usage = *usage
@@ -151,7 +151,7 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
-	if usage == nil || (usage.PromptTokens == 0 && usage.CompletionTokens == 0) {
+	if finalResponse.Usage == nil {
 		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 		usage = &dto.Usage{}
 		chatResp.Usage = *usage

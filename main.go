@@ -25,6 +25,7 @@ import (
 	"github.com/QuantumNous/new-api/oauth"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/relay"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/router"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
@@ -54,6 +55,9 @@ var classicIndexPage []byte
 
 func main() {
 	startTime := time.Now()
+	streamServiceCtx, cancelStreamService := context.WithCancel(context.Background())
+	defer cancelStreamService()
+	helper.SetStreamServiceContext(streamServiceCtx)
 
 	err := InitResources()
 	if err != nil {
@@ -303,6 +307,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-quit
 	common.SysLog(fmt.Sprintf("received signal: %v, shutting down...", sig))
+	cancelStreamService()
 
 	// SSE streams may run for minutes; give them time to finish before forced exit
 	shutdownTimeout := time.Duration(common.GetEnvOrDefault("SHUTDOWN_TIMEOUT_SECONDS", 120)) * time.Second

@@ -125,6 +125,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			})
 			return
 		}
+		if common.GetContextKeyBool(c, constant.ContextKeyBillingPending) {
+			// Missing provider usage is an auditable billing_pending lifecycle;
+			// never finalize it as a successful zero-charge consume row.
+			return
+		}
 		// Success path normally finalizes via RecordConsumeLog. If consume logging
 		// is disabled or skipped, close the processing row here so it is not stuck.
 		billingStatus := "no_charge"
