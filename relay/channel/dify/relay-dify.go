@@ -224,9 +224,8 @@ func streamResponseDify2OpenAI(difyResponse DifyChunkChatCompletionResponse) *dt
 }
 
 func difyStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
-	var responseText string
 	usage := &dto.Usage{}
-	var nodeToken int
+	usagePresent := false
 	helper.SetEventStreamHeaders(c)
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		var difyResponse DifyChunkChatCompletionResponse
@@ -236,7 +235,17 @@ func difyStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 			return
 		}
 		if difyResponse.Event == "message_end" {
-			usage = &difyResponse.MetaData.Usage
+			var raw map[string]interface{}
+			_ = common.Unmarshal([]byte(data), &raw)
+			if metadata, ok := raw["metadata"].(map[string]interface{}); ok {
+				if _, present := metadata["usage"]; present {
+					usagePresent = true
+					usage = &difyResponse.MetaData.Usage
+				}
+			}
+			if !usagePresent {
+				common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
+			}
 			sr.Done()
 			return
 		} else if difyResponse.Event == "error" {
@@ -245,10 +254,6 @@ func difyStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 		}
 		openaiResponse := *streamResponseDify2OpenAI(difyResponse)
 		if len(openaiResponse.Choices) != 0 {
-			responseText += openaiResponse.Choices[0].Delta.GetContentString()
-			if openaiResponse.Choices[0].Delta.ReasoningContent != nil {
-				nodeToken += 1
-			}
 		}
 		if err := helper.ObjectData(c, openaiResponse); err != nil {
 			common.SysLog(err.Error())
@@ -256,10 +261,9 @@ func difyStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 		}
 	})
 	helper.Done(c)
-	if usage.TotalTokens == 0 {
-		usage = service.ResponseText2Usage(c, responseText, info.UpstreamModelName, info.GetEstimatePromptTokens())
+	if !usagePresent {
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 	}
-	usage.CompletionTokens += nodeToken
 	return usage, nil
 }
 

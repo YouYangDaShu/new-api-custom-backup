@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -39,16 +38,11 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 	if oaiError := usageResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
-	var fields map[string]interface{}
-	_ = common.Unmarshal(responseBody, &fields)
-	if usageValue, present := fields["usage"]; !present || usageValue == nil {
-		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
-	}
-
 	// 写入新的 response body
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
 	normalizeOpenAIUsage(&usageResp.Usage)
+	usageResp.Usage.UsageSource = "image_per_call"
 	applyUsagePostProcessing(info, &usageResp.Usage, responseBody)
 	return &usageResp.Usage, nil
 }
@@ -103,7 +97,6 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 	// "data:" payload, so the SSE "event:" line is rebuilt from the JSON "type"
 	// field (real OpenAI image events keep event == type).
 	usage := &dto.Usage{}
-	usagePresent := false
 	var lastStreamData []byte
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
@@ -120,15 +113,11 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 			var fields map[string]interface{}
 			_ = common.Unmarshal(raw, &fields)
 			if usageValue, present := fields["usage"]; present && usageValue != nil {
-				usagePresent = true
 				usage = &usageResp.Usage
 			}
 		}
 		writeOpenaiImageStreamChunk(c, raw)
 	})
-	if !usagePresent {
-		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
-	}
 
 	// StreamScannerHandler consumes the upstream [DONE]; re-emit it so the
 	// client still receives a terminal data: [DONE].
@@ -140,6 +129,7 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 	}
 
 	applyUsagePostProcessing(info, usage, lastStreamData)
+	usage.UsageSource = "image_per_call"
 	return usage, nil
 }
 
@@ -223,15 +213,11 @@ func OpenaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 
 	var usageResp dto.SimpleResponse
 	_ = common.Unmarshal(responseBody, &usageResp)
-	var fields map[string]interface{}
-	_ = common.Unmarshal(responseBody, &fields)
-	if usageValue, present := fields["usage"]; !present || usageValue == nil {
-		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
-	}
 	if oaiError := usageResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 	normalizeOpenAIUsage(&usageResp.Usage)
+	usageResp.Usage.UsageSource = "image_per_call"
 	applyUsagePostProcessing(info, &usageResp.Usage, responseBody)
 
 	helper.SetEventStreamHeaders(c)

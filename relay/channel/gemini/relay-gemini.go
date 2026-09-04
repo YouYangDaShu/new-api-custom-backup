@@ -1343,8 +1343,7 @@ func handleFinalStream(c *gin.Context, info *relaycommon.RelayInfo, resp *dto.Ch
 
 func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response, callback func(data string, geminiResponse *dto.GeminiChatResponse) bool) (*dto.Usage, *types.NewAPIError) {
 	var usage = &dto.Usage{}
-	var imageCount int
-	responseText := strings.Builder{}
+	usagePresent := false
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		var geminiResponse dto.GeminiChatResponse
@@ -1360,20 +1359,15 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		// 统计图片数量
 		for _, candidate := range geminiResponse.Candidates {
 			for _, part := range candidate.Content.Parts {
-				if part.InlineData != nil && part.InlineData.MimeType != "" {
-					imageCount++
-				}
-				if part.Text != "" {
-					responseText.WriteString(part.Text)
-				}
 			}
 		}
 
 		// 更新使用量统计
 		var raw map[string]interface{}
 		_ = common.Unmarshal([]byte(data), &raw)
-		if _, present := raw["usageMetadata"]; present {
-			mappedUsage := buildUsageFromGeminiMetadata(geminiResponse.UsageMetadata, info.GetEstimatePromptTokens())
+		if value, present := raw["usageMetadata"]; present && value != nil {
+			usagePresent = true
+			mappedUsage := buildUsageFromGeminiMetadata(geminiResponse.UsageMetadata, 0)
 			*usage = mappedUsage
 		}
 
@@ -1382,18 +1376,9 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		}
 	})
 
-	if imageCount != 0 {
-		if usage.CompletionTokens == 0 {
-			usage.CompletionTokens = imageCount * 1400
-		}
-	}
-
-	if usage.CompletionTokens <= 0 {
-		if info.ReceivedResponseCount > 0 {
-			usage = service.ResponseText2Usage(c, responseText.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
-		} else {
-			usage = &dto.Usage{}
-		}
+	if !usagePresent {
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
+		usage = &dto.Usage{}
 	}
 
 	return usage, nil

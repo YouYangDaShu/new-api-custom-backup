@@ -22,6 +22,9 @@ import (
 
 func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types.NewAPIError) {
 	info.InitChannelMeta(c)
+	if info.PriceData.ModelPrice <= 0 || !info.PriceData.UsePrice {
+		return types.NewErrorWithStatusCode(fmt.Errorf("image model price is not configured"), types.ErrorCodeInvalidRequest, http.StatusInternalServerError, types.ErrOptionWithSkipRetry())
+	}
 
 	imageReq, ok := info.Request.(*dto.ImageRequest)
 	if !ok {
@@ -133,12 +136,13 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 		}
 	}
 
-	if usage.(*dto.Usage).TotalTokens == 0 {
-		usage.(*dto.Usage).TotalTokens = 1
+	imageUsage, ok := usage.(*dto.Usage)
+	if !ok || imageUsage == nil {
+		imageUsage = &dto.Usage{}
 	}
-	if usage.(*dto.Usage).PromptTokens == 0 {
-		usage.(*dto.Usage).PromptTokens = 1
-	}
+	// Image routes use an explicit per-call/image-price billing contract. Do
+	// not fabricate token counts when providers omit usage (or return zeros).
+	imageUsage.UsageSource = "image_per_call"
 
 	quality := request.Quality
 	if quality == "" {
@@ -157,6 +161,6 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 		logContent = append(logContent, fmt.Sprintf("生成数量 %d", imageN))
 	}
 
-	service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), logContent)
+	service.PostTextConsumeQuota(c, info, imageUsage, logContent)
 	return nil
 }
