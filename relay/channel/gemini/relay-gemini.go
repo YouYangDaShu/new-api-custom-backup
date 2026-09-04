@@ -1356,12 +1356,6 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 			common.SetContextKey(c, constant.ContextKeyAdminRejectReason, fmt.Sprintf("gemini_block_reason=%s", *geminiResponse.PromptFeedback.BlockReason))
 		}
 
-		// 统计图片数量
-		for _, candidate := range geminiResponse.Candidates {
-			for _, part := range candidate.Content.Parts {
-			}
-		}
-
 		// 更新使用量统计
 		var raw map[string]interface{}
 		_ = common.Unmarshal([]byte(data), &raw)
