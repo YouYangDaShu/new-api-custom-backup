@@ -39,10 +39,17 @@ func TestGetLotteryIncludesRecentDraw(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 	var response struct {
 		Data struct {
-			RecentDraw *model.LotteryDraw `json:"recent_draw"`
+			RecentDraw map[string]interface{} `json:"recent_draw"`
 		} `json:"data"`
 	}
 	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
-	require.NotNil(t, response.Data.RecentDraw)
-	require.Equal(t, uint(1), response.Data.RecentDraw.ID)
+	require.Equal(t, map[string]interface{}{
+		"id":           float64(1),
+		"prize_id":     "cash",
+		"prize_name":   "Cash",
+		"prize_amount": float64(123),
+		"created_at":   float64(456),
+	}, response.Data.RecentDraw)
+	require.NotContains(t, response.Data.RecentDraw, "user_id")
+	require.NotContains(t, response.Data.RecentDraw, "weight")
 }
