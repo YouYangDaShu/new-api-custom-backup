@@ -12,6 +12,9 @@ func TestParseSmartMode(t *testing.T) {
 	if ParseSmartMode("@smart:cheap") != SmartModePrice {
 		t.Fatal("cheap alias")
 	}
+	if ParseSmartMode("@smart:success_rate") != SmartModeSuccessRate {
+		t.Fatal("success rate")
+	}
 	if ParseSmartMode("@smart:") != SmartModeBalanced {
 		t.Fatal("default")
 	}
@@ -23,6 +26,9 @@ func TestEncodeSmartTokenGroup(t *testing.T) {
 	}
 	if EncodeSmartTokenGroup("balanced") != "@smart:balanced" {
 		t.Fatal(EncodeSmartTokenGroup("balanced"))
+	}
+	if EncodeSmartTokenGroup("success_rate") != "@smart:success_rate" {
+		t.Fatal(EncodeSmartTokenGroup("success_rate"))
 	}
 }
 
@@ -42,6 +48,15 @@ func TestRankGroupsForModelPriceOrder(t *testing.T) {
 		got = []string{}
 	}
 	_ = got
+}
+
+func TestSuccessRateUnavailableOnlyExcludesObservedZeroSuccess(t *testing.T) {
+	if !successRateUnavailable(3, 0) {
+		t.Fatal("observed zero-success sample must be unavailable")
+	}
+	if successRateUnavailable(0, 0) || successRateUnavailable(3, 1) {
+		t.Fatal("unknown and successful samples remain eligible")
+	}
 }
 
 func TestDisplayTokenGroupSmart(t *testing.T) {

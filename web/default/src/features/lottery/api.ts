@@ -17,6 +17,7 @@ export interface LotteryProgress {
   accumulated: number
   available_draws: number
   prizes: LotteryUserPrize[]
+  recent_draw?: LotteryDraw
 }
 export interface LotteryDraw {
   id: number

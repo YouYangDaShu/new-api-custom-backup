@@ -31,6 +31,7 @@ import { useTranslation } from 'react-i18next'
 
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { StaticRowActions } from '@/components/data-table/static/static-row-actions'
+import { Dialog } from '@/components/dialog'
 import {
   sideDrawerContentClassName,
   sideDrawerFormClassName,
@@ -51,7 +52,6 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
-import { Dialog } from '@/components/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -80,6 +80,7 @@ type GroupRatioVisualEditorProps = {
   autoGroups: string
   groupSpecialUsableGroup: string
   membershipGroups: string
+  gptContextModes: string
   onChange: (field: string, value: string) => void
 }
 
@@ -92,6 +93,7 @@ type GroupPricingRow = {
   selectable: boolean
   membership: boolean
   description: string
+  gptContextMode: 'standard' | 'gpt_long_context'
 }
 
 type RegistryEntry = {
@@ -191,7 +193,6 @@ function moveRowWithinSection(
   return next
 }
 
-
 function parseNestedRatioMap(
   value: string
 ): Record<string, Record<string, number>> {
@@ -205,12 +206,17 @@ function buildGroupPricingRows(
   groupRatio: string,
   userUsableGroups: string,
   topupGroupRatio: string,
-  membershipGroups: string
+  membershipGroups: string,
+  gptContextModes: string
 ): GroupPricingRow[] {
   const ratioMap = parseRatioMap(groupRatio)
   const usableMap = parseUsableMap(userUsableGroups)
   const topupMap = parseRatioMap(topupGroupRatio)
   const membershipMap = parseMembershipMap(membershipGroups)
+  const contextModes = safeJsonParse<Record<string, string>>(gptContextModes, {
+    fallback: {},
+    silent: true,
+  })
   const hasMembershipConfig = Object.keys(membershipMap).length > 0
   // Preserve key order from GroupRatio (manual ↑↓). Only append missing names.
   const orderedNames: string[] = []
@@ -245,6 +251,10 @@ function buildGroupPricingRows(
       selectable: membership ? false : Object.hasOwn(usableMap, name),
       membership,
       description: String(usableMap[name] ?? ''),
+      gptContextMode:
+        contextModes[name] === 'gpt_long_context'
+          ? 'gpt_long_context'
+          : 'standard',
     }
   })
 }
@@ -254,6 +264,7 @@ function serializeGroupPricingRows(rows: GroupPricingRow[]) {
   const userUsableGroups: Record<string, string> = {}
   const topupGroupRatio: Record<string, number> = {}
   const membershipGroups: Record<string, boolean> = {}
+  const gptContextModes: Record<string, string> = {}
 
   for (const row of rows) {
     const name = row.name.trim()
@@ -269,6 +280,7 @@ function serializeGroupPricingRows(rows: GroupPricingRow[]) {
     if (topup !== '' && Number.isFinite(Number(topup))) {
       topupGroupRatio[name] = Number(topup)
     }
+    if (!row.membership) gptContextModes[name] = row.gptContextMode
   }
 
   return {
@@ -276,6 +288,7 @@ function serializeGroupPricingRows(rows: GroupPricingRow[]) {
     UserUsableGroups: JSON.stringify(userUsableGroups, null, 2),
     TopupGroupRatio: JSON.stringify(topupGroupRatio, null, 2),
     MembershipGroups: JSON.stringify(membershipGroups, null, 2),
+    GPTContextModes: JSON.stringify(gptContextModes, null, 2),
   }
 }
 
@@ -288,6 +301,10 @@ function groupPricingSignature(rows: GroupPricingRow[]): string {
     userUsableGroups: parseUsableMap(serialized.UserUsableGroups),
     topupGroupRatio: parseRatioMap(serialized.TopupGroupRatio),
     membershipGroups: parseMembershipMap(serialized.MembershipGroups),
+    gptContextModes: safeJsonParse<Record<string, string>>(
+      serialized.GPTContextModes,
+      { fallback: {}, silent: true }
+    ),
   })
 }
 
@@ -295,7 +312,8 @@ function sourceGroupPricingSignature(
   groupRatio: string,
   userUsableGroups: string,
   topupGroupRatio: string,
-  membershipGroups: string
+  membershipGroups: string,
+  gptContextModes: string
 ): string {
   return JSON.stringify({
     order: Object.keys(parseRatioMap(groupRatio)),
@@ -303,6 +321,10 @@ function sourceGroupPricingSignature(
     userUsableGroups: parseUsableMap(userUsableGroups),
     topupGroupRatio: parseRatioMap(topupGroupRatio),
     membershipGroups: parseMembershipMap(membershipGroups),
+    gptContextModes: safeJsonParse<Record<string, string>>(gptContextModes, {
+      fallback: {},
+      silent: true,
+    }),
   })
 }
 
@@ -363,6 +385,7 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
   autoGroups,
   groupSpecialUsableGroup,
   membershipGroups,
+  gptContextModes,
   onChange,
 }: GroupRatioVisualEditorProps) {
   const { t } = useTranslation()
@@ -435,6 +458,7 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
         userUsableGroups={userUsableGroups}
         topupGroupRatio={topupGroupRatio}
         membershipGroups={membershipGroups}
+        gptContextModes={gptContextModes}
         onChange={onChange}
         onShowDetail={setDetailGroup}
       />
@@ -527,6 +551,7 @@ type GroupPricingTableProps = {
   userUsableGroups: string
   topupGroupRatio: string
   membershipGroups: string
+  gptContextModes: string
   onChange: (field: string, value: string) => void
   onShowDetail: (name: string) => void
 }
@@ -536,6 +561,7 @@ function GroupPricingTable({
   userUsableGroups,
   topupGroupRatio,
   membershipGroups,
+  gptContextModes,
   onChange,
   onShowDetail,
 }: GroupPricingTableProps) {
@@ -545,7 +571,8 @@ function GroupPricingTable({
       groupRatio,
       userUsableGroups,
       topupGroupRatio,
-      membershipGroups
+      membershipGroups,
+      gptContextModes
     )
   )
 
@@ -554,7 +581,8 @@ function GroupPricingTable({
       groupRatio,
       userUsableGroups,
       topupGroupRatio,
-      membershipGroups
+      membershipGroups,
+      gptContextModes
     )
     setRows((currentRows) => {
       if (groupPricingSignature(currentRows) === incomingSignature) {
@@ -564,10 +592,17 @@ function GroupPricingTable({
         groupRatio,
         userUsableGroups,
         topupGroupRatio,
-        membershipGroups
+        membershipGroups,
+        gptContextModes
       )
     })
-  }, [groupRatio, userUsableGroups, topupGroupRatio, membershipGroups])
+  }, [
+    groupRatio,
+    userUsableGroups,
+    topupGroupRatio,
+    membershipGroups,
+    gptContextModes,
+  ])
 
   const emitRows = useCallback(
     (nextRows: GroupPricingRow[]) => {
@@ -577,6 +612,7 @@ function GroupPricingTable({
       onChange('UserUsableGroups', serialized.UserUsableGroups)
       onChange('TopupGroupRatio', serialized.TopupGroupRatio)
       onChange('MembershipGroups', serialized.MembershipGroups)
+      onChange('GPTContextModes', serialized.GPTContextModes)
     },
     [onChange]
   )
@@ -633,6 +669,7 @@ function GroupPricingTable({
         selectable: true,
         membership: false,
         description: '',
+        gptContextMode: 'standard',
       },
     ])
   }, [emitRows, rows])
@@ -700,7 +737,7 @@ function GroupPricingTable({
         </div>
       </CardHeader>
       <CardContent className='overflow-x-auto'>
-        <div className='space-y-3 min-w-0'>
+        <div className='min-w-0 space-y-3'>
           <StaticDataTable
             data={rows}
             getRowKey={(row) => row._id}
@@ -780,6 +817,42 @@ function GroupPricingTable({
                     }}
                   />
                 ),
+              },
+              {
+                id: 'gpt-context-mode',
+                header: t('GPT context policy'),
+                className: 'w-[180px] min-w-[170px]',
+                cell: (row) =>
+                  row.membership ? (
+                    <span className='text-muted-foreground px-3 text-sm'>
+                      -
+                    </span>
+                  ) : (
+                    <Select
+                      value={row.gptContextMode}
+                      onValueChange={(value) =>
+                        updateRow(
+                          row._id,
+                          'gptContextMode',
+                          value || 'standard'
+                        )
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value='standard'>
+                            {t('Standard pricing')}
+                          </SelectItem>
+                          <SelectItem value='gpt_long_context'>
+                            {t('Tiered pricing (GPT long context)')}
+                          </SelectItem>
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  ),
               },
               {
                 id: 'membership',
@@ -1341,10 +1414,13 @@ function GroupOverrideDialog({
           <p className='text-muted-foreground text-xs'>
             {baseRatio !== undefined
               ? t('(instead of {{ratio}})', { ratio: baseRatio })
-              : t('Multiplier applied when {{userGroup}} uses {{targetGroup}}', {
-                  userGroup: userGroup || t('this user group'),
-                  targetGroup: targetGroup || t('this token group'),
-                })}
+              : t(
+                  'Multiplier applied when {{userGroup}} uses {{targetGroup}}',
+                  {
+                    userGroup: userGroup || t('this user group'),
+                    targetGroup: targetGroup || t('this token group'),
+                  }
+                )}
           </p>
         </div>
       </div>
