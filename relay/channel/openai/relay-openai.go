@@ -25,7 +25,15 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 	}
 
 	if !forceFormat && !thinkToContent {
-		return helper.StringData(c, data)
+		err := helper.StringData(c, data)
+		var payload map[string]interface{}
+		if err == nil && data != "[DONE]" && common.UnmarshalJsonStr(data, &payload) == nil {
+			var response dto.ChatCompletionsStreamResponse
+			if common.UnmarshalJsonStr(data, &response) == nil && helper.HasChatCompletionsModelPayload(&response) {
+				helper.MarkModelPayloadDelivered(c)
+			}
+		}
+		return err
 	}
 
 	var lastStreamResponse dto.ChatCompletionsStreamResponse
@@ -34,7 +42,11 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 	}
 
 	if !thinkToContent {
-		return helper.ObjectData(c, lastStreamResponse)
+		err := helper.ObjectData(c, lastStreamResponse)
+		if err == nil && helper.HasChatCompletionsModelPayload(&lastStreamResponse) {
+			helper.MarkModelPayloadDelivered(c)
+		}
+		return err
 	}
 
 	hasThinkingContent := false
@@ -62,12 +74,20 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 			}
 			info.ThinkingContentInfo.IsFirstThinkingContent = false
 			info.ThinkingContentInfo.HasSentThinkingContent = true
-			return helper.ObjectData(c, response)
+			err := helper.ObjectData(c, response)
+			if err == nil {
+				helper.MarkModelPayloadDelivered(c)
+			}
+			return err
 		}
 	}
 
 	if lastStreamResponse.Choices == nil || len(lastStreamResponse.Choices) == 0 {
-		return helper.ObjectData(c, lastStreamResponse)
+		err := helper.ObjectData(c, lastStreamResponse)
+		if err == nil && helper.HasChatCompletionsModelPayload(&lastStreamResponse) {
+			helper.MarkModelPayloadDelivered(c)
+		}
+		return err
 	}
 
 	// Process each choice
@@ -97,7 +117,11 @@ func sendStreamData(c *gin.Context, info *relaycommon.RelayInfo, data string, fo
 		}
 	}
 
-	return helper.ObjectData(c, lastStreamResponse)
+	err := helper.ObjectData(c, lastStreamResponse)
+	if err == nil && helper.HasChatCompletionsModelPayload(&lastStreamResponse) {
+		helper.MarkModelPayloadDelivered(c)
+	}
+	return err
 }
 
 func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
@@ -118,6 +142,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var usage = &dto.Usage{}
 	var lastStreamData string
 	var secondLastStreamData string // 存储倒数第二个stream data，用于音频模型
+	var lastResponseErr error
 
 	// 检查是否为音频模型
 	isAudioModel := strings.Contains(strings.ToLower(model), "audio")
@@ -130,6 +155,27 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			}
 		}
 		if len(data) > 0 {
+			var rawFields map[string]interface{}
+			if err := common.UnmarshalJsonStr(data, &rawFields); err == nil {
+				if rawUsage, present := rawFields["usage"]; present && rawUsage != nil {
+					var streamResponse struct {
+						Usage *dto.Usage `json:"usage"`
+					}
+					if err := common.UnmarshalJsonStr(data, &streamResponse); err == nil && streamResponse.Usage != nil {
+						usage = streamResponse.Usage
+						containStreamUsage = true
+						common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
+					}
+				}
+				if rawError, present := rawFields["error"]; present && rawError != nil {
+					if upstreamErr := dto.GetOpenAIError(rawError); upstreamErr != nil && upstreamErr.Message != "" {
+						common.SetContextKey(c, constant.ContextKeyUpstreamTerminalStatus, "error")
+						sr.Stop(fmt.Errorf("upstream stream error: %s", upstreamErr.Message))
+						return
+					}
+				}
+			}
+
 			// 对音频模型，保存倒数第二个stream data
 			if isAudioModel && lastStreamData != "" {
 				secondLastStreamData = lastStreamData
@@ -152,6 +198,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		if err == nil && streamResp.Usage != nil {
 			usage = streamResp.Usage
 			containStreamUsage = true
+			common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
 
 			if common.DebugEnabled {
 				logger.LogDebug(c, "Audio model usage extracted from second last SSE: PromptTokens=%d, CompletionTokens=%d, TotalTokens=%d, InputTokens=%d, OutputTokens=%d",
@@ -165,6 +212,7 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	shouldSendLastResp := true
 	if err := handleLastResponse(lastStreamData, &responseId, &createAt, &systemFingerprint, &model, &usage,
 		&containStreamUsage, info, &shouldSendLastResp); err != nil {
+		lastResponseErr = err
 		logger.LogError(c, fmt.Sprintf("error handling last response: %s, lastStreamData: [%s]", err.Error(), lastStreamData))
 	}
 
@@ -177,6 +225,30 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	if !containStreamUsage {
 		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 		usage = &dto.Usage{}
+	} else {
+		common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
+	}
+
+	if info.StreamStatus != nil {
+		reason, endErr := info.StreamStatus.Snapshot()
+		abnormal := endErr != nil || info.StreamStatus.HasErrors() || reason != relaycommon.StreamEndReasonDone
+		if abnormal {
+			if lastResponseErr == nil {
+				lastResponseErr = endErr
+			}
+			if lastResponseErr == nil {
+				lastResponseErr = fmt.Errorf("openai stream ended abnormally (%s)", reason)
+			}
+			if containStreamUsage {
+				common.SetContextKey(c, constant.ContextKeyErrorUsagePresent, true)
+			}
+			common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, !containStreamUsage)
+			opts := []types.NewAPIErrorOptions{}
+			if responseDeliveryObserved(c) || containStreamUsage || common.GetContextKeyString(c, constant.ContextKeyUpstreamTerminalStatus) != "" {
+				opts = append(opts, types.ErrOptionWithSkipRetry())
+			}
+			return usage, types.NewOpenAIError(lastResponseErr, types.ErrorCodeBadResponse, http.StatusBadGateway, opts...)
+		}
 	}
 
 	applyUsagePostProcessing(info, usage, common.StringToByteSlice(lastStreamData))
@@ -201,7 +273,7 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		var enterpriseResponse openrouter.OpenRouterEnterpriseResponse
 		err = common.Unmarshal(responseBody, &enterpriseResponse)
 		if err != nil {
-			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+			return nil, types.NewOpenAIError(err, types.ErrorCodeChannelBadResponseBody, http.StatusInternalServerError)
 		}
 		if enterpriseResponse.Success {
 			responseBody = enterpriseResponse.Data
@@ -213,11 +285,25 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 
 	err = common.Unmarshal(responseBody, &simpleResponse)
 	if err != nil {
-		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		return nil, types.NewOpenAIError(err, types.ErrorCodeChannelBadResponseBody, http.StatusInternalServerError)
+	}
+
+	var fields map[string]interface{}
+	_ = common.Unmarshal(responseBody, &fields)
+	usageValue, usagePresent := fields["usage"]
+	structuredUsage := usagePresent && usageValue != nil
+	if structuredUsage {
+		common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
+	} else {
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 	}
 
 	if oaiError := simpleResponse.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
-		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
+		if structuredUsage {
+			common.SetContextKey(c, constant.ContextKeyErrorUsagePresent, true)
+			return &simpleResponse.Usage, types.WithOpenAIError(*oaiError, resp.StatusCode, types.ErrOptionWithSkipRetry())
+		}
+		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode, types.ErrOptionWithSkipRetry())
 	}
 
 	for _, choice := range simpleResponse.Choices {
@@ -230,12 +316,6 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	forceFormat := false
 	if info.ChannelSetting.ForceFormat {
 		forceFormat = true
-	}
-
-	var fields map[string]interface{}
-	_ = common.Unmarshal(responseBody, &fields)
-	if usageValue, present := fields["usage"]; !present || usageValue == nil {
-		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 	}
 
 	applyUsagePostProcessing(info, &simpleResponse.Usage, responseBody)
@@ -266,7 +346,39 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		responseBody = geminiRespStr
 	}
 
-	service.IOCopyBytesGracefully(c, resp, responseBody)
+	if service.IOCopyBytesGracefully(c, resp, responseBody) && openAITextResponseHasModelPayload(&simpleResponse) {
+		helper.MarkModelPayloadDelivered(c)
+	}
 
 	return &simpleResponse.Usage, nil
+}
+
+func openAITextResponseHasModelPayload(response *dto.OpenAITextResponse) bool {
+	if response == nil {
+		return false
+	}
+	for _, choice := range response.Choices {
+		message := &choice.Message
+		if message.StringContent() != "" || message.GetReasoningContent() != "" || len(message.ParseToolCalls()) > 0 {
+			return true
+		}
+		for _, content := range message.ParseContent() {
+			if content.Text != "" {
+				return true
+			}
+			if image := content.GetImageMedia(); image != nil && image.Url != "" {
+				return true
+			}
+			if audio := content.GetInputAudio(); audio != nil && audio.Data != "" {
+				return true
+			}
+			if file := content.GetFile(); file != nil && (file.FileData != "" || file.FileId != "") {
+				return true
+			}
+			if video := content.GetVideoUrl(); video != nil && video.Url != "" {
+				return true
+			}
+		}
+	}
+	return false
 }

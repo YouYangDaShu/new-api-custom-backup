@@ -499,7 +499,6 @@ func StartRequestLog(c *gin.Context, modelName string, isStream bool, group stri
 	other := map[string]interface{}{
 		"request_status": "processing",
 		"status_code":    0,
-		"billing_status": "pending",
 	}
 	if c.Request != nil && c.Request.URL != nil {
 		other["request_path"] = c.Request.URL.Path
@@ -551,31 +550,73 @@ func ClaimRequestBilling(c *gin.Context, actualQuota, preConsumedQuota int, usag
 	if requestID == "" {
 		return false, false
 	}
-	claimed, claimErr := ClaimBillingOperation(requestID, "settlement", 1)
-	if claimErr != nil {
-		logger.LogError(c, "failed to claim durable billing operation: "+claimErr.Error())
+	billingOperationMigrate.Do(func() { billingOperationMigrateErr = LOG_DB.AutoMigrate(&BillingOperation{}) })
+	if billingOperationMigrateErr != nil {
+		logger.LogError(c, "failed to prepare durable billing operation: "+billingOperationMigrateErr.Error())
 		return false, true
 	}
-	if !claimed {
-		return false, true
-	}
-	result := LOG_DB.Model(&Log{}).
-		Where("request_id = ? AND type = ? AND billing_status IN ?", requestID, LogTypeProcessing, []string{"", BillingStatusInFlight}).
-		Updates(map[string]interface{}{"billing_status": BillingStatusSettling, "quota": actualQuota, "pre_consumed_quota": preConsumedQuota, "usage_source": usageSource})
-	if result.Error == nil {
-		_ = LOG_DB.Model(&BillingOperation{}).Where("request_id = ? AND kind = ? AND version = ?", requestID, "settlement", 1).
+
+	persistent := false
+	claimed := false
+	duplicateClaim := false
+	err := LOG_DB.Transaction(func(tx *gorm.DB) error {
+		var processingRows int64
+		if queryErr := tx.Model(&Log{}).Where("request_id = ? AND type = ?", requestID, LogTypeProcessing).Count(&processingRows).Error; queryErr != nil {
+			return queryErr
+		}
+		if processingRows == 0 {
+			return nil
+		}
+		persistent = true
+
+		operation := &BillingOperation{RequestId: requestID, Kind: "settlement", Version: 1, Status: BillingOperationClaimed}
+		if createErr := tx.Create(operation).Error; createErr != nil {
+			lowerErr := strings.ToLower(createErr.Error())
+			duplicateClaim = errors.Is(createErr, gorm.ErrDuplicatedKey) || strings.Contains(lowerErr, "unique constraint") || strings.Contains(lowerErr, "duplicate")
+			return createErr
+		}
+
+		result := tx.Model(&Log{}).
+			Where("request_id = ? AND type = ? AND billing_status IN ?", requestID, LogTypeProcessing, []string{"", BillingStatusInFlight}).
+			Updates(map[string]interface{}{"billing_status": BillingStatusSettling, "quota": actualQuota, "pre_consumed_quota": preConsumedQuota, "usage_source": usageSource})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("request billing claim updated %d processing rows", result.RowsAffected)
+		}
+
+		result = tx.Model(&BillingOperation{}).
+			Where("id = ? AND status = ?", operation.Id, BillingOperationClaimed).
 			Updates(map[string]interface{}{"actual_quota": actualQuota, "pre_consumed_quota": preConsumedQuota, "operation_type": "settlement", "phase": "claimed", "usage_source": usageSource})
-	}
-	if result.Error != nil {
-		_ = CompleteBillingOperation(requestID, "settlement", 1, BillingOperationUnknown)
-		logger.LogError(c, "failed to claim request billing: "+result.Error.Error())
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("request billing claim updated %d operation metadata rows", result.RowsAffected)
+		}
+		claimed = true
+		return nil
+	})
+	if duplicateClaim {
 		return false, true
 	}
-	if result.RowsAffected != 1 {
-		_ = CompleteBillingOperation(requestID, "settlement", 1, BillingOperationUnknown)
-		return false, true
+	if err != nil {
+		logger.LogError(c, "failed to claim request billing durably: "+err.Error())
+		return false, persistent
 	}
-	return true, true
+	return claimed, persistent
+}
+
+func GetRequestBillingOperation(requestID string) (*BillingOperation, error) {
+	if LOG_DB == nil || requestID == "" {
+		return nil, fmt.Errorf("invalid request billing operation lookup")
+	}
+	var operation BillingOperation
+	if err := LOG_DB.Where("request_id = ? AND kind = ? AND version = ?", requestID, "settlement", 1).First(&operation).Error; err != nil {
+		return nil, err
+	}
+	return &operation, nil
 }
 
 func CompleteRequestBilling(c *gin.Context, status string) bool {
@@ -586,14 +627,43 @@ func CompleteRequestBilling(c *gin.Context, status string) bool {
 	if requestID == "" {
 		return false
 	}
-	result := LOG_DB.Model(&Log{}).Where("request_id = ? AND type = ? AND billing_status = ?", requestID, LogTypeProcessing, BillingStatusSettling).Update("billing_status", status)
-	ok := result.Error == nil && result.RowsAffected == 1
-	if ok {
-		_ = LOG_DB.Model(&BillingOperation{}).Where("request_id = ? AND kind = ? AND version = ?", requestID, "settlement", 1).
+	err := LOG_DB.Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&Log{}).
+			Where("request_id = ? AND type = ? AND billing_status = ?", requestID, LogTypeProcessing, BillingStatusSettling).
+			Update("billing_status", status)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("request billing completion updated %d processing rows", result.RowsAffected)
+		}
+
+		result = tx.Model(&BillingOperation{}).
+			Where("request_id = ? AND kind = ? AND version = ? AND status = ?", requestID, "settlement", 1, BillingOperationClaimed).
 			Updates(map[string]interface{}{"phase": "completed", "result": status, "terminal_reason": ""})
-		_ = CompleteBillingOperation(requestID, "settlement", 1, BillingOperationDone)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("request billing completion updated %d operation metadata rows", result.RowsAffected)
+		}
+
+		result = tx.Model(&BillingOperation{}).
+			Where("request_id = ? AND kind = ? AND version = ? AND status = ?", requestID, "settlement", 1, BillingOperationClaimed).
+			Update("status", BillingOperationDone)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("request billing completion transitioned %d operations", result.RowsAffected)
+		}
+		return nil
+	})
+	if err != nil {
+		logger.LogError(c, "failed to complete request billing durably: "+err.Error())
+		return false
 	}
-	return ok
+	return true
 }
 
 func FailRequestBilling(c *gin.Context, err error) bool {
@@ -604,18 +674,48 @@ func FailRequestBilling(c *gin.Context, err error) bool {
 	if requestID == "" {
 		return false
 	}
-	other := map[string]interface{}{"billing_status": "pending", "settlement_error": "settlement failed"}
+	settlementError := "settlement failed"
 	if err != nil {
-		other["settlement_error"] = err.Error()
+		settlementError = err.Error()
 	}
-	result := LOG_DB.Model(&Log{}).Where("request_id = ? AND type = ? AND billing_status = ?", requestID, LogTypeProcessing, BillingStatusSettling).Updates(map[string]interface{}{"billing_status": BillingStatusSettlementFail, "other": common.MapToJsonStr(other)})
-	ok := result.Error == nil && result.RowsAffected == 1
-	if ok {
-		_ = LOG_DB.Model(&BillingOperation{}).Where("request_id = ? AND kind = ? AND version = ?", requestID, "settlement", 1).
-			Updates(map[string]interface{}{"phase": "unknown", "result": "unknown", "terminal_reason": other["settlement_error"]})
-		_ = CompleteBillingOperation(requestID, "settlement", 1, BillingOperationUnknown)
+	err = LOG_DB.Transaction(func(tx *gorm.DB) error {
+		var log Log
+		if queryErr := tx.Where("request_id = ? AND type = ? AND billing_status = ?", requestID, LogTypeProcessing, BillingStatusSettling).First(&log).Error; queryErr != nil {
+			return queryErr
+		}
+		other, _ := common.StrToMap(log.Other)
+		if other == nil {
+			other = map[string]interface{}{}
+		}
+		other["billing_status"] = "pending"
+		other["settlement_error"] = settlementError
+
+		result := tx.Model(&Log{}).
+			Where("id = ? AND type = ? AND billing_status = ?", log.Id, LogTypeProcessing, BillingStatusSettling).
+			Updates(map[string]interface{}{"billing_status": BillingStatusSettlementFail, "other": common.MapToJsonStr(other)})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("request billing failure updated %d processing rows", result.RowsAffected)
+		}
+
+		result = tx.Model(&BillingOperation{}).
+			Where("request_id = ? AND kind = ? AND version = ? AND status = ?", requestID, "settlement", 1, BillingOperationClaimed).
+			Updates(map[string]interface{}{"phase": "unknown", "result": "unknown", "terminal_reason": settlementError, "status": BillingOperationUnknown})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("request billing failure transitioned %d operations", result.RowsAffected)
+		}
+		return nil
+	})
+	if err != nil {
+		logger.LogError(c, "failed to persist request billing failure: "+err.Error())
+		return false
 	}
-	return ok
+	return true
 }
 
 func MarkRequestBillingPending(c *gin.Context, preConsumedQuota int, usageSource string) bool {

@@ -197,8 +197,9 @@ func HandleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStream
 		}
 
 		// 发送最终的 Gemini 响应
-		c.Render(-1, common.CustomEvent{Data: "data: " + string(geminiResponseStr)})
-		_ = helper.FlushWriter(c)
+		if err := helper.StringData(c, string(geminiResponseStr)); err == nil && helper.HasChatCompletionsModelPayload(&streamResponse) {
+			helper.MarkModelPayloadDelivered(c)
+		}
 	}
 }
 
@@ -206,5 +207,7 @@ func sendResponsesStreamData(c *gin.Context, streamResponse dto.ResponsesStreamR
 	if data == "" {
 		return
 	}
-	_ = helper.ResponseChunkData(c, streamResponse, data)
+	if err := helper.ResponseChunkData(c, streamResponse, data); err == nil && helper.HasResponsesModelPayload(&streamResponse) {
+		helper.MarkModelPayloadDelivered(c)
+	}
 }

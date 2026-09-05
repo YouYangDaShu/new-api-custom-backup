@@ -259,6 +259,10 @@ func TestStreamScannerHandler_BareDone(t *testing.T) {
 // disconnect contract: when the client goes away, the handler drains the
 // upstream for a bounded interval without writing further downstream data.
 func TestStreamScannerHandler_ClientCancelAbortsUpstreamAndReturns(t *testing.T) {
+	oldDrainTimeout := streamDrainTimeout
+	streamDrainTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { streamDrainTimeout = oldDrainTimeout })
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -324,6 +328,24 @@ func TestStreamScannerHandler_ClientCancelAbortsUpstreamAndReturns(t *testing.T)
 	body := recorder.Body.String()
 	assert.Contains(t, body, "first")
 	assert.NotContains(t, body, "second")
+}
+
+func TestStreamScannerHandler_NormalRequestIgnoresDetachedDrainCapacity(t *testing.T) {
+	assert.Equal(t, 100, cap(streamDrainSem))
+	// Occupying one detached slot must not affect a normal active request.
+	streamDrainSem <- struct{}{}
+	t.Cleanup(func() {
+		<-streamDrainSem
+	})
+
+	c, resp, info := setupStreamTest(t, strings.NewReader("data: normal\ndata: [DONE]\n"))
+	var got []string
+	StreamScannerHandler(c, resp, info, func(data string, _ *StreamResult) {
+		got = append(got, data)
+	})
+
+	assert.Equal(t, []string{"normal"}, got)
+	assert.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
 }
 
 // ---------- Ping tests ----------

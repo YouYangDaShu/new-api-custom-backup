@@ -33,6 +33,9 @@ type BillingSession struct {
 	settled          bool // Settle 全部完成（资金 + 令牌）
 	refunded         bool // Refund 已调用
 	refundInProgress bool // refund child operations are running
+	settlementActual int  // actual quota locked once the funding mutation succeeds
+	settlementLocked bool // rejects a retry that would apply a different delta
+	finalizeMu       sync.Mutex
 	mu               sync.Mutex
 }
 
@@ -48,6 +51,9 @@ func (s *BillingSession) Settle(actualQuota int) error {
 	if s.relayInfo.RequestId == "" {
 		s.relayInfo.RequestId = common.NewRequestId()
 	}
+	if s.settlementLocked && actualQuota != s.settlementActual {
+		return fmt.Errorf("billing settlement actual quota changed after funding mutation: was %d, now %d", s.settlementActual, actualQuota)
+	}
 	delta := actualQuota - s.preConsumedQuota
 	if delta == 0 {
 		s.settled = true
@@ -62,7 +68,26 @@ func (s *BillingSession) Settle(actualQuota int) error {
 		case *WalletFunding:
 			err = model.ApplyWalletQuotaOperation(key, funding.userId, -delta, s.relayInfo.RequestId, funding.Source(), int64(s.preConsumedQuota), int64(actualQuota))
 		case *SubscriptionFunding:
-			err = model.ApplySubscriptionQuotaOperation(key, funding.subscriptionId, int64(delta), s.relayInfo.RequestId, funding.Source(), int64(s.preConsumedQuota), int64(actualQuota))
+			if actualQuota == 0 {
+				// A zero final charge is a full refund. Use the subscription
+				// pre-consume record so the economic balance and audit status are
+				// finalized together instead of leaving the record as consumed.
+				err = model.ApplySubscriptionRefundOperation(key, s.relayInfo.RequestId, funding.Source(), funding.preConsumed, 0)
+				if err == nil && s.extraReserved > 0 {
+					err = model.ApplySubscriptionQuotaOperationType(
+						s.relayInfo.RequestId+":settlement:subscription_extra",
+						funding.subscriptionId,
+						-int64(s.extraReserved),
+						s.relayInfo.RequestId,
+						funding.Source(),
+						int64(s.extraReserved),
+						0,
+						"refund",
+					)
+				}
+			} else {
+				err = model.ApplySubscriptionQuotaOperation(key, funding.subscriptionId, int64(delta), s.relayInfo.RequestId, funding.Source(), int64(s.preConsumedQuota), int64(actualQuota))
+			}
 		default:
 			err = s.funding.Settle(delta)
 		}
@@ -70,6 +95,8 @@ func (s *BillingSession) Settle(actualQuota int) error {
 			return err
 		}
 		s.fundingSettled = true
+		s.settlementActual = actualQuota
+		s.settlementLocked = true
 	}
 	// 2) 调整令牌额度
 	var tokenErr error
@@ -87,6 +114,11 @@ func (s *BillingSession) Settle(actualQuota int) error {
 	}
 	s.settled = true
 	return tokenErr
+}
+
+func (s *BillingSession) lockFinalization() func() {
+	s.finalizeMu.Lock()
+	return s.finalizeMu.Unlock
 }
 
 // Refund 退还所有预扣费，幂等安全，异步执行。

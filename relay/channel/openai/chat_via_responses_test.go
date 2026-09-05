@@ -124,18 +124,18 @@ func TestOaiResponsesToChatBufferedStreamHandlerReturnsJSONFromSSE(t *testing.T)
 
 func TestOaiResponsesToChatHandlerTerminalStatuses(t *testing.T) {
 	tests := []struct {
-		name        string
-		status      string
-		withUsage   bool
-		wantError   bool
-		wantSettled bool
-		wantMissing bool
-		wantTotal   int
+		name           string
+		status         string
+		withUsage      bool
+		wantError      bool
+		wantErrorUsage bool
+		wantMissing    bool
+		wantTotal      int
 	}{
 		{name: "completed", status: "completed", withUsage: true, wantTotal: 3},
-		{name: "failed with usage", status: "failed", withUsage: true, wantError: true, wantSettled: true, wantTotal: 3},
+		{name: "failed with usage", status: "failed", withUsage: true, wantError: true, wantErrorUsage: true, wantTotal: 3},
 		{name: "error missing usage", status: "error", wantError: true, wantMissing: true},
-		{name: "cancelled with usage", status: "cancelled", withUsage: true, wantError: true, wantSettled: true, wantTotal: 3},
+		{name: "cancelled with usage", status: "cancelled", withUsage: true, wantError: true, wantErrorUsage: true, wantTotal: 3},
 		{name: "incomplete missing usage", status: "incomplete", wantError: true, wantMissing: true},
 	}
 	for _, tt := range tests {
@@ -151,11 +151,12 @@ func TestOaiResponsesToChatHandlerTerminalStatuses(t *testing.T) {
 			usage, newAPIError := OaiResponsesToChatHandler(c, info, resp)
 			if tt.wantError {
 				require.Error(t, newAPIError)
+				require.True(t, types.IsSkipRetryError(newAPIError))
 			} else {
 				require.Nil(t, newAPIError)
 			}
 			require.Equal(t, tt.status, common.GetContextKeyString(c, constant.ContextKeyUpstreamTerminalStatus))
-			require.Equal(t, tt.wantSettled, common.GetContextKeyBool(c, constant.ContextKeyBillingSettledOnError))
+			require.Equal(t, tt.wantErrorUsage, common.GetContextKeyBool(c, constant.ContextKeyErrorUsagePresent))
 			require.Equal(t, tt.wantMissing, common.GetContextKeyBool(c, constant.ContextKeyMissingUpstreamUsage))
 			if tt.withUsage {
 				require.NotNil(t, usage)
@@ -169,17 +170,17 @@ func TestOaiResponsesToChatHandlerTerminalStatuses(t *testing.T) {
 
 func TestOaiResponsesToChatBufferedStreamHandlerTerminalStatuses(t *testing.T) {
 	tests := []struct {
-		status      string
-		withUsage   bool
-		wantError   bool
-		wantSettled bool
-		wantMissing bool
+		status         string
+		withUsage      bool
+		wantError      bool
+		wantErrorUsage bool
+		wantMissing    bool
 	}{
 		{status: "response.completed", withUsage: true},
 		{status: "response.done", withUsage: true},
-		{status: "response.failed", withUsage: true, wantError: true, wantSettled: true},
+		{status: "response.failed", withUsage: true, wantError: true, wantErrorUsage: true},
 		{status: "response.error", wantError: true, wantMissing: true},
-		{status: "response.cancelled", withUsage: true, wantError: true, wantSettled: true},
+		{status: "response.cancelled", withUsage: true, wantError: true, wantErrorUsage: true},
 		{status: "response.incomplete", wantError: true, wantMissing: true},
 	}
 	for _, tt := range tests {
@@ -194,12 +195,13 @@ func TestOaiResponsesToChatBufferedStreamHandlerTerminalStatuses(t *testing.T) {
 			usage, newAPIError := OaiResponsesToChatBufferedStreamHandler(c, info, resp)
 			if tt.wantError {
 				require.Error(t, newAPIError)
+				require.True(t, types.IsSkipRetryError(newAPIError))
 			} else {
 				require.Nil(t, newAPIError)
 				require.Equal(t, "application/json", recorder.Header().Get("Content-Type"))
 			}
 			require.Equal(t, tt.status, common.GetContextKeyString(c, constant.ContextKeyUpstreamTerminalStatus))
-			require.Equal(t, tt.wantSettled, common.GetContextKeyBool(c, constant.ContextKeyBillingSettledOnError))
+			require.Equal(t, tt.wantErrorUsage, common.GetContextKeyBool(c, constant.ContextKeyErrorUsagePresent))
 			require.Equal(t, tt.wantMissing, common.GetContextKeyBool(c, constant.ContextKeyMissingUpstreamUsage))
 			if tt.withUsage {
 				require.NotNil(t, usage)
@@ -215,6 +217,7 @@ func TestOaiResponsesToChatBufferedStreamHandlerRejectsEOFWithoutTerminal(t *tes
 	require.Error(t, err)
 	require.Nil(t, usage)
 	require.True(t, common.GetContextKeyBool(c, constant.ContextKeyMissingUpstreamUsage))
+	require.False(t, types.IsSkipRetryError(err))
 }
 
 func TestOaiResponsesToChatBufferedStreamHandlerShortTimeout(t *testing.T) {
@@ -234,8 +237,33 @@ func TestOaiResponsesToChatBufferedStreamHandlerShortTimeout(t *testing.T) {
 	require.Error(t, err)
 	require.Nil(t, usage)
 	require.True(t, common.GetContextKeyBool(c, constant.ContextKeyMissingUpstreamUsage))
+	require.False(t, types.IsSkipRetryError(err))
 	reason, _ := info.StreamStatus.Snapshot()
 	require.Equal(t, relaycommon.StreamEndReasonTimeout, reason)
+}
+
+func TestOaiResponsesToChatStreamMalformedRetryBoundary(t *testing.T) {
+	t.Run("before delivery", func(t *testing.T) {
+		c, recorder, resp, info := newResponsesChatTestContext(t, "data: {malformed}\n", true)
+		usage, err := OaiResponsesToChatStreamHandler(c, info, resp)
+		require.Error(t, err)
+		require.Nil(t, usage)
+		require.Empty(t, recorder.Body.String())
+		require.False(t, types.IsSkipRetryError(err))
+	})
+
+	t.Run("after delivery", func(t *testing.T) {
+		body := strings.Join([]string{
+			`data: {"type":"response.output_text.delta","delta":"partial"}`,
+			`data: {malformed}`,
+		}, "\n")
+		c, recorder, resp, info := newResponsesChatTestContext(t, body, true)
+		usage, err := OaiResponsesToChatStreamHandler(c, info, resp)
+		require.Error(t, err)
+		require.Nil(t, usage)
+		require.NotEmpty(t, recorder.Body.String())
+		require.True(t, types.IsSkipRetryError(err))
+	})
 }
 
 func TestOaiResponsesToChatStreamHandlerIncompleteUsageIsPreservedWithoutFinalChunk(t *testing.T) {
@@ -247,7 +275,7 @@ func TestOaiResponsesToChatStreamHandlerIncompleteUsageIsPreservedWithoutFinalCh
 	require.Equal(t, 0, usage.TotalTokens)
 	require.Equal(t, "response.incomplete", common.GetContextKeyString(c, constant.ContextKeyUpstreamTerminalStatus))
 	require.False(t, common.GetContextKeyBool(c, constant.ContextKeyMissingUpstreamUsage))
-	require.True(t, common.GetContextKeyBool(c, constant.ContextKeyBillingSettledOnError))
+	require.True(t, common.GetContextKeyBool(c, constant.ContextKeyErrorUsagePresent))
 	require.NotContains(t, recorder.Body.String(), `"finish_reason"`)
 }
 

@@ -30,9 +30,9 @@ const (
 )
 
 var (
-	streamDrainTimeout         = time.Second
+	streamDrainTimeout         = 10 * time.Second
 	streamDrainMaxEvents int64 = 2048
-	streamDrainSem             = make(chan struct{}, 32)
+	streamDrainSem             = make(chan struct{}, 100)
 )
 
 func getScannerBufferSize() int {

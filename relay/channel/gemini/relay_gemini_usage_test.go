@@ -118,6 +118,40 @@ func TestGeminiStreamHandlerCompletionTokensExcludeToolUsePromptTokens(t *testin
 	require.Equal(t, 1120, usage.CompletionTokenDetails.ReasoningTokens)
 }
 
+func TestGeminiChatStreamHandlerAbnormalEndRetryEvidence(t *testing.T) {
+	valid := `{"candidates":[{"content":{"role":"model","parts":[{"text":"partial"}]}}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`
+	for _, tt := range []struct {
+		name     string
+		body     string
+		wantSkip bool
+	}{
+		{name: "malformed first", body: "data: {malformed}\n", wantSkip: false},
+		{name: "malformed after payload", body: "data: " + valid + "\ndata: {malformed}\n", wantSkip: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			info := &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAI, DisablePing: true, ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "gemini-test"}}
+			resp := &http.Response{Body: io.NopCloser(strings.NewReader(tt.body))}
+			_, err := GeminiChatStreamHandler(c, info, resp)
+			require.Error(t, err)
+			require.Equal(t, tt.wantSkip, types.IsSkipRetryError(err))
+		})
+	}
+}
+
+func TestGeminiChatStreamHandlerRoleOnlyDoesNotCreateRetryEvidence(t *testing.T) {
+	body := `{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP"}]}` + "\ndata: {malformed}\n"
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAI, DisablePing: true, ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "gemini-test"}}
+
+	_, err := GeminiChatStreamHandler(c, info, &http.Response{Body: io.NopCloser(strings.NewReader(body))})
+	require.Error(t, err)
+	require.False(t, types.IsSkipRetryError(err))
+	require.False(t, common.GetContextKeyBool(c, constant.ContextKeyModelPayloadDelivered))
+}
+
 func TestGeminiTextGenerationHandlerPromptTokensIncludeToolUsePromptTokens(t *testing.T) {
 	t.Parallel()
 

@@ -78,7 +78,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		applySystemPromptIfNeeded(c, info, request)
 		usage, newApiErr := chatCompletionsViaResponses(c, info, adaptor, request)
 		if newApiErr != nil {
-			if usage != nil && common.GetContextKeyBool(c, constant.ContextKeyBillingSettledOnError) {
+			if usage != nil && common.GetContextKeyBool(c, constant.ContextKeyErrorUsagePresent) {
 				if usage.CompletionTokenDetails.AudioTokens > 0 || usage.PromptTokensDetails.AudioTokens > 0 {
 					service.PostAudioConsumeQuota(c, info, usage, "终态错误但上游已返回 usage")
 				} else {
@@ -203,7 +203,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	if resp != nil {
 		httpResp = resp.(*http.Response)
 		info.IsStream = info.IsStream || strings.HasPrefix(httpResp.Header.Get("Content-Type"), "text/event-stream")
-		if httpResp.StatusCode != http.StatusOK {
+		if httpResp.StatusCode != http.StatusOK && !openAIAdaptorCanRecoverErrorUsage(info.ApiType) {
 			newApiErr := service.RelayErrorHandler(c.Request.Context(), httpResp, false)
 			// reset status code 重置状态码
 			service.ResetStatusCode(newApiErr, statusCodeMappingStr)
@@ -213,7 +213,7 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 
 	usage, newApiErr := adaptor.DoResponse(c, httpResp, info)
 	if newApiErr != nil {
-		if usageValue, ok := usage.(*dto.Usage); ok && usageValue != nil && common.GetContextKeyBool(c, constant.ContextKeyBillingSettledOnError) {
+		if usageValue, ok := usage.(*dto.Usage); ok && usageValue != nil && common.GetContextKeyBool(c, constant.ContextKeyErrorUsagePresent) {
 			service.PostTextConsumeQuota(c, info, usageValue, []string{"终态错误但上游已返回 usage"})
 		}
 		// reset status code 重置状态码

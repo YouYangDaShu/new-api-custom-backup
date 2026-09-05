@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -35,11 +36,20 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 
+	usage, usagePresent := openAIImageUsageFromBody(c, info, responseBody, &usageResp)
 	if oaiError := usageResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
+		if usagePresent {
+			common.SetContextKey(c, constant.ContextKeyErrorUsagePresent, true)
+			return usage, types.WithOpenAIError(*oaiError, resp.StatusCode)
+		}
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 	var imageResp dto.ImageResponse
 	if err := common.Unmarshal(responseBody, &imageResp); err != nil {
+		if usagePresent {
+			common.SetContextKey(c, constant.ContextKeyErrorUsagePresent, true)
+			return usage, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		}
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 	hasImageResult := false
@@ -50,15 +60,41 @@ func OpenaiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 		}
 	}
 	if !hasImageResult {
+		if usagePresent {
+			common.SetContextKey(c, constant.ContextKeyErrorUsagePresent, true)
+			return usage, types.NewOpenAIError(fmt.Errorf("image response contained no result"), types.ErrorCodeBadResponse, http.StatusBadGateway)
+		}
 		return nil, types.NewOpenAIError(fmt.Errorf("image response contained no result"), types.ErrorCodeBadResponse, http.StatusBadGateway)
 	}
 	// 写入新的 response body
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
-	normalizeOpenAIUsage(&usageResp.Usage)
-	usageResp.Usage.UsageSource = "image_per_call"
-	applyUsagePostProcessing(info, &usageResp.Usage, responseBody)
-	return &usageResp.Usage, nil
+	if !usagePresent {
+		normalizeOpenAIUsage(&usageResp.Usage)
+		usageResp.Usage.UsageSource = "image_per_call"
+		applyUsagePostProcessing(info, &usageResp.Usage, responseBody)
+		usage = &usageResp.Usage
+	}
+	return usage, nil
+}
+
+func openAIImageUsageFromBody(c *gin.Context, info *relaycommon.RelayInfo, body []byte, parsed *dto.SimpleResponse) (*dto.Usage, bool) {
+	if parsed == nil {
+		return nil, false
+	}
+	var fields map[string]interface{}
+	if common.Unmarshal(body, &fields) != nil {
+		return nil, false
+	}
+	usageValue, present := fields["usage"]
+	if !present || usageValue == nil {
+		return nil, false
+	}
+	normalizeOpenAIUsage(&parsed.Usage)
+	parsed.Usage.UsageSource = "image_per_call"
+	applyUsagePostProcessing(info, &parsed.Usage, body)
+	common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
+	return &parsed.Usage, true
 }
 
 // normalizeOpenAIUsage maps the OpenAI Images usage shape (input_tokens /
@@ -111,9 +147,11 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 	// "data:" payload, so the SSE "event:" line is rebuilt from the JSON "type"
 	// field (real OpenAI image events keep event == type).
 	usage := &dto.Usage{}
+	usagePresent := false
 	var lastStreamData []byte
 	var streamError error
 	validResult := false
+	partialResult := false
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		raw := common.StringToByteSlice(data)
@@ -131,13 +169,37 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 			_ = common.Unmarshal(raw, &fields)
 			if usageValue, present := fields["usage"]; present && usageValue != nil {
 				usage = &usageResp.Usage
+				usagePresent = true
+				common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
 			}
-			validResult = validResult || isOpenAIImageCompletedEvent(fields)
+			if isOpenAIImageResult(fields) {
+				if eventType, _ := fields["type"].(string); strings.HasSuffix(strings.ToLower(strings.TrimSpace(eventType)), ".completed") {
+					validResult = true
+				} else {
+					partialResult = true
+				}
+			}
 		}
 		writeOpenaiImageStreamChunk(c, raw)
 	})
 	if streamError != nil {
-		return nil, types.NewOpenAIError(streamError, types.ErrorCodeBadResponse, http.StatusBadGateway)
+		if usagePresent {
+			common.SetContextKey(c, constant.ContextKeyErrorUsagePresent, true)
+		} else if partialResult {
+			common.SetContextKey(c, constant.ContextKeyBillingPending, true)
+			common.SetContextKey(c, constant.ContextKeyBillingPendingReason, "usage_without_completed_result")
+		}
+		opts := []types.NewAPIErrorOptions{}
+		if common.GetContextKeyBool(c, constant.ContextKeyModelPayloadDelivered) || usagePresent || partialResult {
+			opts = append(opts, types.ErrOptionWithSkipRetry())
+		}
+		if usagePresent {
+			applyUsagePostProcessing(info, usage, lastStreamData)
+			usage.UsageSource = "image_per_call"
+			return usage, types.NewOpenAIError(streamError, types.ErrorCodeBadResponse, http.StatusBadGateway, opts...)
+		}
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
+		return nil, types.NewOpenAIError(streamError, types.ErrorCodeBadResponse, http.StatusBadGateway, opts...)
 	}
 
 	// StreamScannerHandler consumes the upstream [DONE]; re-emit it so the
@@ -154,7 +216,23 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 		if endErr == nil {
 			endErr = fmt.Errorf("image stream ended without a completed result")
 		}
-		return nil, types.NewOpenAIError(endErr, types.ErrorCodeBadResponse, http.StatusBadGateway)
+		opts := []types.NewAPIErrorOptions{}
+		if common.GetContextKeyBool(c, constant.ContextKeyModelPayloadDelivered) || validResult || usagePresent || partialResult {
+			opts = append(opts, types.ErrOptionWithSkipRetry())
+		}
+		if usagePresent {
+			common.SetContextKey(c, constant.ContextKeyErrorUsagePresent, true)
+		} else if partialResult {
+			common.SetContextKey(c, constant.ContextKeyBillingPending, true)
+			common.SetContextKey(c, constant.ContextKeyBillingPendingReason, "usage_without_completed_result")
+		}
+		if usagePresent {
+			applyUsagePostProcessing(info, usage, lastStreamData)
+			usage.UsageSource = "image_per_call"
+			return usage, types.NewOpenAIError(endErr, types.ErrorCodeBadResponse, http.StatusBadGateway, opts...)
+		}
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
+		return nil, types.NewOpenAIError(endErr, types.ErrorCodeBadResponse, http.StatusBadGateway, opts...)
 	}
 
 	applyUsagePostProcessing(info, usage, lastStreamData)
@@ -162,9 +240,26 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 	return usage, nil
 }
 
-func isOpenAIImageCompletedEvent(fields map[string]interface{}) bool {
+func isOpenAIImageResult(fields map[string]interface{}) bool {
 	eventType, _ := fields["type"].(string)
-	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(eventType)), ".completed")
+	eventType = strings.ToLower(strings.TrimSpace(eventType))
+	if !strings.HasSuffix(eventType, ".partial_image") && !strings.HasSuffix(eventType, ".completed") {
+		return false
+	}
+	for _, key := range []string{"b64_json", "url", "image", "data"} {
+		value, ok := fields[key]
+		if !ok || value == nil {
+			continue
+		}
+		if text, ok := value.(string); ok {
+			if strings.TrimSpace(text) != "" {
+				return true
+			}
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // writeOpenaiImageStreamChunk rebuilds the SSE frame for an image stream chunk:
@@ -175,8 +270,12 @@ func writeOpenaiImageStreamChunk(c *gin.Context, data []byte) {
 		Type string `json:"type"`
 	}
 	_ = common.Unmarshal(data, &payload)
+	var fields map[string]interface{}
+	_ = common.Unmarshal(data, &fields)
 	if eventName := strings.TrimSpace(payload.Type); eventName != "" {
-		_ = helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: eventName}, string(data))
+		if err := helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: eventName}, string(data)); err == nil && isOpenAIImageResult(fields) {
+			helper.MarkModelPayloadDelivered(c)
+		}
 		return
 	}
 	_ = helper.StringData(c, string(data))
@@ -240,24 +339,46 @@ func OpenaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
 	}
 
-	var imageResp dto.ImageResponse
-	if err := common.Unmarshal(responseBody, &imageResp); err != nil {
-		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
-	}
-
 	var usageResp dto.SimpleResponse
 	_ = common.Unmarshal(responseBody, &usageResp)
+	usage, usagePresent := openAIImageUsageFromBody(c, info, responseBody, &usageResp)
+	var imageResp dto.ImageResponse
+	if err := common.Unmarshal(responseBody, &imageResp); err != nil {
+		if usagePresent {
+			common.SetContextKey(c, constant.ContextKeyErrorUsagePresent, true)
+			return usage, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		}
+		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+	}
 	var fields map[string]interface{}
 	_ = common.Unmarshal(responseBody, &fields)
 	if oaiError := usageResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
+		if usagePresent {
+			common.SetContextKey(c, constant.ContextKeyErrorUsagePresent, true)
+			return usage, types.WithOpenAIError(*oaiError, resp.StatusCode)
+		}
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
-	if len(imageResp.Data) == 0 {
+	hasImageResult := false
+	for _, image := range imageResp.Data {
+		if strings.TrimSpace(image.Url) != "" || strings.TrimSpace(image.B64Json) != "" {
+			hasImageResult = true
+			break
+		}
+	}
+	if !hasImageResult {
+		if usagePresent {
+			common.SetContextKey(c, constant.ContextKeyErrorUsagePresent, true)
+			return usage, types.NewOpenAIError(fmt.Errorf("image response contained no result"), types.ErrorCodeBadResponse, http.StatusBadGateway)
+		}
 		return nil, types.NewOpenAIError(fmt.Errorf("image response contained no result"), types.ErrorCodeBadResponse, http.StatusBadGateway)
 	}
-	normalizeOpenAIUsage(&usageResp.Usage)
-	usageResp.Usage.UsageSource = "image_per_call"
-	applyUsagePostProcessing(info, &usageResp.Usage, responseBody)
+	if !usagePresent {
+		normalizeOpenAIUsage(&usageResp.Usage)
+		usageResp.Usage.UsageSource = "image_per_call"
+		applyUsagePostProcessing(info, &usageResp.Usage, responseBody)
+		usage = &usageResp.Usage
+	}
 
 	helper.SetEventStreamHeaders(c)
 	c.Status(http.StatusOK)
@@ -290,14 +411,15 @@ func OpenaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 			if info != nil && info.StreamStatus != nil {
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
 			}
-			return &usageResp.Usage, nil
+			return usage, nil
 		}
+		helper.MarkModelPayloadDelivered(c)
 	}
 	if err := writeOpenaiImageStreamDone(c); err != nil {
 		if info != nil && info.StreamStatus != nil {
 			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
 		}
-		return &usageResp.Usage, nil
+		return usage, nil
 	}
 	if info != nil {
 		info.ReceivedResponseCount += len(imageResp.Data)
@@ -306,7 +428,7 @@ func OpenaiImageJSONAsStreamHandler(c *gin.Context, info *relaycommon.RelayInfo,
 		}
 		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
 	}
-	return &usageResp.Usage, nil
+	return usage, nil
 }
 
 func writeOpenaiImageStreamPayload(c *gin.Context, eventName string, payload any) error {

@@ -252,6 +252,7 @@ func difyStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 		if difyResponse.Event == "message_end" {
 			if hasDifyUsage([]byte(data)) {
 				usagePresent = true
+				common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
 				usage = &difyResponse.MetaData.Usage
 			}
 			if !usagePresent {
@@ -288,6 +289,9 @@ func difyHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respons
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
 	usagePresent := hasDifyUsage(responseBody)
+	if usagePresent {
+		common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
+	}
 	if !usagePresent {
 		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 	}

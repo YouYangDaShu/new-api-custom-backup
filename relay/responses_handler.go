@@ -146,12 +146,20 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 
 	usage, newAPIError := adaptor.DoResponse(c, httpResp, info)
 	if newAPIError != nil {
+		if info.RelayMode == relayconstant.RelayModeResponsesCompact {
+			consumeResponsesErrorUsage(c, info, usage)
+		} else {
+			consumeDirectResponsesErrorUsage(c, info, usage)
+		}
 		// reset status code 重置状态码
 		service.ResetStatusCode(newAPIError, statusCodeMappingStr)
 		return newAPIError
 	}
 
-	usageDto := usage.(*dto.Usage)
+	usageDto, ok := usage.(*dto.Usage)
+	if !ok || usageDto == nil {
+		usageDto = &dto.Usage{}
+	}
 	if info.RelayMode == relayconstant.RelayModeResponsesCompact {
 		originModelName := info.OriginModelName
 		originPriceData := info.PriceData
@@ -175,6 +183,45 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		service.PostTextConsumeQuota(c, info, usageDto, nil)
 	}
 	return nil
+}
+
+func consumeResponsesErrorUsage(c *gin.Context, info *relaycommon.RelayInfo, usage any) {
+	consumeResponsesErrorUsageWith(c, info, usage, service.PostTextConsumeQuota)
+}
+
+func consumeDirectResponsesErrorUsage(c *gin.Context, info *relaycommon.RelayInfo, usage any) {
+	consumeDirectResponsesErrorUsageWith(c, info, usage, service.PostAudioConsumeQuota, service.PostTextConsumeQuota)
+}
+
+func consumeDirectResponsesErrorUsageWith(
+	c *gin.Context,
+	info *relaycommon.RelayInfo,
+	usage any,
+	audioConsume func(*gin.Context, *relaycommon.RelayInfo, *dto.Usage, string),
+	textConsume func(*gin.Context, *relaycommon.RelayInfo, *dto.Usage, []string),
+) {
+	usageDto, ok := usage.(*dto.Usage)
+	if !ok || usageDto == nil || !common.GetContextKeyBool(c, appconstant.ContextKeyErrorUsagePresent) {
+		return
+	}
+	if strings.HasPrefix(info.OriginModelName, "gpt-4o-audio") {
+		audioConsume(c, info, usageDto, "终态错误但上游已返回 usage")
+		return
+	}
+	textConsume(c, info, usageDto, []string{"终态错误但上游已返回 usage"})
+}
+
+func consumeResponsesErrorUsageWith(
+	c *gin.Context,
+	info *relaycommon.RelayInfo,
+	usage any,
+	consume func(*gin.Context, *relaycommon.RelayInfo, *dto.Usage, []string),
+) {
+	usageDto, ok := usage.(*dto.Usage)
+	if !ok || usageDto == nil || !common.GetContextKeyBool(c, appconstant.ContextKeyErrorUsagePresent) {
+		return
+	}
+	consume(c, info, usageDto, []string{"终态错误但上游已返回 usage"})
 }
 
 func cleanInputItemIDs(input json.RawMessage) (json.RawMessage, error) {

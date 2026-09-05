@@ -105,7 +105,7 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 			if httpResp.StatusCode == http.StatusCreated && info.ApiType == constant.APITypeReplicate {
 				// replicate channel returns 201 Created when using Prefer: wait, treat it as success.
 				httpResp.StatusCode = http.StatusOK
-			} else {
+			} else if !openAIAdaptorCanRecoverErrorUsage(info.ApiType) {
 				newAPIError = service.RelayErrorHandler(c.Request.Context(), httpResp, false)
 				// reset status code 重置状态码
 				service.ResetStatusCode(newAPIError, statusCodeMappingStr)
@@ -116,6 +116,9 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 
 	usage, newAPIError := adaptor.DoResponse(c, httpResp, info)
 	if newAPIError != nil {
+		if imageUsage, ok := usage.(*dto.Usage); ok && imageUsage != nil && common.GetContextKeyBool(c, constant.ContextKeyErrorUsagePresent) {
+			service.PostTextConsumeQuota(c, info, imageUsage, []string{"终态错误但上游已返回 usage"})
+		}
 		// reset status code 重置状态码
 		service.ResetStatusCode(newAPIError, statusCodeMappingStr)
 		return newAPIError
@@ -163,4 +166,8 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 
 	service.PostTextConsumeQuota(c, info, imageUsage, logContent)
 	return nil
+}
+
+func openAIAdaptorCanRecoverErrorUsage(apiType int) bool {
+	return apiType == constant.APITypeOpenAI || apiType == constant.APITypeOpenRouter || apiType == constant.APITypeXinference
 }

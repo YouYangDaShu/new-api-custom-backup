@@ -1368,6 +1368,7 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		// 更新使用量统计
 		if hasGeminiUsageMetadata([]byte(data)) {
 			usagePresent = true
+			common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
 			mappedUsage := buildUsageFromGeminiMetadata(geminiResponse.UsageMetadata)
 			*usage = mappedUsage
 		}
@@ -1376,6 +1377,22 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 			sr.Stop(fmt.Errorf("gemini callback stopped"))
 		}
 	})
+	if info != nil && info.StreamStatus != nil {
+		reason, endErr := info.StreamStatus.Snapshot()
+		if endErr != nil || info.StreamStatus.HasErrors() || reason != relaycommon.StreamEndReasonDone {
+			if endErr == nil {
+				endErr = fmt.Errorf("gemini stream ended abnormally (%s)", reason)
+			}
+			opts := []types.NewAPIErrorOptions{}
+			if common.GetContextKeyBool(c, constant.ContextKeyModelPayloadDelivered) || usagePresent {
+				opts = append(opts, types.ErrOptionWithSkipRetry())
+			}
+			if !usagePresent {
+				common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
+			}
+			return usage, types.NewOpenAIError(endErr, types.ErrorCodeBadResponse, http.StatusBadGateway, opts...)
+		}
+	}
 
 	if !usagePresent {
 		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
@@ -1502,6 +1519,9 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 	usagePresent := hasGeminiUsageMetadata(responseBody)
+	if usagePresent {
+		common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
+	}
 	usage := dto.Usage{}
 	if usagePresent {
 		usage = buildUsageFromGeminiMetadata(geminiResponse.UsageMetadata)

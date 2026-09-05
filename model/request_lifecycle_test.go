@@ -239,7 +239,119 @@ func TestBillingOperation_DurableClaimIsSingleWinner(t *testing.T) {
 	assert.False(t, CompleteBillingOperation(reqID, "settlement", 1, BillingOperationDone))
 }
 
-func TestRequestLifecycle_PendingSurvivesFinalizeAndStaleCloser(t *testing.T) {
+func TestCompleteRequestBillingPersistsTerminalStateAtomically(t *testing.T) {
+	require.NoError(t, LOG_DB.AutoMigrate(&Log{}, &BillingOperation{}))
+	const reqID = "req-life-completion-success"
+	LOG_DB.Where("request_id = ?", reqID).Delete(&BillingOperation{})
+	LOG_DB.Where("request_id = ?", reqID).Delete(&Log{})
+	t.Cleanup(func() {
+		LOG_DB.Where("request_id = ?", reqID).Delete(&BillingOperation{})
+		LOG_DB.Where("request_id = ?", reqID).Delete(&Log{})
+	})
+	c := newTestGinContext(reqID, 99125)
+	StartRequestLog(c, "completion-model", false, "default")
+	claimed, persistent := ClaimRequestBilling(c, 42, 77, "provider")
+	require.True(t, persistent)
+	require.True(t, claimed)
+
+	require.True(t, CompleteRequestBilling(c, BillingStatusCharged))
+
+	var row Log
+	require.NoError(t, LOG_DB.Where("request_id = ?", reqID).First(&row).Error)
+	assert.Equal(t, BillingStatusCharged, row.BillingStatus)
+	var operation BillingOperation
+	require.NoError(t, LOG_DB.Where("request_id = ? AND kind = ? AND version = ?", reqID, "settlement", 1).First(&operation).Error)
+	assert.Equal(t, BillingOperationDone, operation.Status)
+	assert.Equal(t, "completed", operation.Phase)
+	assert.Equal(t, BillingStatusCharged, operation.Result)
+	assert.Equal(t, int64(42), operation.ActualQuota)
+	assert.Equal(t, int64(77), operation.PreConsumedQuota)
+}
+
+func TestCompleteRequestBillingRollsBackEveryFailureStage(t *testing.T) {
+	tests := []struct {
+		name        string
+		requestID   string
+		triggerName string
+		triggerSQL  string
+	}{
+		{
+			name:        "processing update",
+			requestID:   "req-life-completion-processing-failure",
+			triggerName: "fail_billing_completion_log",
+			triggerSQL: `CREATE TRIGGER fail_billing_completion_log BEFORE UPDATE OF billing_status ON logs
+				WHEN NEW.request_id = 'req-life-completion-processing-failure' AND NEW.billing_status = 'charged'
+				BEGIN SELECT RAISE(ABORT, 'processing update failed'); END`,
+		},
+		{
+			name:        "operation metadata update",
+			requestID:   "req-life-completion-operation-metadata-failure",
+			triggerName: "fail_billing_completion_metadata",
+			triggerSQL: `CREATE TRIGGER fail_billing_completion_metadata BEFORE UPDATE OF phase ON billing_operations
+				WHEN NEW.request_id = 'req-life-completion-operation-metadata-failure' AND NEW.phase = 'completed'
+				BEGIN SELECT RAISE(ABORT, 'operation metadata update failed'); END`,
+		},
+		{
+			name:        "claimed to done update",
+			requestID:   "req-life-completion-claimed-to-done-failure",
+			triggerName: "fail_billing_completion_done",
+			triggerSQL: `CREATE TRIGGER fail_billing_completion_done BEFORE UPDATE OF status ON billing_operations
+				WHEN NEW.request_id = 'req-life-completion-claimed-to-done-failure' AND NEW.status = 'done'
+				BEGIN SELECT RAISE(ABORT, 'claimed to done update failed'); END`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.NoError(t, LOG_DB.AutoMigrate(&Log{}, &BillingOperation{}))
+			reqID := tt.requestID
+			LOG_DB.Where("request_id = ?", reqID).Delete(&BillingOperation{})
+			LOG_DB.Where("request_id = ?", reqID).Delete(&Log{})
+			LOG_DB.Exec("DROP TRIGGER IF EXISTS " + tt.triggerName)
+			t.Cleanup(func() {
+				LOG_DB.Exec("DROP TRIGGER IF EXISTS " + tt.triggerName)
+				LOG_DB.Where("request_id = ?", reqID).Delete(&BillingOperation{})
+				LOG_DB.Where("request_id = ?", reqID).Delete(&Log{})
+			})
+			c := newTestGinContext(reqID, 99126)
+			StartRequestLog(c, "completion-model", false, "default")
+			claimed, persistent := ClaimRequestBilling(c, 42, 77, "provider")
+			require.True(t, persistent)
+			require.True(t, claimed)
+			require.NoError(t, LOG_DB.Exec(tt.triggerSQL).Error)
+
+			assert.False(t, CompleteRequestBilling(c, BillingStatusCharged))
+
+			var row Log
+			require.NoError(t, LOG_DB.Where("request_id = ?", reqID).First(&row).Error)
+			assert.Equal(t, BillingStatusSettling, row.BillingStatus)
+			var operation BillingOperation
+			require.NoError(t, LOG_DB.Where("request_id = ? AND kind = ? AND version = ?", reqID, "settlement", 1).First(&operation).Error)
+			assert.Equal(t, BillingOperationClaimed, operation.Status)
+			assert.Equal(t, "claimed", operation.Phase)
+			assert.Empty(t, operation.Result)
+		})
+	}
+}
+
+func TestClaimRequestBillingWithoutProcessingLogIsNotPersistent(t *testing.T) {
+	const reqID = "req-life-no-processing-log"
+	LOG_DB.Where("request_id = ?", reqID).Delete(&BillingOperation{})
+	LOG_DB.Where("request_id = ?", reqID).Delete(&Log{})
+	t.Cleanup(func() {
+		LOG_DB.Where("request_id = ?", reqID).Delete(&BillingOperation{})
+		LOG_DB.Where("request_id = ?", reqID).Delete(&Log{})
+	})
+
+	claimed, persistent := ClaimRequestBilling(newTestGinContext(reqID, 99127), 42, 77, "provider")
+
+	assert.False(t, claimed)
+	assert.False(t, persistent)
+	var count int64
+	require.NoError(t, LOG_DB.Model(&BillingOperation{}).Where("request_id = ?", reqID).Count(&count).Error)
+	assert.Zero(t, count)
+}
+
+func TestRequestLifecycle_SettlementFailurePendingSurvivesFinalizeAndStaleCloser(t *testing.T) {
 	if LOG_DB == nil {
 		t.Skip("LOG_DB not initialized")
 	}
@@ -249,7 +361,7 @@ func TestRequestLifecycle_PendingSurvivesFinalizeAndStaleCloser(t *testing.T) {
 	t.Cleanup(func() { LOG_DB.Where("request_id = ?", reqID).Delete(&Log{}) })
 	c := newTestGinContext(reqID, 99124)
 	StartRequestLog(c, "pending-model", true, "default")
-	require.True(t, MarkRequestBillingPending(c, 88, "missing"))
+	require.True(t, MarkRequestBillingPending(c, 88, "settlement_failed"))
 	assert.True(t, FinalizeRequestLog(c, FinalizeRequestLogParams{Success: true, Content: "completed"}))
 	var row Log
 	require.NoError(t, LOG_DB.Where("request_id = ?", reqID).First(&row).Error)

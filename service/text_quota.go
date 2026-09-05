@@ -82,6 +82,31 @@ func isLegacyClaudeDerivedOpenAIUsage(relayInfo *relaycommon.RelayInfo, usage *d
 	return usage.ClaudeCacheCreation5mTokens > 0 || usage.ClaudeCacheCreation1hTokens > 0
 }
 
+func hasNonZeroUsageValue(usage *dto.Usage) bool {
+	if usage == nil {
+		return false
+	}
+	if usage.PromptTokens != 0 || usage.CompletionTokens != 0 || usage.TotalTokens != 0 ||
+		usage.PromptCacheHitTokens != 0 || usage.InputTokens != 0 || usage.OutputTokens != 0 ||
+		usage.ClaudeCacheCreation5mTokens != 0 || usage.ClaudeCacheCreation1hTokens != 0 {
+		return true
+	}
+	input := usage.PromptTokensDetails
+	if input.CachedTokens != 0 || input.CachedCreationTokens != 0 || input.TextTokens != 0 ||
+		input.AudioTokens != 0 || input.ImageTokens != 0 {
+		return true
+	}
+	if usage.InputTokensDetails != nil {
+		input = *usage.InputTokensDetails
+		if input.CachedTokens != 0 || input.CachedCreationTokens != 0 || input.TextTokens != 0 ||
+			input.AudioTokens != 0 || input.ImageTokens != 0 {
+			return true
+		}
+	}
+	output := usage.CompletionTokenDetails
+	return output.TextTokens != 0 || output.AudioTokens != 0 || output.ImageTokens != 0 || output.ReasoningTokens != 0
+}
+
 func calculateTextToolCallSurcharge(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, summary *textQuotaSummary) decimal.Decimal {
 	dGroupRatio := decimal.NewFromFloat(summary.GroupRatio)
 	dQuotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
@@ -177,6 +202,7 @@ func composeTieredTextQuota(relayInfo *relaycommon.RelayInfo, summary textQuotaS
 }
 
 func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage) textQuotaSummary {
+	structuredUsagePresent := common.GetContextKeyBool(ctx, constant.ContextKeyUpstreamUsagePresent)
 	summary := textQuotaSummary{
 		ModelName:            relayInfo.OriginModelName,
 		TokenName:            ctx.GetString("token_name"),
@@ -305,7 +331,8 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 			}
 		}
 
-		if !ratio.IsZero() && quotaCalculateDecimal.LessThanOrEqual(decimal.Zero) {
+		allowExplicitZero := structuredUsagePresent && usage.UsageSource != "image_per_call" && !hasNonZeroUsageValue(usage) && summary.ToolCallSurchargeQuota.IsZero() && audioInputQuota.IsZero()
+		if !ratio.IsZero() && quotaCalculateDecimal.LessThanOrEqual(decimal.Zero) && !allowExplicitZero {
 			quotaCalculateDecimal = decimal.NewFromInt(1)
 		}
 		quota, clamp := common.QuotaFromDecimalChecked(quotaCalculateDecimal)
@@ -325,7 +352,10 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 		noteQuotaClamp(relayInfo, clamp)
 	}
 
+	allowExplicitZero := structuredUsagePresent && usage.UsageSource != "image_per_call" && !hasNonZeroUsageValue(usage) && summary.ToolCallSurchargeQuota.IsZero() && audioInputQuota.IsZero()
 	if summary.MissingUpstreamUsage {
+		summary.Quota = 0
+	} else if allowExplicitZero {
 		summary.Quota = 0
 	} else if !ratio.IsZero() && summary.Quota == 0 {
 		summary.Quota = 1
@@ -370,20 +400,10 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	adminRejectReason := common.GetContextKeyString(ctx, constant.ContextKeyAdminRejectReason)
 	summary := calculateTextQuotaSummary(ctx, relayInfo, usage)
 	if summary.MissingUpstreamUsage {
-		common.SetContextKey(ctx, constant.ContextKeyBillingPending, true)
-		model.MarkRequestBillingPending(ctx, relayInfo.FinalPreConsumedQuota, "missing")
+		// Missing usage is attempt-local. The request finalizer refunds the
+		// pre-consume if no later attempt supplies trustworthy usage.
 		return
 	}
-	if relayInfo != nil {
-		claimed, persistent := model.ClaimRequestBilling(ctx, 0, relayInfo.FinalPreConsumedQuota, usageSourceForBilling(usage))
-		if persistent && !claimed {
-			return
-		}
-		if !persistent && !relayInfo.BillingFinalized.CompareAndSwap(false, true) {
-			return
-		}
-	}
-
 	var tieredResult *billingexpr.TieredResult
 	tieredBillingApplied := false
 	if originUsage != nil {
@@ -419,22 +439,39 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		extraContent = append(extraContent, "上游没有返回计费信息，无法扣费（可能是上游超时）")
 		logger.LogError(ctx, fmt.Sprintf("total tokens is 0, cannot consume quota, userId %d, channelId %d, tokenId %d, model %s， pre-consumed quota %d", relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, summary.ModelName, relayInfo.FinalPreConsumedQuota))
 	}
+	persistentClaimed := false
+	if relayInfo != nil {
+		claimed, persistent := model.ClaimRequestBilling(ctx, summary.Quota, relayInfo.FinalPreConsumedQuota, usageSourceForBilling(usage))
+		if persistent && !claimed {
+			if !ctx.GetBool("billing_settled") {
+				markBillingSettlementFailed(ctx, relayInfo, fmt.Errorf("durable billing settlement claim was not acquired"))
+			}
+			return
+		}
+		persistentClaimed = persistent && claimed
+		if !persistent && !relayInfo.BillingFinalized.CompareAndSwap(false, true) {
+			return
+		}
+	}
 
 	if err := SettleBilling(ctx, relayInfo, summary.Quota); err != nil {
 		logger.LogError(ctx, "error settling billing: "+err.Error())
-		model.FailRequestBilling(ctx, err)
+		markBillingSettlementFailed(ctx, relayInfo, err)
 		return
 	}
-	if summary.TotalTokens != 0 || imagePerCall {
-		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, summary.Quota)
-		model.UpdateChannelUsedQuota(relayInfo.ChannelId, summary.Quota)
-	}
-	if relayInfo != nil {
+	if persistentClaimed {
 		status := model.BillingStatusCharged
 		if summary.Quota == 0 {
 			status = model.BillingStatusNoCharge
 		}
-		model.CompleteRequestBilling(ctx, status)
+		if !model.CompleteRequestBilling(ctx, status) {
+			markBillingSettlementFailed(ctx, relayInfo, fmt.Errorf("economic settlement completed but durable billing completion failed"))
+			return
+		}
+	}
+	if summary.TotalTokens != 0 || imagePerCall {
+		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, summary.Quota)
+		model.UpdateChannelUsedQuota(relayInfo.ChannelId, summary.Quota)
 	}
 
 	logModel := summary.ModelName

@@ -55,11 +55,22 @@ const (
 	ContextKeyLocalCountTokens ContextKey = "local_count_tokens"
 
 	// ContextKeyMissingUpstreamUsage marks relay responses that lack a usable
-	// upstream usage payload. They must be recorded and settled as no-charge.
+	// upstream usage payload. Product policy refunds these requests rather than
+	// leaving an indefinite billing hold, even if output was delivered.
 	ContextKeyMissingUpstreamUsage ContextKey = "missing_upstream_usage"
-	ContextKeyBillingPending       ContextKey = "billing_pending"
-	ContextKeyBillingSettledOnError ContextKey = "billing_settled_on_error"
+	// ContextKeyUpstreamUsagePresent marks that the upstream response explicitly
+	// contained a structured usage field (including an explicit empty object).
+	ContextKeyUpstreamUsagePresent ContextKey = "upstream_usage_present"
+	ContextKeyErrorUsagePresent    ContextKey = "error_usage_present"
+	// ContextKeyBillingPending is a temporary finalizer marker. It is only
+	// persisted for an uncertain settlement outcome; missing usage is refunded.
+	ContextKeyBillingPending         ContextKey = "billing_pending"
+	ContextKeyBillingPendingReason   ContextKey = "billing_pending_reason"
+	ContextKeyBillingFinalStatus     ContextKey = "billing_final_status"
 	ContextKeyUpstreamTerminalStatus ContextKey = "upstream_terminal_status"
+	// ContextKeyModelPayloadDelivered marks delivery of a real model payload;
+	// headers, keepalive pings, and [DONE] do not set it.
+	ContextKeyModelPayloadDelivered ContextKey = "model_payload_delivered"
 
 	ContextKeySystemPromptOverride ContextKey = "system_prompt_override"
 

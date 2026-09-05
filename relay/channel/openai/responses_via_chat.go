@@ -1,6 +1,8 @@
 package openai
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,8 +34,11 @@ func OaiChatToResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	if err := common.Unmarshal(body, &chatResp); err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
-	var rawFields map[string]interface{}
+	var rawFields map[string]json.RawMessage
 	_ = common.Unmarshal(body, &rawFields)
+	if rawUsage, present := rawFields["usage"]; present && !bytes.Equal(bytes.TrimSpace(rawUsage), []byte("null")) {
+		common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
+	}
 	if oaiError := chatResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
@@ -43,10 +48,13 @@ func OaiChatToResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
-	if _, present := rawFields["usage"]; !present {
+	rawUsage, present := rawFields["usage"]
+	if !present || bytes.Equal(bytes.TrimSpace(rawUsage), []byte("null")) {
 		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 		usage = &dto.Usage{}
 		responsesResp.Usage = relayconvert.UsageFromChatUsage(usage)
+	} else {
+		common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
 	}
 
 	responseBody, err := common.Marshal(responsesResp)
@@ -74,7 +82,15 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 			return false
 		}
-		helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: event.Type}, string(data))
+		responseEvent := event.Payload
+		responseEvent.Type = event.Type
+		if err := helper.ResponseChunkData(c, responseEvent, string(data)); err != nil {
+			streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+			return false
+		}
+		if helper.HasResponsesModelPayload(&responseEvent) {
+			helper.MarkModelPayloadDelivered(c)
+		}
 		return true
 	}
 
@@ -123,6 +139,8 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 		usage = &dto.Usage{}
 		state.Usage = relayconvert.UsageFromChatUsage(usage)
+	} else {
+		common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
 	}
 
 	for _, event := range relayconvert.FinalizeChatCompletionsStreamToResponses(state) {

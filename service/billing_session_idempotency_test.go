@@ -116,6 +116,31 @@ func TestBillingSession_SettleRetriesTokenAfterFundingCommit(t *testing.T) {
 	assert.Equal(t, 10, gotToken.UsedQuota)
 }
 
+func TestBillingSession_RejectsChangedActualAfterFundingCommit(t *testing.T) {
+	user := &model.User{Username: "session-changed-actual-user", Password: "password", Quota: 100, AffCode: "session-changed-actual-aff"}
+	require.NoError(t, model.DB.Create(user).Error)
+	t.Cleanup(func() { model.DB.Delete(&model.User{}, user.Id) })
+	const tokenID = 987658
+	requestID := "session-changed-actual"
+	model.DB.Where("operation_key LIKE ?", requestID+":%").Delete(&model.EconomicBillingOperation{})
+	t.Cleanup(func() {
+		model.DB.Where("operation_key LIKE ?", requestID+":%").Delete(&model.EconomicBillingOperation{})
+	})
+	session := &BillingSession{
+		relayInfo:        &relaycommon.RelayInfo{RequestId: requestID, UserId: user.Id, TokenId: tokenID},
+		funding:          &WalletFunding{userId: user.Id, consumed: 10},
+		preConsumedQuota: 10,
+	}
+
+	require.Error(t, session.Settle(20))
+	err := session.Settle(30)
+	require.ErrorContains(t, err, "actual quota changed")
+
+	var after model.User
+	require.NoError(t, model.DB.First(&after, user.Id).Error)
+	require.Equal(t, 90, after.Quota)
+}
+
 func TestBillingSession_RefundChildOperationsAreIdempotent(t *testing.T) {
 	user := &model.User{Username: "session-refund-user", Password: "password", Quota: 90, AffCode: "session-refund-aff"}
 	require.NoError(t, model.DB.Create(user).Error)

@@ -87,15 +87,25 @@ func streamDeliverySuppressed(c *gin.Context) bool {
 	return ok && w.deliveryDisabled()
 }
 
+type streamServiceContextState struct {
+	ctx context.Context
+}
+
 var streamServiceContext atomic.Value
 
-func init() { streamServiceContext.Store(context.Background()) }
+func init() {
+	streamServiceContext.Store(streamServiceContextState{ctx: context.Background()})
+}
 func SetStreamServiceContext(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	streamServiceContext.Store(ctx)
+	streamServiceContext.Store(streamServiceContextState{ctx: ctx})
 }
 func currentStreamServiceContext() context.Context {
-	return streamServiceContext.Load().(context.Context)
+	state, ok := streamServiceContext.Load().(streamServiceContextState)
+	if !ok || state.ctx == nil {
+		return context.Background()
+	}
+	return state.ctx
 }

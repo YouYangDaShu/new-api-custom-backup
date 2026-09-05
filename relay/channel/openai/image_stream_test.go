@@ -7,10 +7,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -123,8 +125,14 @@ func TestOpenaiImageHandlerRequiresImageResultForGenerationAndEdit(t *testing.T)
 
 			usage, err := (&Adaptor{}).DoResponse(c, resp, info)
 			if test.wantError {
-				require.Nil(t, usage)
 				require.NotNil(t, err)
+				if strings.Contains(test.name, "usage only") {
+					require.NotNil(t, usage)
+					require.Equal(t, 7, usage.(*dto.Usage).TotalTokens)
+					require.True(t, common.GetContextKeyBool(c, constant.ContextKeyErrorUsagePresent))
+				} else {
+					require.Nil(t, usage)
+				}
 				require.Empty(t, recorder.Body.String())
 				return
 			}
@@ -199,6 +207,56 @@ func TestOpenaiImageHandlersReturnJSONError(t *testing.T) {
 	})
 }
 
+func TestOpenaiImageHandlersPreserveUsageOnError(t *testing.T) {
+	body := `{"error":{"message":"generation failed","type":"upstream_error"},"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}}`
+	for _, test := range []struct {
+		name   string
+		stream bool
+	}{
+		{name: "non-streaming"},
+		{name: "JSON stream fallback", stream: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c, recorder, resp, info := newImageTestContext(t, body, "application/json", test.stream)
+			resp.StatusCode = http.StatusTooManyRequests
+			var usage *dto.Usage
+			var err *types.NewAPIError
+			if test.stream {
+				usage, err = OpenaiImageStreamHandler(c, info, resp)
+			} else {
+				usage, err = OpenaiImageHandler(c, info, resp)
+			}
+			require.NotNil(t, err)
+			require.NotNil(t, usage)
+			require.Equal(t, 3, usage.PromptTokens)
+			require.Equal(t, 4, usage.CompletionTokens)
+			require.Equal(t, 7, usage.TotalTokens)
+			require.Equal(t, "image_per_call", usage.UsageSource)
+			require.True(t, common.GetContextKeyBool(c, constant.ContextKeyUpstreamUsagePresent))
+			require.True(t, common.GetContextKeyBool(c, constant.ContextKeyErrorUsagePresent))
+			require.Empty(t, recorder.Body.String())
+		})
+	}
+}
+
+func TestOpenaiImageHandlersPreserveUsageWhenImageShapeIsMalformed(t *testing.T) {
+	body := `{"data":"invalid","usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7}}`
+	for _, stream := range []bool{false, true} {
+		c, _, resp, info := newImageTestContext(t, body, "application/json", stream)
+		var usage *dto.Usage
+		var err *types.NewAPIError
+		if stream {
+			usage, err = OpenaiImageStreamHandler(c, info, resp)
+		} else {
+			usage, err = OpenaiImageHandler(c, info, resp)
+		}
+		require.NotNil(t, err)
+		require.NotNil(t, usage)
+		require.Equal(t, 7, usage.TotalTokens)
+		require.True(t, common.GetContextKeyBool(c, constant.ContextKeyErrorUsagePresent))
+	}
+}
+
 // TestOpenaiImageStreamHandlerRecordsUpstreamErrorEvent verifies that an error
 // event inside the SSE stream is recorded as a soft error while the payload is
 // still forwarded to the client.
@@ -226,6 +284,9 @@ func TestOpenaiImageStreamHandlerRecordsUpstreamErrorEvent(t *testing.T) {
 	require.NotNil(t, info.StreamStatus)
 	require.Nil(t, usage)
 	require.NotNil(t, err)
+	require.True(t, types.IsSkipRetryError(err))
+	require.True(t, common.GetContextKeyBool(c, constant.ContextKeyBillingPending))
+	require.Equal(t, "usage_without_completed_result", common.GetContextKeyString(c, constant.ContextKeyBillingPendingReason))
 	reason, _ := info.StreamStatus.Snapshot()
 	require.Equal(t, relaycommon.StreamEndReasonHandlerStop, reason)
 	errorCount, errors := info.StreamStatus.ErrorsSnapshot()
@@ -245,8 +306,29 @@ func TestOpenaiImageStreamHandlerRejectsIncompleteStream(t *testing.T) {
 	usage, err := OpenaiImageStreamHandler(c, info, resp)
 	require.Nil(t, usage)
 	require.NotNil(t, err)
+	require.True(t, types.IsSkipRetryError(err))
+	require.True(t, common.GetContextKeyBool(c, constant.ContextKeyBillingPending))
+	require.Equal(t, "usage_without_completed_result", common.GetContextKeyString(c, constant.ContextKeyBillingPendingReason))
 	reason, _ := info.StreamStatus.Snapshot()
 	require.Equal(t, relaycommon.StreamEndReasonEOF, reason)
+}
+
+func TestOpenaiImageStreamHandlerEmptyStreamIsRetryable(t *testing.T) {
+	c, _, resp, info := newImageTestContext(t, "", "text/event-stream", true)
+	usage, err := OpenaiImageStreamHandler(c, info, resp)
+	require.Nil(t, usage)
+	require.Error(t, err)
+	require.False(t, types.IsSkipRetryError(err))
+	require.False(t, common.GetContextKeyBool(c, constant.ContextKeyBillingPending))
+}
+
+func TestOpenaiImageStreamHandlerMalformedBeforeDeliveryIsRetryableAndNotPending(t *testing.T) {
+	c, _, resp, _ := newImageTestContext(t, "data: {malformed}\n", "text/event-stream", true)
+	usage, err := OpenaiImageStreamHandler(c, &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}, DisablePing: true}, resp)
+	require.Nil(t, usage)
+	require.Error(t, err)
+	require.False(t, types.IsSkipRetryError(err))
+	require.False(t, common.GetContextKeyBool(c, constant.ContextKeyBillingPending))
 }
 
 func TestOpenaiImageStreamHandlerRejectsUsageWithoutCompletedEvent(t *testing.T) {
@@ -269,8 +351,17 @@ func TestOpenaiImageStreamHandlerRejectsUsageWithoutCompletedEvent(t *testing.T)
 			c, _, resp, info := newImageTestContext(t, test.body, "text/event-stream", true)
 
 			usage, err := OpenaiImageStreamHandler(c, info, resp)
-			require.Nil(t, usage)
 			require.NotNil(t, err)
+			require.True(t, types.IsSkipRetryError(err))
+			require.True(t, common.GetContextKeyBool(c, constant.ContextKeyErrorUsagePresent))
+			require.False(t, common.GetContextKeyBool(c, constant.ContextKeyMissingUpstreamUsage))
+			require.NotNil(t, usage)
+			require.Equal(t, 7, usage.TotalTokens)
+			if test.name == "usage only" {
+				require.False(t, common.GetContextKeyBool(c, constant.ContextKeyModelPayloadDelivered), "usage/status frames are not image payload")
+			} else {
+				require.True(t, common.GetContextKeyBool(c, constant.ContextKeyModelPayloadDelivered), "partial image is real image payload")
+			}
 		})
 	}
 }

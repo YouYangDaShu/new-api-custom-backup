@@ -25,10 +25,12 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	var responsesResponse dto.OpenAIResponsesResponse
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
 	}
 	err = common.Unmarshal(responseBody, &responsesResponse)
 	if err != nil {
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 	status := responsesStatus(&responsesResponse)
@@ -49,6 +51,7 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	// compute usage
 	usage := dto.Usage{}
 	if responsesResponse.Usage != nil {
+		common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
 		usage.PromptTokens = responsesResponse.Usage.InputTokens
 		usage.CompletionTokens = responsesResponse.Usage.OutputTokens
 		usage.TotalTokens = responsesResponse.Usage.TotalTokens
@@ -97,6 +100,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			return
 		}
 		if streamResponse.Response != nil && streamResponse.Response.Usage != nil {
+			common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
 			containUsage = true
 			usage.PromptTokens = streamResponse.Response.Usage.InputTokens
 			usage.CompletionTokens = streamResponse.Response.Usage.OutputTokens
@@ -161,19 +165,44 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 					endErr = fmt.Errorf("responses stream ended abnormally (%s)", reason)
 				}
 			}
-			terminalErr = types.NewOpenAIError(endErr, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+			terminalErr = newResponsesErrorWithEvidence(endErr, types.ErrorCodeBadResponse, http.StatusInternalServerError,
+				responseDeliveryObserved(c) || containUsage || terminalStatus != "")
 		}
 		if !containUsage {
 			common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 			return nil, terminalErr
 		}
-		common.SetContextKey(c, constant.ContextKeyBillingSettledOnError, true)
+		common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
+		common.SetContextKey(c, constant.ContextKeyErrorUsagePresent, true)
 		return usage, terminalErr
 	}
 
 	if !containUsage {
 		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
+	} else {
+		common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
 	}
 
 	return usage, nil
+}
+
+func responseDeliveryObserved(c *gin.Context) bool {
+	return common.GetContextKeyBool(c, constant.ContextKeyModelPayloadDelivered)
+}
+
+// newResponsesErrorWithEvidence keeps ordinary post-200 parse failures
+// retryable until the relay has evidence that replaying could duplicate a
+// response. Explicit terminal errors are already no-retry and are preserved.
+func newResponsesErrorWithEvidence(err error, errorCode types.ErrorCode, statusCode int, evidence bool) *types.NewAPIError {
+	if err == nil {
+		err = fmt.Errorf("responses relay failed")
+	}
+	if existing, ok := err.(*types.NewAPIError); ok && types.IsSkipRetryError(existing) {
+		return existing
+	}
+	cleanErr := fmt.Errorf("%s", err.Error())
+	if evidence {
+		return types.NewOpenAIError(cleanErr, errorCode, statusCode, types.ErrOptionWithSkipRetry())
+	}
+	return types.NewOpenAIError(cleanErr, errorCode, statusCode)
 }

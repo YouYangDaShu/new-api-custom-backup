@@ -41,6 +41,51 @@ func TestMissingUpstreamUsageAlwaysSkipsTextBilling(t *testing.T) {
 	require.True(t, summary.MissingUpstreamUsage)
 }
 
+func TestMissingUpstreamUsageWithoutBillingSessionDoesNotBecomePending(t *testing.T) {
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	common.SetContextKey(ctx, constant.ContextKeyMissingUpstreamUsage, true)
+	relayInfo := &relaycommon.RelayInfo{
+		OriginModelName: "free-model",
+		StartTime:       time.Now(),
+		PriceData: types.PriceData{
+			ModelRatio:      1,
+			CompletionRatio: 1,
+			GroupRatioInfo:  types.GroupRatioInfo{GroupRatio: 1},
+		},
+	}
+
+	PostTextConsumeQuota(ctx, relayInfo, nil, nil)
+
+	require.False(t, common.GetContextKeyBool(ctx, constant.ContextKeyBillingPending))
+}
+
+func TestExplicitZeroUsageRemainsZeroWhileTinyUsageKeepsMinimumQuota(t *testing.T) {
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	common.SetContextKey(ctx, constant.ContextKeyUpstreamUsagePresent, true)
+	relayInfo := &relaycommon.RelayInfo{
+		OriginModelName: "gpt-test",
+		PriceData: types.PriceData{
+			ModelRatio:      0.1,
+			CompletionRatio: 1,
+			GroupRatioInfo:  types.GroupRatioInfo{GroupRatio: 0.1},
+		},
+		StartTime: time.Now(),
+	}
+
+	explicitZero := calculateTextQuotaSummary(ctx, relayInfo, &dto.Usage{})
+	tinyNonZero := calculateTextQuotaSummary(ctx, relayInfo, &dto.Usage{PromptTokens: 1, TotalTokens: 1})
+
+	require.Zero(t, explicitZero.Quota)
+	require.Equal(t, 1, tinyNonZero.Quota)
+}
+
+func TestSyntheticEmptyUsageWithoutPresenceKeepsMinimumQuota(t *testing.T) {
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	relayInfo := &relaycommon.RelayInfo{OriginModelName: "gpt-test", PriceData: types.PriceData{ModelRatio: 0.1, CompletionRatio: 1, GroupRatioInfo: types.GroupRatioInfo{GroupRatio: 0.1}}, StartTime: time.Now()}
+	summary := calculateTextQuotaSummary(ctx, relayInfo, &dto.Usage{})
+	require.Equal(t, 1, summary.Quota)
+}
+
 func TestImagePerCallFixedPriceWithoutUsageAndNAppliedOnce(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())

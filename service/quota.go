@@ -154,8 +154,8 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, modelName string,
 	usage *dto.RealtimeUsage, extraContent string) {
 	if common.GetContextKeyBool(ctx, constant.ContextKeyMissingUpstreamUsage) {
-		common.SetContextKey(ctx, constant.ContextKeyBillingPending, true)
-		model.MarkRequestBillingPending(ctx, relayInfo.FinalPreConsumedQuota, "missing")
+		// Missing usage is attempt-local. The controller finalizer refunds the
+		// pre-consume if no later attempt supplies trustworthy usage.
 		return
 	}
 	if relayInfo != nil {
@@ -237,7 +237,9 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 
 	missingUsage := common.GetContextKeyBool(ctx, constant.ContextKeyMissingUpstreamUsage)
 	if missingUsage {
-		common.SetContextKey(ctx, constant.ContextKeyBillingPending, true)
+		// Missing usage is not an uncertain settlement. The controller finalizer
+		// performs the automatic refund instead of leaving a billing hold.
+		common.SetContextKey(ctx, constant.ContextKeyBillingPending, false)
 	} else if err := SettleBilling(ctx, relayInfo, quota); err != nil {
 		logger.LogError(ctx, "error settling billing: "+err.Error())
 		model.FailRequestBilling(ctx, err)
@@ -258,7 +260,7 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 		InjectTieredBillingInfo(other, relayInfo, tieredResult)
 	}
 	if common.GetContextKeyBool(ctx, constant.ContextKeyMissingUpstreamUsage) {
-		other["billing_status"] = "pending"
+		other["billing_status"] = "no_charge"
 		other["usage_source"] = "missing"
 	}
 	attachQuotaSaturation(ctx, relayInfo, other)
@@ -301,20 +303,10 @@ func CalcOpenRouterCacheCreateTokens(usage dto.Usage, priceData types.PriceData)
 
 func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent string) {
 	if common.GetContextKeyBool(ctx, constant.ContextKeyMissingUpstreamUsage) {
-		common.SetContextKey(ctx, constant.ContextKeyBillingPending, true)
-		model.MarkRequestBillingPending(ctx, relayInfo.FinalPreConsumedQuota, "missing")
+		// Missing usage is attempt-local. The controller finalizer refunds the
+		// pre-consume if no later attempt supplies trustworthy usage.
 		return
 	}
-	if relayInfo != nil {
-		claimed, persistent := model.ClaimRequestBilling(ctx, 0, relayInfo.FinalPreConsumedQuota, usageSourceForBilling(usage))
-		if persistent && !claimed {
-			return
-		}
-		if !persistent && !relayInfo.BillingFinalized.CompareAndSwap(false, true) {
-			return
-		}
-	}
-
 	var tieredUsedVars map[string]bool
 	if snap := relayInfo.TieredBillingSnapshot; snap != nil {
 		tieredUsedVars = billingexpr.UsedVars(snap.ExprString)
@@ -381,20 +373,39 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		logger.LogError(ctx, fmt.Sprintf("total tokens is 0, cannot consume quota, userId %d, channelId %d, "+
 			"tokenId %d, model %s， pre-consumed quota %d", relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, relayInfo.OriginModelName, relayInfo.FinalPreConsumedQuota))
 	}
+	persistentClaimed := false
+	if relayInfo != nil {
+		claimed, persistent := model.ClaimRequestBilling(ctx, quota, relayInfo.FinalPreConsumedQuota, usageSourceForBilling(usage))
+		if persistent && !claimed {
+			if !ctx.GetBool("billing_settled") {
+				markBillingSettlementFailed(ctx, relayInfo, fmt.Errorf("durable billing settlement claim was not acquired"))
+			}
+			return
+		}
+		persistentClaimed = persistent && claimed
+		if !persistent && !relayInfo.BillingFinalized.CompareAndSwap(false, true) {
+			return
+		}
+	}
 
 	if err := SettleBilling(ctx, relayInfo, quota); err != nil {
 		logger.LogError(ctx, "error settling billing: "+err.Error())
-		model.FailRequestBilling(ctx, err)
-	} else {
-		if totalTokens != 0 {
-			model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, quota)
-			model.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
-		}
+		markBillingSettlementFailed(ctx, relayInfo, err)
+		return
+	}
+	if persistentClaimed {
 		status := model.BillingStatusCharged
 		if quota == 0 {
 			status = model.BillingStatusNoCharge
 		}
-		model.CompleteRequestBilling(ctx, status)
+		if !model.CompleteRequestBilling(ctx, status) {
+			markBillingSettlementFailed(ctx, relayInfo, fmt.Errorf("economic settlement completed but durable billing completion failed"))
+			return
+		}
+	}
+	if totalTokens != 0 {
+		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, quota)
+		model.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
 	}
 
 	logModel := relayInfo.OriginModelName

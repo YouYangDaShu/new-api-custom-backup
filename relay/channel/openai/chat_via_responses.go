@@ -31,11 +31,13 @@ func OaiResponsesToChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	var responsesResp dto.OpenAIResponsesResponse
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
 	}
 
 	if err := common.Unmarshal(body, &responsesResp); err != nil {
-		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
+		return nil, types.NewOpenAIError(err, types.ErrorCodeChannelBadResponseBody, http.StatusInternalServerError)
 	}
 
 	status := responsesStatus(&responsesResp)
@@ -47,13 +49,15 @@ func OaiResponsesToChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	chatId := helper.GetResponseID(c)
 	chatResp, usage, err := service.ResponsesResponseToChatCompletionsResponse(&responsesResp, chatId)
 	if err != nil {
-		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		return responsesErrorUsage(c, &responsesResp, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError, types.ErrOptionWithSkipRetry()))
 	}
 
 	if responsesResp.Usage == nil {
 		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 		usage = &dto.Usage{}
 		chatResp.Usage = *usage
+	} else {
+		common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
 	}
 
 	var responseBody []byte
@@ -68,7 +72,7 @@ func OaiResponsesToChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		responseBody, err = common.Marshal(chatResp)
 	}
 	if err != nil {
-		return nil, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
+		return responsesErrorUsage(c, &responsesResp, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError, types.ErrOptionWithSkipRetry()))
 	}
 
 	service.IOCopyBytesGracefully(c, resp, responseBody)
@@ -93,7 +97,7 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 		var streamResp dto.ResponsesStreamResponse
 		if err := common.UnmarshalJsonStr(data, &streamResp); err != nil {
 			logger.LogError(c, "failed to unmarshal buffered responses stream event: "+err.Error())
-			streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+			streamErr = types.NewOpenAIError(err, types.ErrorCodeChannelBadResponseBody, http.StatusInternalServerError)
 			sr.Stop(streamErr)
 			return
 		}
@@ -129,6 +133,8 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 		}
 	}
 	if streamErr != nil {
+		streamErr = newResponsesErrorWithEvidence(streamErr, streamErr.GetErrorCode(), streamErr.StatusCode,
+			terminal || (finalResponse != nil && finalResponse.Usage != nil) || responseDeliveryObserved(c))
 		return responsesErrorUsage(c, finalResponse, streamErr)
 	}
 	if finalResponse == nil {
@@ -145,12 +151,14 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 	chatId := helper.GetResponseID(c)
 	chatResp, usage, err := service.ResponsesResponseToChatCompletionsResponse(finalResponse, chatId)
 	if err != nil {
-		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+		return responsesErrorUsage(c, finalResponse, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError, types.ErrOptionWithSkipRetry()))
 	}
 	if finalResponse.Usage == nil {
 		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 		usage = &dto.Usage{}
 		chatResp.Usage = *usage
+	} else {
+		common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
 	}
 
 	var responseBody []byte
@@ -165,7 +173,7 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 		responseBody, err = common.Marshal(chatResp)
 	}
 	if err != nil {
-		return nil, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
+		return responsesErrorUsage(c, finalResponse, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError, types.ErrOptionWithSkipRetry()))
 	}
 
 	resp.Header.Set("Content-Type", "application/json")
@@ -200,6 +208,9 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 				streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 				return false
 			}
+			if helper.HasChatCompletionsModelPayload(&chunk) {
+				helper.MarkModelPayloadDelivered(c)
+			}
 			return true
 		}
 
@@ -211,6 +222,9 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		if err := HandleStreamFormat(c, info, string(chunkData), false, false); err != nil {
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 			return false
+		}
+		if helper.HasChatCompletionsModelPayload(&chunk) {
+			helper.MarkModelPayloadDelivered(c)
 		}
 		return true
 	}
@@ -224,7 +238,8 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		var streamResp dto.ResponsesStreamResponse
 		if err := common.UnmarshalJsonStr(data, &streamResp); err != nil {
 			logger.LogError(c, "failed to unmarshal responses stream event: "+err.Error())
-			sr.Error(err)
+			streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+			sr.Stop(streamErr)
 			return
 		}
 
@@ -263,10 +278,13 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	}
 
 	if streamErr != nil {
+		streamErr = newResponsesErrorWithEvidence(streamErr, streamErr.GetErrorCode(), streamErr.StatusCode,
+			responseDeliveryObserved(c) || state.TerminalStatus != "" || state.UsagePresent)
 		common.SetContextKey(c, constant.ContextKeyUpstreamTerminalStatus, state.TerminalStatus)
 		if state.UsagePresent {
 			usage := state.Usage
-			common.SetContextKey(c, constant.ContextKeyBillingSettledOnError, true)
+			common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
+			common.SetContextKey(c, constant.ContextKeyErrorUsagePresent, true)
 			return usage, streamErr
 		}
 		if !state.UsagePresent {
@@ -280,6 +298,8 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 		usage = &dto.Usage{}
 		state.Usage = usage
+	} else {
+		common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
 	}
 
 	if info.RelayFormat == types.RelayFormatClaude && info.ClaudeConvertInfo != nil {
@@ -292,7 +312,8 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	}
 	if info.RelayFormat == types.RelayFormatOpenAI && info.ShouldIncludeUsage && usage != nil {
 		if err := helper.ObjectData(c, helper.GenerateFinalUsageResponse(responseId, state.Created, state.Model, *usage)); err != nil {
-			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+			common.SetContextKey(c, constant.ContextKeyErrorUsagePresent, true)
+			return usage, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError, types.ErrOptionWithSkipRetry())
 		}
 	}
 
@@ -323,10 +344,10 @@ func responsesTerminalError(response *dto.OpenAIResponsesResponse, status string
 	case "failed", "error", "cancelled", "incomplete", "response.failed", "response.error", "response.cancelled", "response.incomplete":
 		if response != nil {
 			if oaiErr := response.GetOpenAIError(); oaiErr != nil && oaiErr.Type != "" {
-				return types.WithOpenAIError(*oaiErr, httpStatus)
+				return types.WithOpenAIError(*oaiErr, httpStatus, types.ErrOptionWithSkipRetry())
 			}
 		}
-		return types.NewOpenAIError(fmt.Errorf("responses terminal status: %s", status), types.ErrorCodeBadResponse, httpStatus)
+		return types.NewOpenAIError(fmt.Errorf("responses terminal status: %s", status), types.ErrorCodeBadResponse, httpStatus, types.ErrOptionWithSkipRetry())
 	default:
 		return types.NewOpenAIError(fmt.Errorf("responses missing or unknown terminal status: %s", status), types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
@@ -343,7 +364,9 @@ func responsesFailureError(response *dto.OpenAIResponsesResponse, status string,
 
 func responsesErrorUsage(c *gin.Context, response *dto.OpenAIResponsesResponse, terminalErr *types.NewAPIError) (*dto.Usage, *types.NewAPIError) {
 	if response != nil && response.Usage != nil {
-		common.SetContextKey(c, constant.ContextKeyBillingSettledOnError, true)
+		terminalErr = newResponsesErrorWithEvidence(terminalErr, terminalErr.GetErrorCode(), terminalErr.StatusCode, true)
+		common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
+		common.SetContextKey(c, constant.ContextKeyErrorUsagePresent, true)
 		return relayconvert.UsageFromResponsesUsage(response.Usage), terminalErr
 	}
 	common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)

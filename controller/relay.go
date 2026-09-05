@@ -74,6 +74,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	var (
 		newAPIError *types.NewAPIError
 		ws          *websocket.Conn
+		relayInfo   *relaycommon.RelayInfo
 	)
 
 	if relayFormat == types.RelayFormatOpenAIRealtime {
@@ -104,7 +105,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				"error_type":     newAPIError.GetErrorType(),
 				"error_code":     newAPIError.GetErrorCode(),
 				"request_status": "failed",
-				"billing_status": "no_charge",
+				"billing_status": failedRelayBillingLogStatus(c),
 			}
 			if c.Request != nil && c.Request.URL != nil {
 				other["request_path"] = c.Request.URL.Path
@@ -125,9 +126,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			})
 			return
 		}
-		if common.GetContextKeyBool(c, constant.ContextKeyBillingPending) {
-			// Missing provider usage is an auditable billing_pending lifecycle;
-			// never finalize it as a successful zero-charge consume row.
+		if finalizeSuccessfulRelayBilling(c, relayInfo) {
 			return
 		}
 		// Success path normally finalizes via RecordConsumeLog. If consume logging
@@ -187,7 +186,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		return
 	}
 
-	relayInfo, err := relaycommon.GenRelayInfo(c, relayFormat, request, ws)
+	relayInfo, err = relaycommon.GenRelayInfo(c, relayFormat, request, ws)
 	if err != nil {
 		newAPIError = types.NewError(err, types.ErrorCodeGenRelayInfoFailed)
 		return
@@ -245,9 +244,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		// Only return quota if downstream failed and quota was actually pre-consumed
 		if newAPIError != nil {
 			newAPIError = service.NormalizeViolationFeeError(newAPIError)
-			if relayInfo.Billing != nil && !common.GetContextKeyBool(c, constant.ContextKeyBillingSettledOnError) {
-				relayInfo.Billing.Refund(c)
-			}
+			finalizeFailedRelayBilling(c, relayInfo)
 			service.ChargeViolationFeeIfNeeded(c, relayInfo, newAPIError)
 		}
 	}()
@@ -264,6 +261,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 		relayInfo.RetryIndex = retryParam.GetRetry()
+		resetRelayAttemptBillingMarkers(c)
 		channel, channelErr := getChannel(c, relayInfo, retryParam)
 		if channelErr != nil {
 			logger.LogError(c, channelErr.Error())
@@ -320,6 +318,125 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			perfmetrics.RecordRelaySample(relayInfo, false, 0)
 		})
 	}
+}
+
+func finalizeSuccessfulRelayBilling(c *gin.Context, relayInfo *relaycommon.RelayInfo) bool {
+	if c == nil || relayInfo == nil || relayInfo.Billing == nil || c.GetBool("billing_settled") {
+		return false
+	}
+	if shouldKeepBillingPending(c) {
+		common.SetContextKey(c, constant.ContextKeyBillingPending, true)
+		reason := common.GetContextKeyString(c, constant.ContextKeyBillingPendingReason)
+		if reason == "" {
+			if common.GetContextKeyBool(c, constant.ContextKeyMissingUpstreamUsage) {
+				reason = "missing_after_delivery"
+			} else {
+				reason = "pending"
+			}
+		}
+		if !model.MarkRequestBillingPending(c, relayInfo.FinalPreConsumedQuota, reason) {
+			logger.LogError(c, "failed to mark request billing pending")
+		}
+		return true
+	}
+	if shouldRefundUnsettledBilling(c) {
+		// Product policy: no manual reconciliation and no indefinite holds.
+		// Missing usage or another pre-settlement uncertainty refunds the
+		// pre-consume even when a real model payload reached the client.
+		common.SetContextKey(c, constant.ContextKeyBillingPending, false)
+		common.SetContextKey(c, constant.ContextKeyBillingPendingReason, "")
+		if err := service.FinalizeMissingUsageNoCharge(c, relayInfo); err != nil {
+			logger.LogError(c, "failed to finalize missing-usage automatic refund: "+err.Error())
+			return true
+		}
+	}
+	return false
+}
+
+func finalizeFailedRelayBilling(c *gin.Context, relayInfo *relaycommon.RelayInfo) {
+	if relayInfo == nil || relayInfo.Billing == nil {
+		return
+	}
+	if c != nil && c.GetBool("billing_settled") {
+		return
+	}
+	// Only an uncertain settlement outcome remains fail-closed. Missing usage
+	// and other pre-settlement uncertainty are refunded automatically.
+	if shouldKeepBillingPending(c) {
+		common.SetContextKey(c, constant.ContextKeyBillingPending, true)
+		reason := common.GetContextKeyString(c, constant.ContextKeyBillingPendingReason)
+		if reason == "" {
+			if common.GetContextKeyBool(c, constant.ContextKeyMissingUpstreamUsage) {
+				reason = "missing_after_delivery"
+			} else {
+				reason = "pending"
+			}
+		}
+		if !model.MarkRequestBillingPending(c, relayInfo.FinalPreConsumedQuota, reason) {
+			logger.LogError(c, "failed to mark request billing pending")
+		}
+		return
+	}
+	if shouldRefundUnsettledBilling(c) {
+		common.SetContextKey(c, constant.ContextKeyBillingPending, false)
+		common.SetContextKey(c, constant.ContextKeyBillingPendingReason, "")
+		if err := service.FinalizeMissingUsageNoCharge(c, relayInfo); err != nil {
+			logger.LogError(c, "failed to finalize missing-usage automatic refund: "+err.Error())
+		}
+		return
+	}
+	if !c.GetBool("billing_settled") {
+		if err := service.FinalizeUnsettledNoCharge(c, relayInfo, "failure_auto_refund"); err != nil {
+			logger.LogError(c, "failed to finalize automatic failure refund: "+err.Error())
+		}
+	}
+}
+
+// shouldKeepBillingPending is deliberately narrow: only a settlement that may
+// already have mutated money remains fail-closed. Provider usage absence and
+// incomplete pre-settlement responses are automatically refunded.
+func shouldKeepBillingPending(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	return common.GetContextKeyBool(c, constant.ContextKeyBillingPending) &&
+		common.GetContextKeyString(c, constant.ContextKeyBillingPendingReason) == "settlement_failed"
+}
+
+func shouldRefundUnsettledBilling(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	return common.GetContextKeyBool(c, constant.ContextKeyMissingUpstreamUsage) ||
+		(common.GetContextKeyBool(c, constant.ContextKeyBillingPending) && !shouldKeepBillingPending(c))
+}
+
+func resetRelayAttemptBillingMarkers(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, false)
+	common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, false)
+	common.SetContextKey(c, constant.ContextKeyErrorUsagePresent, false)
+	common.SetContextKey(c, constant.ContextKeyModelPayloadDelivered, false)
+	common.SetContextKey(c, constant.ContextKeyUpstreamTerminalStatus, "")
+	common.SetContextKey(c, constant.ContextKeyBillingPendingReason, "")
+	// billing_pending is evidence from the previous attempt, not a durable
+	// request-level decision. The finalizer persists it only after retries end.
+	common.SetContextKey(c, constant.ContextKeyBillingPending, false)
+}
+
+func failedRelayBillingLogStatus(c *gin.Context) string {
+	if common.GetContextKeyBool(c, constant.ContextKeyBillingPending) {
+		return "pending"
+	}
+	if status := common.GetContextKeyString(c, constant.ContextKeyBillingFinalStatus); status != "" {
+		return status
+	}
+	if c != nil && c.GetBool("billing_settled") {
+		return model.BillingStatusCharged
+	}
+	return "no_charge"
 }
 
 var upgrader = websocket.Upgrader{
@@ -403,11 +520,11 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
 		return false
 	}
-	if types.IsChannelError(openaiErr) {
-		return true
-	}
 	if types.IsSkipRetryError(openaiErr) {
 		return false
+	}
+	if types.IsChannelError(openaiErr) {
+		return true
 	}
 	if retryTimes <= 0 {
 		return false

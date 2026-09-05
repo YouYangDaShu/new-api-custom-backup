@@ -729,14 +729,7 @@ func FormatClaudeResponseInfo(claudeResponse *dto.ClaudeResponse, oaiResponse *d
 
 		// message_start, 获取usage
 		if claudeResponse.Message != nil && claudeResponse.Message.Usage != nil {
-			claudeInfo.UsagePresent = true
-			claudeInfo.Usage.PromptTokens = claudeResponse.Message.Usage.InputTokens
-			claudeInfo.Usage.UsageSemantic = "anthropic"
-			claudeInfo.Usage.PromptTokensDetails.CachedTokens = claudeResponse.Message.Usage.CacheReadInputTokens
-			claudeInfo.Usage.PromptTokensDetails.CachedCreationTokens = claudeResponse.Message.Usage.CacheCreationInputTokens
-			claudeInfo.Usage.ClaudeCacheCreation5mTokens = claudeResponse.Message.Usage.GetCacheCreation5mTokens()
-			claudeInfo.Usage.ClaudeCacheCreation1hTokens = claudeResponse.Message.Usage.GetCacheCreation1hTokens()
-			claudeInfo.Usage.CompletionTokens = claudeResponse.Message.Usage.OutputTokens
+			applyClaudeUsage(claudeInfo, claudeResponse.Message.Usage)
 		}
 	} else if claudeResponse.Type == "content_block_delta" {
 		if claudeResponse.Delta != nil {
@@ -750,28 +743,7 @@ func FormatClaudeResponseInfo(claudeResponse *dto.ClaudeResponse, oaiResponse *d
 	} else if claudeResponse.Type == "message_delta" {
 		// 最终的usage获取
 		if claudeResponse.Usage != nil {
-			claudeInfo.UsagePresent = true
-			claudeInfo.Usage.UsageSemantic = "anthropic"
-			if claudeResponse.Usage.InputTokens > 0 {
-				// 不叠加，只取最新的
-				claudeInfo.Usage.PromptTokens = claudeResponse.Usage.InputTokens
-			}
-			if claudeResponse.Usage.CacheReadInputTokens > 0 {
-				claudeInfo.Usage.PromptTokensDetails.CachedTokens = claudeResponse.Usage.CacheReadInputTokens
-			}
-			if claudeResponse.Usage.CacheCreationInputTokens > 0 {
-				claudeInfo.Usage.PromptTokensDetails.CachedCreationTokens = claudeResponse.Usage.CacheCreationInputTokens
-			}
-			if cacheCreation5m := claudeResponse.Usage.GetCacheCreation5mTokens(); cacheCreation5m > 0 {
-				claudeInfo.Usage.ClaudeCacheCreation5mTokens = cacheCreation5m
-			}
-			if cacheCreation1h := claudeResponse.Usage.GetCacheCreation1hTokens(); cacheCreation1h > 0 {
-				claudeInfo.Usage.ClaudeCacheCreation1hTokens = cacheCreation1h
-			}
-			if claudeResponse.Usage.OutputTokens > 0 {
-				claudeInfo.Usage.CompletionTokens = claudeResponse.Usage.OutputTokens
-			}
-			claudeInfo.Usage.TotalTokens = claudeInfo.Usage.PromptTokens + claudeInfo.Usage.CompletionTokens
+			applyClaudeUsage(claudeInfo, claudeResponse.Usage)
 		}
 
 		// 判断是否完整
@@ -796,7 +768,12 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		return types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
 	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
-		return types.WithClaudeError(*claudeError, http.StatusInternalServerError)
+		if claudeResponse.Usage != nil {
+			applyClaudeUsage(claudeInfo, claudeResponse.Usage)
+			common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
+			common.SetContextKey(c, constant.ContextKeyErrorUsagePresent, true)
+		}
+		return types.WithClaudeError(*claudeError, http.StatusInternalServerError, types.ErrOptionWithSkipRetry())
 	}
 	if claudeResponse.StopReason != "" {
 		maybeMarkClaudeRefusal(c, claudeResponse.StopReason)
@@ -806,6 +783,9 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	}
 	if info.RelayFormat == types.RelayFormatClaude {
 		FormatClaudeResponseInfo(&claudeResponse, nil, claudeInfo)
+		if claudeResponse.Message != nil && claudeResponse.Message.Usage != nil || claudeResponse.Usage != nil {
+			common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
+		}
 
 		if claudeResponse.Type == "message_start" {
 			// message_start, 获取usage
@@ -826,10 +806,15 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		if !FormatClaudeResponseInfo(&claudeResponse, response, claudeInfo) {
 			return nil
 		}
+		if claudeResponse.Message != nil && claudeResponse.Message.Usage != nil || claudeResponse.Usage != nil {
+			common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
+		}
 
 		err = helper.ObjectData(c, response)
 		if err != nil {
 			logger.LogError(c, "send_stream_response_failed: "+err.Error())
+		} else if helper.HasChatCompletionsModelPayload(response) {
+			helper.MarkModelPayloadDelivered(c)
 		}
 	}
 	return nil
@@ -838,6 +823,9 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo) {
 	if !claudeInfo.UsagePresent || !claudeInfo.Done {
 		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
+	}
+	if claudeInfo.UsagePresent {
+		common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
 	}
 	if claudeInfo.Usage != nil {
 		claudeInfo.Usage.UsageSemantic = "anthropic"
@@ -874,7 +862,34 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 		}
 	})
 	if err != nil {
-		return nil, err
+		if claudeInfo.UsagePresent {
+			common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
+			common.SetContextKey(c, constant.ContextKeyErrorUsagePresent, true)
+			return claudeInfo.Usage, claudeErrorWithEvidence(err, claudeResponseDeliveryObserved(c) || claudeInfo.UsagePresent || claudeInfo.Done)
+		}
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
+		return nil, claudeErrorWithEvidence(err, claudeResponseDeliveryObserved(c) || claudeInfo.Done)
+	}
+	if info != nil && info.StreamStatus != nil {
+		reason, statusErr := info.StreamStatus.Snapshot()
+		abnormal := info.StreamStatus.HasErrors() || statusErr != nil || !claudeInfo.Done || (reason != relaycommon.StreamEndReasonDone && reason != relaycommon.StreamEndReasonEOF && reason != relaycommon.StreamEndReasonHandlerStop)
+		if abnormal {
+			if statusErr == nil {
+				if !claudeInfo.Done {
+					statusErr = fmt.Errorf("claude stream ended without terminal event (%s)", reason)
+				} else {
+					statusErr = fmt.Errorf("claude stream ended abnormally (%s)", reason)
+				}
+			}
+			streamErr := claudeErrorWithEvidence(statusErr, claudeResponseDeliveryObserved(c) || claudeInfo.UsagePresent || claudeInfo.Done)
+			if claudeInfo.UsagePresent {
+				common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
+				common.SetContextKey(c, constant.ContextKeyErrorUsagePresent, true)
+				return claudeInfo.Usage, streamErr
+			}
+			common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
+			return nil, streamErr
+		}
 	}
 
 	HandleStreamFinalResponse(c, info, claudeInfo)
@@ -885,25 +900,26 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	var claudeResponse dto.ClaudeResponse
 	err := common.Unmarshal(data, &claudeResponse)
 	if err != nil {
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 		return types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
 	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
-		return types.WithClaudeError(*claudeError, http.StatusInternalServerError)
+		if claudeResponse.Usage != nil {
+			applyClaudeUsage(claudeInfo, claudeResponse.Usage)
+			common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
+			common.SetContextKey(c, constant.ContextKeyErrorUsagePresent, true)
+			return types.WithClaudeError(*claudeError, http.StatusInternalServerError, types.ErrOptionWithSkipRetry())
+		}
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
+		return types.WithClaudeError(*claudeError, http.StatusInternalServerError, types.ErrOptionWithSkipRetry())
 	}
 	maybeMarkClaudeRefusal(c, claudeResponse.StopReason)
 	if claudeInfo.Usage == nil {
 		claudeInfo.Usage = &dto.Usage{}
 	}
 	if claudeResponse.Usage != nil {
-		claudeInfo.UsagePresent = true
-		claudeInfo.Usage.PromptTokens = claudeResponse.Usage.InputTokens
-		claudeInfo.Usage.CompletionTokens = claudeResponse.Usage.OutputTokens
-		claudeInfo.Usage.TotalTokens = claudeResponse.Usage.InputTokens + claudeResponse.Usage.OutputTokens
-		claudeInfo.Usage.UsageSemantic = "anthropic"
-		claudeInfo.Usage.PromptTokensDetails.CachedTokens = claudeResponse.Usage.CacheReadInputTokens
-		claudeInfo.Usage.PromptTokensDetails.CachedCreationTokens = claudeResponse.Usage.CacheCreationInputTokens
-		claudeInfo.Usage.ClaudeCacheCreation5mTokens = claudeResponse.Usage.GetCacheCreation5mTokens()
-		claudeInfo.Usage.ClaudeCacheCreation1hTokens = claudeResponse.Usage.GetCacheCreation1hTokens()
+		applyClaudeUsage(claudeInfo, claudeResponse.Usage)
+		common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
 	}
 	var responseData []byte
 	switch info.RelayFormat {
@@ -912,7 +928,7 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		openaiResponse.Usage = buildOpenAIStyleUsageFromClaudeUsage(claudeInfo.Usage)
 		responseData, err = json.Marshal(openaiResponse)
 		if err != nil {
-			return types.NewError(err, types.ErrorCodeBadResponseBody)
+			return types.NewError(err, types.ErrorCodeBadResponseBody, types.ErrOptionWithSkipRetry())
 		}
 	case types.RelayFormatClaude:
 		responseData = data
@@ -924,6 +940,64 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 
 	service.IOCopyBytesGracefully(c, httpResp, responseData)
 	return nil
+}
+
+func applyClaudeUsage(claudeInfo *ClaudeResponseInfo, usage *dto.ClaudeUsage) {
+	if claudeInfo == nil || usage == nil {
+		return
+	}
+	if claudeInfo.Usage == nil {
+		claudeInfo.Usage = &dto.Usage{}
+	}
+	hadUsage := claudeInfo.UsagePresent || claudeInfo.Usage.PromptTokens != 0 ||
+		claudeInfo.Usage.CompletionTokens != 0 || claudeInfo.Usage.TotalTokens != 0 ||
+		claudeInfo.Usage.PromptTokensDetails.CachedTokens != 0 ||
+		claudeInfo.Usage.PromptTokensDetails.CachedCreationTokens != 0 ||
+		claudeInfo.Usage.ClaudeCacheCreation5mTokens != 0 ||
+		claudeInfo.Usage.ClaudeCacheCreation1hTokens != 0
+	if !hadUsage || usage.InputTokens > 0 {
+		claudeInfo.Usage.PromptTokens = usage.InputTokens
+	}
+	if !hadUsage || usage.OutputTokens > 0 {
+		claudeInfo.Usage.CompletionTokens = usage.OutputTokens
+	}
+	if !hadUsage || usage.InputTokens > 0 || usage.OutputTokens > 0 {
+		claudeInfo.Usage.TotalTokens = claudeInfo.Usage.PromptTokens + claudeInfo.Usage.CompletionTokens
+	}
+	claudeInfo.Usage.UsageSemantic = "anthropic"
+	if !hadUsage || usage.CacheReadInputTokens > 0 {
+		claudeInfo.Usage.PromptTokensDetails.CachedTokens = usage.CacheReadInputTokens
+	}
+	if !hadUsage || usage.CacheCreationInputTokens > 0 {
+		claudeInfo.Usage.PromptTokensDetails.CachedCreationTokens = usage.CacheCreationInputTokens
+	}
+	cacheCreation5m := usage.GetCacheCreation5mTokens()
+	if !hadUsage || cacheCreation5m > 0 {
+		claudeInfo.Usage.ClaudeCacheCreation5mTokens = cacheCreation5m
+	}
+	cacheCreation1h := usage.GetCacheCreation1hTokens()
+	if !hadUsage || cacheCreation1h > 0 {
+		claudeInfo.Usage.ClaudeCacheCreation1hTokens = cacheCreation1h
+	}
+	claudeInfo.UsagePresent = true
+}
+
+func claudeErrorWithEvidence(err error, evidence bool) *types.NewAPIError {
+	if err == nil {
+		err = fmt.Errorf("claude relay failed")
+	}
+	if existing, ok := err.(*types.NewAPIError); ok && types.IsSkipRetryError(existing) {
+		return existing
+	}
+	cleanErr := fmt.Errorf("%s", err.Error())
+	if evidence {
+		return types.NewError(cleanErr, types.ErrorCodeBadResponse, types.ErrOptionWithSkipRetry())
+	}
+	return types.NewError(cleanErr, types.ErrorCodeBadResponse)
+}
+
+func claudeResponseDeliveryObserved(c *gin.Context) bool {
+	return common.GetContextKeyBool(c, constant.ContextKeyModelPayloadDelivered)
 }
 
 func ClaudeHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (*dto.Usage, *types.NewAPIError) {
@@ -938,12 +1012,24 @@ func ClaudeHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayI
 	}
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
 	logger.LogDebug(c, "responseBody: %s", responseBody)
 	handleErr := HandleClaudeResponseData(c, info, claudeInfo, resp, responseBody)
 	if handleErr != nil {
+		if claudeInfo.UsagePresent {
+			common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
+			common.SetContextKey(c, constant.ContextKeyErrorUsagePresent, true)
+			return claudeInfo.Usage, handleErr
+		}
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
 		return nil, handleErr
+	}
+	if !claudeInfo.UsagePresent {
+		common.SetContextKey(c, constant.ContextKeyMissingUpstreamUsage, true)
+	} else {
+		common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
 	}
 	return claudeInfo.Usage, nil
 }

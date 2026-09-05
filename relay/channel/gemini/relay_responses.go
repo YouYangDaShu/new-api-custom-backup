@@ -32,6 +32,9 @@ func GeminiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 	usagePresent := hasGeminiUsageMetadata(responseBody)
+	if usagePresent {
+		common.SetContextKey(c, constant.ContextKeyUpstreamUsagePresent, true)
+	}
 	if len(geminiResponse.Candidates) == 0 {
 		usage := buildUsageFromGeminiMetadata(geminiResponse.UsageMetadata)
 		if !usagePresent {
@@ -95,7 +98,15 @@ func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 			return false
 		}
-		helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: event.Type}, string(data))
+		responseEvent := event.Payload
+		responseEvent.Type = event.Type
+		if err := helper.ResponseChunkData(c, responseEvent, string(data)); err != nil {
+			streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+			return false
+		}
+		if helper.HasResponsesModelPayload(&responseEvent) {
+			helper.MarkModelPayloadDelivered(c)
+		}
 		return true
 	}
 	sendChunk := func(chunk *dto.ChatCompletionsStreamResponse) bool {
