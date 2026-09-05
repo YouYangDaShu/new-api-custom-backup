@@ -79,6 +79,8 @@ export const LOG_TYPE_ENUM = {
  */
 export const LOG_TYPE_ALL_VALUE = '0' as const
 
+export const CONTEXT_TOKEN_WARNING_THRESHOLD = 272_000
+
 // ============================================================================
 // Time Range Presets
 // ============================================================================

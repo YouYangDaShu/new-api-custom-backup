@@ -27,6 +27,7 @@ func TestGetTokenRankingAdminAggregatesAllRewardLedgers(t *testing.T) {
 	})
 	require.NoError(t, db.Create(&[]model.WeeklyRankingReward{
 		{WeekStart: "2026-08-10", UserID: 1, Rank: 1, RewardQuota: 100},
+		{WeekStart: "2026-08-10", UserID: 2, Rank: 2, RewardQuota: 50},
 		{WeekStart: "2026-08-17", UserID: 2, Rank: 2, RewardQuota: 250},
 		{WeekStart: "2026-08-24", UserID: 3, Rank: 3, RewardQuota: 400},
 	}).Error)
@@ -39,7 +40,7 @@ func TestGetTokenRankingAdminAggregatesAllRewardLedgers(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 	var response struct {
 		Success bool `json:"success"`
-		Data struct {
+		Data    struct {
 			History          []any `json:"history"`
 			TotalRewardCount int64 `json:"total_reward_count"`
 			TotalRewardQuota int64 `json:"total_reward_quota"`
@@ -47,9 +48,9 @@ func TestGetTokenRankingAdminAggregatesAllRewardLedgers(t *testing.T) {
 	}
 	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
 	assert.True(t, response.Success)
-	assert.Len(t, response.Data.History, 3)
+	assert.Len(t, response.Data.History, 4)
 	assert.Equal(t, int64(3), response.Data.TotalRewardCount)
-	assert.Equal(t, int64(750), response.Data.TotalRewardQuota)
+	assert.Equal(t, int64(800), response.Data.TotalRewardQuota)
 }
 
 func TestAdminRankingHistoryOmitsRecipientIdentity(t *testing.T) {

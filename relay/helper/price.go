@@ -238,8 +238,13 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, promptT
 		return types.PriceData{}, fmt.Errorf("model %s is configured as tiered_expr but has no billing expression", info.OriginModelName)
 	}
 
+	if err := ValidateGPTLongContextBillingExpr(info.OriginModelName, info.RelayMode, promptTokens, exprStr, info.UsingGroup); err != nil {
+		return types.PriceData{}, err
+	}
+	estimatedPromptTokens := promptTokens
+	estimatedPromptLen := promptTokens
 	estimatedCompletionTokens := 0
-	if meta.MaxTokens != 0 {
+	if meta != nil && meta.MaxTokens != 0 {
 		estimatedCompletionTokens = meta.MaxTokens
 	}
 
@@ -248,15 +253,16 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, promptT
 		return types.PriceData{}, err
 	}
 
+	contextMode := GPTContextModeForGroup(info.UsingGroup)
+	exprLen := NormalizeGPTContextLen(info.OriginModelName, info.RelayMode, promptTokens, contextMode)
 	rawCost, trace, err := billingexpr.RunExprWithRequest(exprStr, billingexpr.TokenParams{
-		P:   float64(promptTokens),
+		P:   float64(estimatedPromptTokens),
 		C:   float64(estimatedCompletionTokens),
-		Len: float64(promptTokens),
+		Len: float64(exprLen),
 	}, requestInput)
 	if err != nil {
 		return types.PriceData{}, fmt.Errorf("model %s tiered expr run failed: %w", info.OriginModelName, err)
 	}
-
 	// Expression coefficients are $/1M tokens prices; convert to quota the same way per-call billing does.
 	quotaBeforeGroup := rawCost / 1_000_000 * common.QuotaPerUnit
 	preConsumedQuota := billingexpr.QuotaRound(quotaBeforeGroup * groupRatioInfo.GroupRatio)
@@ -276,7 +282,9 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, promptT
 		ExprString:                exprStr,
 		ExprHash:                  exprHash,
 		GroupRatio:                groupRatioInfo.GroupRatio,
-		EstimatedPromptTokens:     promptTokens,
+		EstimatedPromptTokens:     estimatedPromptTokens,
+		EstimatedPromptLen:        estimatedPromptLen,
+		GPTContextMode:            string(contextMode),
 		EstimatedCompletionTokens: estimatedCompletionTokens,
 		EstimatedQuotaBeforeGroup: quotaBeforeGroup,
 		EstimatedQuotaAfterGroup:  preConsumedQuota,

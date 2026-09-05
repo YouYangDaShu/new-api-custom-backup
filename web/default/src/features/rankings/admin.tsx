@@ -124,9 +124,7 @@ export function TokenRankingAdminPage() {
       {loading && <p>{t('Loading')}</p>}
       <section className='grid gap-3 sm:grid-cols-2'>
         <div className='rounded-lg border p-4 text-sm'>
-          <div className='text-muted-foreground'>
-            {t('Total rewards issued')}
-          </div>
+          <div className='text-muted-foreground'>{t('Settlement batches')}</div>
           <div className='mt-1 text-xl font-semibold'>
             {config.total_reward_count}
           </div>

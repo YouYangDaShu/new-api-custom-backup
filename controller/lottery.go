@@ -27,6 +27,14 @@ type lotteryAdminDraw struct {
 	CreatedAt   int64   `json:"created_at"`
 }
 
+type lotteryRecentDraw struct {
+	ID          uint    `json:"id"`
+	PrizeID     string  `json:"prize_id"`
+	PrizeName   string  `json:"prize_name"`
+	PrizeAmount float64 `json:"prize_amount"`
+	CreatedAt   int64   `json:"created_at"`
+}
+
 func GetLottery(c *gin.Context) {
 	cfg := model.GetLotteryConfig()
 	progress, err := model.GetLotteryProgress(c.GetInt("id"))
@@ -49,7 +57,14 @@ func GetLottery(c *gin.Context) {
 		}
 		prizes = append(prizes, gin.H{"id": prize.ID, "name": prize.Name, "amount": amount})
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"enabled": cfg.Enabled, "threshold": threshold, "accumulated": accumulated, "available_draws": progress.AvailableDraws, "prizes": prizes}})
+	var recentDraw *lotteryRecentDraw
+	var recent lotteryRecentDraw
+	if err := model.DB.Model(&model.LotteryDraw{}).
+		Select("id, prize_id, prize_name, prize_amount, created_at").
+		Where("user_id = ?", c.GetInt("id")).Order("id desc").First(&recent).Error; err == nil {
+		recentDraw = &recent
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"enabled": cfg.Enabled, "threshold": threshold, "accumulated": accumulated, "available_draws": progress.AvailableDraws, "prizes": prizes, "recent_draw": recentDraw}})
 }
 
 func DrawLottery(c *gin.Context) {

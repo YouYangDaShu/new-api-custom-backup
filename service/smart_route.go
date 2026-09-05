@@ -11,17 +11,19 @@ import (
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 )
 
-// Smart routing modes (汇流同款精简版：智能自动 + 价格优先).
+// Smart routing modes (balanced, price, and recent success rate).
 // Stored in token.group as:
 //
 //	@smart:balanced  — 综合价格、速度、成功率
 //	@smart:price     — 优先更便宜的计费分组
+//	@smart:success_rate — 优先近期成功率，并剔除有样本但零成功的分组
 //
 // Legacy "auto" keeps fixed AutoGroups order (not smart scoring).
 
 const (
-	SmartModeBalanced = "balanced"
-	SmartModePrice    = "price"
+	SmartModeBalanced     = "balanced"
+	SmartModePrice        = "price"
+	SmartModeSuccessRate  = "success_rate"
 	tokenGroupSmartPrefix = "@smart:"
 )
 
@@ -40,6 +42,8 @@ func ParseSmartMode(tokenGroup string) string {
 		return SmartModeBalanced
 	case SmartModePrice, "cheap", "cost":
 		return SmartModePrice
+	case SmartModeSuccessRate, "success", "reliability":
+		return SmartModeSuccessRate
 	default:
 		return SmartModeBalanced
 	}
@@ -49,6 +53,8 @@ func EncodeSmartTokenGroup(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case SmartModePrice, "cheap", "cost":
 		return tokenGroupSmartPrefix + SmartModePrice
+	case SmartModeSuccessRate, "success", "reliability":
+		return tokenGroupSmartPrefix + SmartModeSuccessRate
 	default:
 		return tokenGroupSmartPrefix + SmartModeBalanced
 	}
@@ -68,8 +74,12 @@ type SmartRouteCandidate struct {
 	Score       float64 // higher better for balanced; for price we sort by Price
 }
 
+func successRateUnavailable(requestCount, successCount int64) bool {
+	return requestCount > 0 && successCount == 0
+}
+
 // RankGroupsForModel sorts usable groups that can serve modelName.
-// mode: balanced | price
+// mode: balanced | price | success_rate
 // Only returns groups that currently have at least one enabled channel for the model.
 func RankGroupsForModel(userGroup, modelName, mode, requestPath string, candidates []string) []string {
 	if modelName == "" || len(candidates) == 0 {
@@ -99,7 +109,10 @@ func RankGroupsForModel(userGroup, modelName, mode, requestPath string, candidat
 		if price < 0 {
 			price = 1
 		}
-		sr, lat := lookupGroupModelPerf(modelName, g)
+		sr, lat, requestCount, successCount := lookupGroupModelPerf(modelName, g)
+		if mode == SmartModeSuccessRate && successRateUnavailable(requestCount, successCount) {
+			continue
+		}
 		rows = append(rows, row{
 			group: g,
 			c: SmartRouteCandidate{
@@ -192,6 +205,24 @@ func RankGroupsForModel(userGroup, modelName, mode, requestPath string, candidat
 			}
 			return rows[i].group < rows[j].group
 		})
+	} else if mode == SmartModeSuccessRate {
+		sort.SliceStable(rows, func(i, j int) bool {
+			si, sj := rows[i].c.SuccessRate, rows[j].c.SuccessRate
+			if si != sj {
+				return si > sj
+			}
+			li, lj := rows[i].c.AvgLatency, rows[j].c.AvgLatency
+			if li < 0 {
+				li = math.MaxFloat64
+			}
+			if lj < 0 {
+				lj = math.MaxFloat64
+			}
+			if li != lj {
+				return li < lj
+			}
+			return rows[i].group < rows[j].group
+		})
 	} else {
 		sort.SliceStable(rows, func(i, j int) bool {
 			if rows[i].c.Score != rows[j].c.Score {
@@ -214,9 +245,11 @@ func RankGroupsForModel(userGroup, modelName, mode, requestPath string, candidat
 // --- lightweight perf cache for smart routing (model+group, ~1 min) ---
 
 type smartPerfSnap struct {
-	successRate float64 // -1 unknown
-	avgLatency  float64 // -1 unknown
-	expireAt    time.Time
+	successRate  float64 // -1 unknown
+	avgLatency   float64 // -1 unknown
+	requestCount int64
+	successCount int64
+	expireAt     time.Time
 }
 
 var (
@@ -228,20 +261,20 @@ func smartPerfKey(modelName, group string) string {
 	return modelName + "\x00" + group
 }
 
-func lookupGroupModelPerf(modelName, group string) (successRate, avgLatency float64) {
+func lookupGroupModelPerf(modelName, group string) (successRate, avgLatency float64, requestCount, successCount int64) {
 	successRate, avgLatency = -1, -1
 	key := smartPerfKey(modelName, group)
 	now := time.Now()
 	smartPerfMu.RLock()
 	if snap, ok := smartPerfCache[key]; ok && now.Before(snap.expireAt) {
 		smartPerfMu.RUnlock()
-		return snap.successRate, snap.avgLatency
+		return snap.successRate, snap.avgLatency, snap.requestCount, snap.successCount
 	}
 	smartPerfMu.RUnlock()
 
-	// last 6 hours from DB (cheap aggregate)
+	// recent five minutes from DB (cheap aggregate)
 	endTs := now.Unix()
-	startTs := endTs - 6*3600
+	startTs := endTs - 5*60
 	rows, err := model.GetPerfMetrics(modelName, group, startTs, endTs)
 	if err == nil && len(rows) > 0 {
 		var req, okCnt, latSum int64
@@ -252,6 +285,7 @@ func lookupGroupModelPerf(modelName, group string) (successRate, avgLatency floa
 		}
 		if req > 0 {
 			successRate = float64(okCnt) / float64(req)
+			requestCount, successCount = req, okCnt
 			if latSum > 0 {
 				avgLatency = float64(latSum) / float64(req)
 			}
@@ -260,9 +294,11 @@ func lookupGroupModelPerf(modelName, group string) (successRate, avgLatency floa
 
 	smartPerfMu.Lock()
 	smartPerfCache[key] = smartPerfSnap{
-		successRate: successRate,
-		avgLatency:  avgLatency,
-		expireAt:    now.Add(60 * time.Second),
+		successRate:  successRate,
+		avgLatency:   avgLatency,
+		requestCount: requestCount,
+		successCount: successCount,
+		expireAt:     now.Add(60 * time.Second),
 	}
 	// crude size cap
 	if len(smartPerfCache) > 5000 {
@@ -273,7 +309,7 @@ func lookupGroupModelPerf(modelName, group string) (successRate, avgLatency floa
 		}
 	}
 	smartPerfMu.Unlock()
-	return successRate, avgLatency
+	return successRate, avgLatency, requestCount, successCount
 }
 
 // SmartRoutePool returns model-pool groups the user may use for smart routing.

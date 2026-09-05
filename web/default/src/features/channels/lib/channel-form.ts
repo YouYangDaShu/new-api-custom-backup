@@ -518,6 +518,9 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     }
   }
 
+  // GPT context policy is owned by billing groups, not channels.
+  delete settingsObj.gpt_context_mode
+
   // Add vertex_key_type for Vertex AI channels (type 41)
   if (formData.type === 41) {
     settingsObj.vertex_key_type = formData.vertex_key_type || 'json'
