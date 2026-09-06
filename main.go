@@ -119,19 +119,9 @@ func main() {
 		go controller.AutomaticallyUpdateChannels(frequency)
 	}
 
-	// Periodically close lifecycle rows left behind by interrupted relay requests.
-	go func() {
-		ticker := time.NewTicker(time.Minute)
-		defer ticker.Stop()
-		for range ticker.C {
-			closed, err := model.CloseStaleProcessingLogs(time.Now())
-			if err != nil {
-				logger.LogWarn(context.Background(), "failed to close stale processing logs: "+err.Error())
-			} else if closed > 0 {
-				logger.LogInfo(context.Background(), fmt.Sprintf("closed %d stale processing logs", closed))
-			}
-		}
-	}()
+	// Periodic stale-processing cleanup is intentionally not started here.
+	// F3 preserves direct billing/refund semantics and does not auto-reclassify
+	// interrupted processing rows.
 
 	// Prune the lottery idempotency ledger past its retention window; see
 	// model.CleanupLotteryConsumptionEvents for why this cannot enable

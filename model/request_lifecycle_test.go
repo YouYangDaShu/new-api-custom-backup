@@ -111,18 +111,16 @@ func TestRequestLifecycle_ClosesOnlyStalePendingRows(t *testing.T) {
 
 	closed, err := CloseStaleProcessingLogs(now)
 	require.NoError(t, err)
-	require.GreaterOrEqual(t, closed, int64(1))
+	require.Zero(t, closed)
 
 	var stale, fresh, charged Log
 	require.NoError(t, LOG_DB.Where("request_id = ?", staleID).First(&stale).Error)
 	require.NoError(t, LOG_DB.Where("request_id = ?", freshID).First(&fresh).Error)
 	require.NoError(t, LOG_DB.Where("request_id = ?", chargedID).First(&charged).Error)
-	assert.Equal(t, LogTypeError, stale.Type)
-	assert.Contains(t, stale.Content, "408")
+	assert.Equal(t, LogTypeProcessing, stale.Type)
 	assert.Equal(t, LogTypeProcessing, fresh.Type)
 	assert.Equal(t, LogTypeProcessing, charged.Type)
 }
-
 func TestRequestLifecycle_ActiveLeaseSurvivesOldTimeout(t *testing.T) {
 	if LOG_DB == nil {
 		t.Skip("LOG_DB not initialized")
@@ -191,10 +189,10 @@ func TestRequestLifecycle_ClientCancellationReleasesLease(t *testing.T) {
 	require.NoError(t, LOG_DB.Model(&Log{}).Where("request_id = ?", reqID).Update("last_activity_at", staleAt).Error)
 	closed, err := CloseStaleProcessingLogs(time.Now())
 	require.NoError(t, err)
-	assert.GreaterOrEqual(t, closed, int64(1))
+	assert.Zero(t, closed)
 	var row Log
 	require.NoError(t, LOG_DB.Where("request_id = ?", reqID).First(&row).Error)
-	assert.Equal(t, LogTypeError, row.Type)
+	assert.Equal(t, LogTypeProcessing, row.Type)
 }
 
 func TestRequestLifecycle_UsesConfiguredProcessingTimeout(t *testing.T) {
@@ -222,7 +220,7 @@ func TestRequestLifecycle_UsesConfiguredProcessingTimeout(t *testing.T) {
 	require.NoError(t, LOG_DB.Where("request_id = ?", insideID).First(&inside).Error)
 	require.NoError(t, LOG_DB.Where("request_id = ?", outsideID).First(&outside).Error)
 	assert.Equal(t, LogTypeProcessing, inside.Type)
-	assert.Equal(t, LogTypeError, outside.Type)
+	assert.Equal(t, LogTypeProcessing, outside.Type)
 }
 
 func TestRequestLifecycle_ClosesLegacyEmptyOtherPendingRows(t *testing.T) {
@@ -245,11 +243,10 @@ func TestRequestLifecycle_ClosesLegacyEmptyOtherPendingRows(t *testing.T) {
 
 	var row Log
 	require.NoError(t, LOG_DB.Where("request_id = ?", reqID).First(&row).Error)
-	assert.Equal(t, LogTypeError, row.Type)
-	assert.Contains(t, row.Content, "408")
+	assert.Equal(t, LogTypeProcessing, row.Type)
 }
 
-func TestRequestLifecycle_FinalizeFallsBackAfterStaleCloserWins(t *testing.T) {
+func TestRequestLifecycle_FinalizeAfterStaleProcessing(t *testing.T) {
 	if LOG_DB == nil {
 		t.Skip("LOG_DB not initialized")
 	}
@@ -267,7 +264,7 @@ func TestRequestLifecycle_FinalizeFallsBackAfterStaleCloserWins(t *testing.T) {
 
 	closed, err := CloseStaleProcessingLogs(time.Now())
 	require.NoError(t, err)
-	require.GreaterOrEqual(t, closed, int64(1))
+	require.Zero(t, closed)
 
 	c := newTestGinContext(reqID, 45)
 	RecordConsumeLog(c, 45, RecordConsumeLogParams{
@@ -277,10 +274,9 @@ func TestRequestLifecycle_FinalizeFallsBackAfterStaleCloserWins(t *testing.T) {
 
 	var rows []Log
 	require.NoError(t, LOG_DB.Where("request_id = ?", reqID).Order("id asc").Find(&rows).Error)
-	require.Len(t, rows, 2)
-	assert.Equal(t, LogTypeError, rows[0].Type)
-	assert.Equal(t, LogTypeConsume, rows[1].Type)
-	assert.Equal(t, 123, rows[1].Quota)
+	require.Len(t, rows, 1)
+	assert.Equal(t, LogTypeConsume, rows[0].Type)
+	assert.Equal(t, 123, rows[0].Quota)
 }
 
 func TestRequestLifecycle_FailureFinalize(t *testing.T) {
@@ -357,7 +353,7 @@ func TestRequestLifecycle_ViolationFeeDoesNotOverwriteMain(t *testing.T) {
 	var rows []Log
 	require.NoError(t, LOG_DB.Where("request_id = ?", reqID).Order("id asc").Find(&rows).Error)
 	require.GreaterOrEqual(t, len(rows), 2)
-	// first row remains error
+	// The main request remains an error; the violation fee is a separate consume row.
 	assert.Equal(t, LogTypeError, rows[0].Type)
 	// second is consume violation
 	foundViolation := false

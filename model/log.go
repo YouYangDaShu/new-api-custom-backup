@@ -60,6 +60,7 @@ type Log struct {
 	Id                int    `json:"id" gorm:"index:idx_created_at_id,priority:2;index:idx_user_id_id,priority:2"`
 	UserId            int    `json:"user_id" gorm:"index;index:idx_user_id_id,priority:1"`
 	CreatedAt         int64  `json:"created_at" gorm:"bigint;index:idx_created_at_id,priority:1;index:idx_created_at_type"`
+	FinishedAt        int64  `json:"finished_at" gorm:"bigint;default:0;index"`
 	LastActivityAt    int64  `json:"-" gorm:"bigint;index"`
 	Type              int    `json:"type" gorm:"index:idx_created_at_type"`
 	Content           string `json:"content"`
@@ -102,6 +103,9 @@ func ensureLogRequestId(log *Log) {
 
 func createLog(log *Log) error {
 	ensureLogRequestId(log)
+	if log.FinishedAt == 0 && log.Type != LogTypeProcessing {
+		log.FinishedAt = common.GetTimestamp()
+	}
 	return LOG_DB.Create(log).Error
 }
 
@@ -115,30 +119,11 @@ func processingLogTimeout() time.Duration {
 	return time.Duration(minutes) * time.Minute
 }
 
-// CloseStaleProcessingLogs marks interrupted requests as timed out. A relay can
-// be terminated outside its normal defer path (for example during a connection
-// reset), leaving its lifecycle row permanently in processing. Only pending,
-// zero-quota rows older than the timeout are safe to close automatically.
+// CloseStaleProcessingLogs is intentionally a no-op in the F3-based candidate.
+// Automatic cleanup is excluded so interrupted requests keep F3's direct
+// billing/refund lifecycle and are never reclassified into a deferred state.
 func CloseStaleProcessingLogs(now time.Time) (int64, error) {
-	if LOG_DB == nil {
-		return 0, nil
-	}
-	cutoff := now.Add(-processingLogTimeout()).Unix()
-	other := common.MapToJsonStr(map[string]interface{}{
-		"billing_status": "no_charge",
-		"request_status": "failed",
-		"status_code":    408,
-		"error_code":     "stale_processing_closed",
-		"error_type":     "new_api_error",
-	})
-	result := LOG_DB.Model(&Log{}).
-		Where("type = ? AND quota = ? AND content = ? AND (((last_activity_at IS NULL OR last_activity_at = 0) AND created_at < ?) OR (last_activity_at > 0 AND last_activity_at < ?)) AND (other LIKE ? OR other = ? OR other IS NULL)", LogTypeProcessing, 0, "processing", cutoff, cutoff, "%\"billing_status\":\"pending\"%", "").
-		Updates(map[string]interface{}{
-			"type":    LogTypeError,
-			"content": "status_code=408, 请求超时已关闭（未扣费）",
-			"other":   other,
-		})
-	return result.RowsAffected, result.Error
+	return 0, nil
 }
 
 func clickHouseLogOrder(prefix string) string {
@@ -583,6 +568,7 @@ func FinalizeRequestLog(c *gin.Context, params FinalizeRequestLogParams) bool {
 
 	updates := map[string]interface{}{
 		"type":              logType,
+		"finished_at":       common.GetTimestamp(),
 		"content":           content,
 		"prompt_tokens":     params.PromptTokens,
 		"completion_tokens": params.CompletionTokens,
