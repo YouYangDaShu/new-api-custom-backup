@@ -62,6 +62,7 @@ const numericString = z.string().refine((value) => {
 
 const monitoringSchema = z.object({
   QuotaRemindThreshold: numericString,
+  GPTContextWarningEnabled: z.boolean(),
   perf_metrics_setting: z.object({
     enabled: z.boolean(),
     flush_interval: z.coerce.number().min(1),
@@ -75,6 +76,7 @@ type MonitoringFormValues = z.output<typeof monitoringSchema>
 
 type FlatMonitoringDefaults = {
   QuotaRemindThreshold: string
+  GPTContextWarningEnabled: boolean
   'perf_metrics_setting.enabled': boolean
   'perf_metrics_setting.flush_interval': number
   'perf_metrics_setting.bucket_time': 'minute' | '5min' | 'hour'
@@ -89,6 +91,7 @@ const buildFormDefaults = (
   defaults: MonitoringSettingsSectionProps['defaultValues']
 ): MonitoringFormInput => ({
   QuotaRemindThreshold: defaults.QuotaRemindThreshold ?? '',
+  GPTContextWarningEnabled: defaults.GPTContextWarningEnabled ?? true,
   perf_metrics_setting: {
     enabled: defaults['perf_metrics_setting.enabled'],
     flush_interval: defaults['perf_metrics_setting.flush_interval'],
@@ -101,6 +104,7 @@ const normalizeDefaults = (
   defaults: MonitoringSettingsSectionProps['defaultValues']
 ): FlatMonitoringDefaults => ({
   QuotaRemindThreshold: (defaults.QuotaRemindThreshold ?? '').trim(),
+  GPTContextWarningEnabled: defaults.GPTContextWarningEnabled ?? true,
   'perf_metrics_setting.enabled': defaults['perf_metrics_setting.enabled'],
   'perf_metrics_setting.flush_interval':
     defaults['perf_metrics_setting.flush_interval'],
@@ -114,6 +118,7 @@ const normalizeFormValues = (
   values: MonitoringFormValues
 ): FlatMonitoringDefaults => ({
   QuotaRemindThreshold: values.QuotaRemindThreshold.trim(),
+  GPTContextWarningEnabled: values.GPTContextWarningEnabled,
   'perf_metrics_setting.enabled': values.perf_metrics_setting.enabled,
   'perf_metrics_setting.flush_interval':
     values.perf_metrics_setting.flush_interval,
@@ -206,6 +211,24 @@ export function MonitoringSettingsSection({
                 </FormDescription>
                 <FormMessage />
               </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name='GPTContextWarningEnabled'
+            render={({ field }) => (
+              <SettingsSwitchItem>
+                <SettingsSwitchContent>
+                  <FormLabel>{t('Warn when GPT context exceeds 272K')}</FormLabel>
+                  <FormDescription>
+                    {t('Tiered billing groups always show this warning')}
+                  </FormDescription>
+                </SettingsSwitchContent>
+                <FormControl>
+                  <Switch checked={field.value} onCheckedChange={field.onChange} />
+                </FormControl>
+              </SettingsSwitchItem>
             )}
           />
 

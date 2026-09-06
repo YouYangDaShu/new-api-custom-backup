@@ -171,6 +171,7 @@ export interface LogOtherData {
   // billing_mode === 'tiered_expr'. expr_b64 is the base64-encoded billing
   // expression and matched_tier is the label of the tier that fired.
   billing_mode?: string
+  context_warning_enabled?: boolean
   expr_b64?: string
   matched_tier?: string
   reasoning_effort?: string

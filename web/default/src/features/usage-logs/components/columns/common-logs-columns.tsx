@@ -314,7 +314,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
       header: t('Time'),
       cell: ({ row }) => {
         const log = row.original
-        const timestamp = row.getValue('created_at') as number
+        const timestamp = log.finished_at || log.created_at
         const config = getLogTypeConfig(log.type)
 
         return (
@@ -784,7 +784,9 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
           : other?.cache_creation_tokens || 0
         const isContextWarning =
           promptTokens > CONTEXT_TOKEN_WARNING_THRESHOLD &&
-          isGptLongContextWarningModel(log.model_name)
+          isGptLongContextWarningModel(log.model_name) &&
+          (other?.billing_mode === 'tiered_expr' ||
+            other?.context_warning_enabled !== false)
 
         return (
           <div className='flex flex-col gap-0.5'>

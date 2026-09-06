@@ -140,6 +140,11 @@ func StartSystemTaskRunner() {
 				// claim pass: wakeups (e.g. a manual log cleanup) should claim
 				// immediately without re-running the scheduler every time.
 				now := time.Now()
+				if closed, err := model.CloseStaleProcessingLogs(now); err != nil {
+					logger.LogWarn(context.Background(), fmt.Sprintf("stale processing log cleanup failed: %v", err))
+				} else if closed > 0 {
+					logger.LogInfo(context.Background(), fmt.Sprintf("closed %d stale processing logs", closed))
+				}
 				if now.Sub(lastStaleLockCleanup) >= systemTaskStaleLockInterval {
 					lastStaleLockCleanup = now
 					if err := model.ExpireStaleSystemTaskLocks(common.GetTimestamp()); err != nil {

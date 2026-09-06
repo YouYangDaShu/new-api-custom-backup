@@ -145,6 +145,7 @@ func InitOptionMap() {
 	common.OptionMap["ProcessingLogTimeoutMinutes"] = strconv.Itoa(common.ProcessingLogTimeoutMinutes)
 	common.OptionMap["AffTopupRate"] = strconv.FormatFloat(common.AffTopupRate, 'f', -1, 64)
 	common.OptionMap["QuotaRemindThreshold"] = strconv.Itoa(common.QuotaRemindThreshold)
+	common.OptionMap["GPTContextWarningEnabled"] = strconv.FormatBool(common.GPTContextWarningEnabled)
 	common.OptionMap["PreConsumedQuota"] = strconv.Itoa(common.PreConsumedQuota)
 	common.OptionMap["ModelRequestRateLimitCount"] = strconv.Itoa(setting.ModelRequestRateLimitCount)
 	common.OptionMap["ModelRequestRateLimitDurationMinutes"] = strconv.Itoa(setting.ModelRequestRateLimitDurationMinutes)
@@ -596,6 +597,8 @@ func updateOptionMap(key string, value string) (err error) {
 		}
 	case "QuotaRemindThreshold":
 		common.QuotaRemindThreshold, _ = strconv.Atoi(value)
+	case "GPTContextWarningEnabled":
+		common.GPTContextWarningEnabled = value == "true" || value == "1"
 	case "PreConsumedQuota":
 		common.PreConsumedQuota, _ = strconv.Atoi(value)
 	case "ModelRequestRateLimitCount":

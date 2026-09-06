@@ -35,6 +35,14 @@ type lotteryRecentDraw struct {
 	CreatedAt   int64   `json:"created_at"`
 }
 
+type lotteryHistoryResponse struct {
+	Items      []lotteryRecentDraw `json:"items"`
+	Page       int                 `json:"page"`
+	PageSize   int                 `json:"page_size"`
+	Total      int64               `json:"total"`
+	TotalPages int                 `json:"total_pages"`
+}
+
 func GetLottery(c *gin.Context) {
 	cfg := model.GetLotteryConfig()
 	progress, err := model.GetLotteryProgress(c.GetInt("id"))
@@ -57,14 +65,31 @@ func GetLottery(c *gin.Context) {
 		}
 		prizes = append(prizes, gin.H{"id": prize.ID, "name": prize.Name, "amount": amount})
 	}
-	var recentDraw *lotteryRecentDraw
-	var recent lotteryRecentDraw
-	if err := model.DB.Model(&model.LotteryDraw{}).
-		Select("id, prize_id, prize_name, prize_amount, created_at").
-		Where("user_id = ?", c.GetInt("id")).Order("id desc").First(&recent).Error; err == nil {
-		recentDraw = &recent
+	page := 1
+	pageSize := 10
+	if value, conversionErr := strconv.Atoi(c.Query("page")); conversionErr == nil && value > 0 {
+		page = value
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"enabled": cfg.Enabled, "threshold": threshold, "accumulated": accumulated, "available_draws": progress.AvailableDraws, "prizes": prizes, "recent_draw": recentDraw}})
+	if value, conversionErr := strconv.Atoi(c.Query("page_size")); conversionErr == nil && (value == 10 || value == 20 || value == 50) {
+		pageSize = value
+	}
+	query := model.DB.Model(&model.LotteryDraw{}).Where("user_id = ?", c.GetInt("id"))
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	var history []lotteryRecentDraw
+	if err := query.Select("id, prize_id, prize_name, prize_amount, created_at").Order("id desc").Limit(pageSize).Offset((page - 1) * pageSize).Find(&history).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	var recentDraw *lotteryRecentDraw
+	if len(history) > 0 {
+		recentDraw = &history[0]
+	}
+	totalPages := int((total + int64(pageSize) - 1) / int64(pageSize))
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"enabled": cfg.Enabled, "threshold": threshold, "accumulated": accumulated, "available_draws": progress.AvailableDraws, "prizes": prizes, "recent_draw": recentDraw, "history": lotteryHistoryResponse{Items: history, Page: page, PageSize: pageSize, Total: total, TotalPages: totalPages}}})
 }
 
 func DrawLottery(c *gin.Context) {

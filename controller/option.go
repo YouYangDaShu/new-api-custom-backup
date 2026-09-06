@@ -346,3 +346,25 @@ func UpdateOption(c *gin.Context) {
 		"message": "",
 	})
 }
+
+type OptionsBulkUpdateRequest struct {
+	Values map[string]string `json:"values"`
+}
+
+func UpdateOptionsBulk(c *gin.Context) {
+	var request OptionsBulkUpdateRequest
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil || len(request.Values) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "无效的参数"})
+		return
+	}
+	if err := model.UpdateOptionsBulk(request.Values); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	keys := make([]string, 0, len(request.Values))
+	for key := range request.Values {
+		keys = append(keys, key)
+	}
+	recordManageAudit(c, "option.bulk_update", map[string]interface{}{"keys": keys})
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": ""})
+}

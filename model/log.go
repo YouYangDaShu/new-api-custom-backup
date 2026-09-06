@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -61,6 +62,7 @@ type Log struct {
 	Id                int    `json:"id" gorm:"index:idx_created_at_id,priority:2;index:idx_user_id_id,priority:2"`
 	UserId            int    `json:"user_id" gorm:"index;index:idx_user_id_id,priority:1"`
 	CreatedAt         int64  `json:"created_at" gorm:"bigint;index:idx_created_at_id,priority:1;index:idx_created_at_type"`
+	FinishedAt        int64  `json:"finished_at" gorm:"bigint;default:0;index"`
 	LastActivityAt    int64  `json:"-" gorm:"bigint;index"`
 	Type              int    `json:"type" gorm:"index:idx_created_at_type"`
 	Content           string `json:"content"`
@@ -173,6 +175,9 @@ func ensureLogRequestId(log *Log) {
 
 func createLog(log *Log) error {
 	ensureLogRequestId(log)
+	if log.FinishedAt == 0 && log.Type != LogTypeProcessing {
+		log.FinishedAt = common.GetTimestamp()
+	}
 	return LOG_DB.Create(log).Error
 }
 
@@ -195,25 +200,35 @@ func CloseStaleProcessingLogs(now time.Time) (int64, error) {
 		return 0, nil
 	}
 	cutoff := now.Add(-processingLogTimeout()).Unix()
-	other := common.MapToJsonStr(map[string]interface{}{
+	noChargeOther := common.MapToJsonStr(map[string]interface{}{
 		"billing_status": "no_charge",
 		"request_status": "failed",
 		"status_code":    408,
 		"error_code":     "stale_processing_closed",
 		"error_type":     "new_api_error",
 	})
-	result := LOG_DB.Model(&Log{}).
-		Where("type = ? AND quota = ? AND pre_consumed_quota = ? AND content = ? AND billing_status IN ? AND (((last_activity_at IS NULL OR last_activity_at = 0) AND created_at < ?) OR (last_activity_at > 0 AND last_activity_at < ?))", LogTypeProcessing, 0, 0, "processing", []string{"", BillingStatusInFlight}, cutoff, cutoff).
-		Updates(map[string]interface{}{
-			"type":    LogTypeError,
-			"content": "status_code=408, 请求超时已关闭（未扣费）",
-			"other":   other,
-		})
-	return result.RowsAffected, result.Error
+	settlementOther := common.MapToJsonStr(map[string]interface{}{
+		"billing_status": "settlement_failed",
+		"request_status": "failed",
+		"status_code":    408,
+		"error_code":     "stale_processing_settlement_review",
+		"error_type":     "new_api_error",
+	})
+	base := "type = ? AND content = ? AND billing_status IN ? AND (((last_activity_at IS NULL OR last_activity_at = 0) AND created_at < ?) OR (last_activity_at > 0 AND last_activity_at < ?))"
+	noCharge := LOG_DB.Model(&Log{}).Where(base+" AND quota = ? AND pre_consumed_quota = ?", LogTypeProcessing, "processing", []string{"", BillingStatusInFlight, BillingStatusPending}, cutoff, cutoff, 0, 0).Updates(map[string]interface{}{
+		"type": LogTypeError, "content": "status_code=408, 请求超时已关闭（未扣费）", "billing_status": BillingStatusNoCharge, "finished_at": now.Unix(), "other": noChargeOther,
+	})
+	if noCharge.Error != nil {
+		return noCharge.RowsAffected, noCharge.Error
+	}
+	settlement := LOG_DB.Model(&Log{}).Where(base+" AND (quota > ? OR pre_consumed_quota > ?)", LogTypeProcessing, "processing", []string{"", BillingStatusInFlight, BillingStatusPending}, cutoff, cutoff, 0, 0).Updates(map[string]interface{}{
+		"type": LogTypeError, "content": "status_code=408, 请求超时已关闭（结算待复核）", "billing_status": BillingStatusSettlementFail, "finished_at": now.Unix(), "other": settlementOther,
+	})
+	return noCharge.RowsAffected + settlement.RowsAffected, settlement.Error
 }
 
 func clickHouseLogOrder(prefix string) string {
-	return prefix + "created_at desc, " + prefix + "request_id desc"
+	return "if(" + prefix + "type = " + strconv.Itoa(LogTypeProcessing) + ", 0, 1), if(" + prefix + "type = " + strconv.Itoa(LogTypeProcessing) + ", " + prefix + "created_at, if(" + prefix + "finished_at > 0, " + prefix + "finished_at, " + prefix + "created_at)) desc, " + prefix + "id desc"
 }
 
 func assignDisplayLogIds(logs []*Log, startIdx int) {
@@ -422,6 +437,7 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 		UserId:            userId,
 		Username:          username,
 		CreatedAt:         common.GetTimestamp(),
+		FinishedAt:        common.GetTimestamp(),
 		Type:              LogTypeError,
 		Content:           content,
 		PromptTokens:      0,
@@ -537,7 +553,7 @@ func TouchRequestLog(requestId string) bool {
 		return false
 	}
 	result := LOG_DB.Model(&Log{}).
-		Where("request_id = ? AND type = ?", requestId, LogTypeProcessing).
+		Where("request_id = ? AND type = ? AND billing_status IN ?", requestId, LogTypeProcessing, []string{"", BillingStatusInFlight}).
 		Update("last_activity_at", common.GetTimestamp())
 	return result.Error == nil && result.RowsAffected == 1
 }
@@ -854,6 +870,7 @@ func FinalizeRequestLog(c *gin.Context, params FinalizeRequestLogParams) bool {
 
 	updates := map[string]interface{}{
 		"type":              logType,
+		"finished_at":       common.GetTimestamp(),
 		"content":           content,
 		"prompt_tokens":     params.PromptTokens,
 		"completion_tokens": params.CompletionTokens,
@@ -1121,10 +1138,10 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 		tx = tx.Where("logs.upstream_request_id = ?", upstreamRequestId)
 	}
 	if startTimestamp != 0 {
-		tx = tx.Where("logs.created_at >= ?", startTimestamp)
+		tx = tx.Where("CASE WHEN logs.finished_at > 0 THEN logs.finished_at ELSE logs.created_at END >= ?", startTimestamp)
 	}
 	if endTimestamp != 0 {
-		tx = tx.Where("logs.created_at <= ?", endTimestamp)
+		tx = tx.Where("CASE WHEN logs.finished_at > 0 THEN logs.finished_at ELSE logs.created_at END <= ?", endTimestamp)
 	}
 	if channel != 0 {
 		tx = tx.Where("logs.channel_id = ?", channel)
@@ -1136,9 +1153,9 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 	if err != nil {
 		return nil, 0, err
 	}
-	order := fmt.Sprintf("CASE WHEN logs.type = %d THEN 0 ELSE 1 END, logs.created_at desc, logs.id desc", LogTypeProcessing)
+	order := fmt.Sprintf("CASE WHEN logs.type = %d THEN 0 ELSE 1 END, CASE WHEN logs.type = %d THEN logs.created_at ELSE CASE WHEN logs.finished_at > 0 THEN logs.finished_at ELSE logs.created_at END END desc, logs.id desc", LogTypeProcessing, LogTypeProcessing)
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
-		order = fmt.Sprintf("if(logs.type = %d, 0, 1), %s", LogTypeProcessing, clickHouseLogOrder("logs."))
+		order = clickHouseLogOrder("logs.")
 	}
 	err = tx.Order(order).Limit(num).Offset(startIdx).Find(&logs).Error
 	if err != nil {
@@ -1214,10 +1231,10 @@ func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int
 		tx = tx.Where("logs.upstream_request_id = ?", upstreamRequestId)
 	}
 	if startTimestamp != 0 {
-		tx = tx.Where("logs.created_at >= ?", startTimestamp)
+		tx = tx.Where("CASE WHEN logs.finished_at > 0 THEN logs.finished_at ELSE logs.created_at END >= ?", startTimestamp)
 	}
 	if endTimestamp != 0 {
-		tx = tx.Where("logs.created_at <= ?", endTimestamp)
+		tx = tx.Where("CASE WHEN logs.finished_at > 0 THEN logs.finished_at ELSE logs.created_at END <= ?", endTimestamp)
 	}
 	if group != "" {
 		tx = tx.Where("logs."+logGroupCol+" = ?", group)
@@ -1227,9 +1244,9 @@ func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int
 		common.SysError("failed to count user logs: " + err.Error())
 		return nil, 0, errors.New("查询日志失败")
 	}
-	order := fmt.Sprintf("CASE WHEN logs.type = %d THEN 0 ELSE 1 END, logs.created_at desc, logs.id desc", LogTypeProcessing)
+	order := fmt.Sprintf("CASE WHEN logs.type = %d THEN 0 ELSE 1 END, CASE WHEN logs.type = %d THEN logs.created_at ELSE CASE WHEN logs.finished_at > 0 THEN logs.finished_at ELSE logs.created_at END END desc, logs.id desc", LogTypeProcessing, LogTypeProcessing)
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
-		order = fmt.Sprintf("if(logs.type = %d, 0, 1), %s", LogTypeProcessing, clickHouseLogOrder("logs."))
+		order = clickHouseLogOrder("logs.")
 	}
 	err = tx.Order(order).Limit(num).Offset(startIdx).Find(&logs).Error
 	if err != nil {

@@ -97,8 +97,8 @@ func TestClickHouseCreateTableHasTTL(t *testing.T) {
 }
 
 func TestClickHouseLogOrder(t *testing.T) {
-	assert.Equal(t, "created_at desc, request_id desc", clickHouseLogOrder(""))
-	assert.Equal(t, "logs.created_at desc, logs.request_id desc", clickHouseLogOrder("logs."))
+	assert.Equal(t, "if(type = 8, 0, 1), if(type = 8, created_at, if(finished_at > 0, finished_at, created_at)) desc, id desc", clickHouseLogOrder(""))
+	assert.Equal(t, "if(logs.type = 8, 0, 1), if(logs.type = 8, logs.created_at, if(logs.finished_at > 0, logs.finished_at, logs.created_at)) desc, logs.id desc", clickHouseLogOrder("logs."))
 }
 
 func TestBuildLogLikeConditionUsesStandardEscape(t *testing.T) {

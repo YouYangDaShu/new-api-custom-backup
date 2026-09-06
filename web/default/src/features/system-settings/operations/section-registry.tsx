@@ -47,6 +47,7 @@ const OPERATIONS_SECTIONS = [
       <MonitoringSettingsSection
         defaultValues={{
           QuotaRemindThreshold: settings.QuotaRemindThreshold,
+          GPTContextWarningEnabled: settings.GPTContextWarningEnabled ?? true,
           'perf_metrics_setting.enabled':
             settings['perf_metrics_setting.enabled'] ?? true,
           'perf_metrics_setting.flush_interval':

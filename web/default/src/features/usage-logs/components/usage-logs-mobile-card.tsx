@@ -206,7 +206,7 @@ function CommonLogsCard<TData>({
             {t('Time')}
           </div>
           <MobileLogTimeStatus
-            createdAt={rowData?.created_at}
+            createdAt={rowData?.finished_at || rowData?.created_at}
             type={rowData?.type}
           />
         </div>

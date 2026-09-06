@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 import {
   CircleAlert,
   Coins,
@@ -25,7 +26,11 @@ function formatPrizeAmount(amount: number | undefined) {
 export function Lottery() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
-  const query = useQuery({ queryKey: ['lottery'], queryFn: getLottery })
+  const [historyPage, setHistoryPage] = useState(1)
+  const query = useQuery({
+    queryKey: ['lottery', historyPage],
+    queryFn: () => getLottery(historyPage),
+  })
   const draw = useMutation({
     mutationFn: drawLottery,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['lottery'] }),
@@ -271,6 +276,49 @@ export function Lottery() {
               {t('No draws yet')}
             </p>
           )}
+        </section>
+        <section className='bg-card rounded-2xl border p-5 shadow-sm sm:p-6'>
+          <div className='flex items-center gap-3'>
+            <div className='flex size-9 items-center justify-center rounded-lg bg-amber-500/10 text-amber-500'>
+              <Trophy className='size-4' aria-hidden='true' />
+            </div>
+            <h2 className='text-sm font-semibold'>{t('Draw history')}</h2>
+          </div>
+          {data.history.items.length > 0 ? (
+            <div className='mt-4 space-y-2'>
+              {data.history.items.map((item) => (
+                <div className='flex items-center justify-between gap-3 rounded-xl border px-4 py-3' key={item.id}>
+                  <span className='truncate text-sm'>{item.prize_name}</span>
+                  <span className='shrink-0 text-sm font-semibold text-amber-500 tabular-nums'>
+                    +{formatPrizeAmount(item.prize_amount)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className='text-muted-foreground mt-4 text-sm'>{t('No draws yet')}</p>
+          )}
+          {data.history.total_pages > 1 ? (
+            <div className='mt-4 flex items-center justify-between gap-3'>
+              <Button
+                disabled={historyPage <= 1}
+                onClick={() => setHistoryPage((page) => page - 1)}
+                variant='outline'
+              >
+                {t('Previous')}
+              </Button>
+              <span className='text-muted-foreground text-xs'>
+                {data.history.page} / {data.history.total_pages}
+              </span>
+              <Button
+                disabled={historyPage >= data.history.total_pages}
+                onClick={() => setHistoryPage((page) => page + 1)}
+                variant='outline'
+              >
+                {t('Next')}
+              </Button>
+            </div>
+          ) : null}
         </section>
       </div>
     )

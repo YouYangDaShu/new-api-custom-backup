@@ -22,6 +22,7 @@ export type AdminChannelMonitor = PublicChannelMonitor & {
   extra_models: string[]
   interval_seconds: number
   enabled: boolean
+  sort_order: number
   last_checked_at: number
   created_at: number
   updated_at: number
@@ -91,6 +92,16 @@ export async function updateChannelMonitor(
 }
 export async function deleteChannelMonitor(id: number): Promise<void> {
   await api.delete(`/api/channel-monitor/admin/${id}`)
+}
+export async function moveChannelMonitor(
+  id: number,
+  direction: 'up' | 'down'
+): Promise<void> {
+  const res = await api.post<ApiResponse<unknown>>(
+    `/api/channel-monitor/admin/${id}/move`,
+    { direction: direction === 'up' ? -1 : 1 }
+  )
+  requireSuccessfulResponse(res.data)
 }
 export async function runChannelMonitor(id: number): Promise<void> {
   await api.post(`/api/channel-monitor/admin/${id}/run`)

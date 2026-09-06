@@ -56,6 +56,7 @@ func SetApiRouter(router *gin.Engine) {
 			monitorAdminRoute.POST("/", controller.AdminCreateChannelMonitor)
 			monitorAdminRoute.PUT("/:id", controller.AdminUpdateChannelMonitor)
 			monitorAdminRoute.PATCH("/:id", controller.AdminUpdateChannelMonitor)
+			monitorAdminRoute.POST("/:id/move", controller.AdminMoveChannelMonitor)
 			monitorAdminRoute.DELETE("/:id", controller.AdminDeleteChannelMonitor)
 			monitorAdminRoute.POST("/:id/run", controller.AdminRunChannelMonitor)
 		}
@@ -226,6 +227,7 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			optionRoute.GET("/", controller.GetOptions)
 			optionRoute.PUT("/", controller.UpdateOption)
+			optionRoute.PUT("/bulk", controller.UpdateOptionsBulk)
 			optionRoute.POST("/payment_compliance", controller.ConfirmPaymentCompliance)
 			optionRoute.GET("/channel_affinity_cache", controller.GetChannelAffinityCacheStats)
 			optionRoute.DELETE("/channel_affinity_cache", controller.ClearChannelAffinityCache)

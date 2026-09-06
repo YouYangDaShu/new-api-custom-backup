@@ -18,6 +18,13 @@ export interface LotteryProgress {
   available_draws: number
   prizes: LotteryUserPrize[]
   recent_draw?: LotteryDraw
+  history: {
+    items: LotteryDraw[]
+    page: number
+    page_size: number
+    total: number
+    total_pages: number
+  }
 }
 export interface LotteryDraw {
   id: number
@@ -28,11 +35,13 @@ export interface LotteryDraw {
   created_at: number
 }
 
-export async function getLottery(): Promise<{
+export async function getLottery(page = 1): Promise<{
   success: boolean
   data: LotteryProgress
 }> {
-  const res = await api.get('/api/lottery/')
+  const res = await api.get('/api/lottery/', {
+    params: { page, page_size: 10 },
+  })
   return res.data
 }
 

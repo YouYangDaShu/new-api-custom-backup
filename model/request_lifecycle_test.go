@@ -128,9 +128,9 @@ func TestRequestLifecycle_ClosesOnlyStalePendingRows(t *testing.T) {
 	chargedID := "req-life-charged-processing"
 	LOG_DB.Where("request_id IN ?", []string{staleID, freshID, chargedID}).Delete(&Log{})
 	pending := common.MapToJsonStr(map[string]interface{}{"billing_status": "pending"})
-	require.NoError(t, createLog(&Log{RequestId: staleID, Type: LogTypeProcessing, Content: "processing", Quota: 0, CreatedAt: now.Add(-staleProcessingLogTimeout - time.Second).Unix(), Other: pending}))
-	require.NoError(t, createLog(&Log{RequestId: freshID, Type: LogTypeProcessing, Content: "processing", Quota: 0, CreatedAt: now.Unix(), Other: pending}))
-	require.NoError(t, createLog(&Log{RequestId: chargedID, Type: LogTypeProcessing, Content: "processing", Quota: 1, CreatedAt: now.Add(-staleProcessingLogTimeout - time.Second).Unix(), Other: pending}))
+	require.NoError(t, createLog(&Log{RequestId: staleID, Type: LogTypeProcessing, Content: "processing", Quota: 0, CreatedAt: now.Add(-staleProcessingLogTimeout - time.Second).Unix(), BillingStatus: BillingStatusPending, Other: pending}))
+	require.NoError(t, createLog(&Log{RequestId: freshID, Type: LogTypeProcessing, Content: "processing", Quota: 0, CreatedAt: now.Unix(), BillingStatus: BillingStatusPending, Other: pending}))
+	require.NoError(t, createLog(&Log{RequestId: chargedID, Type: LogTypeProcessing, Content: "processing", Quota: 1, CreatedAt: now.Add(-staleProcessingLogTimeout - time.Second).Unix(), BillingStatus: BillingStatusPending, Other: pending}))
 
 	closed, err := CloseStaleProcessingLogs(now)
 	require.NoError(t, err)
@@ -143,7 +143,8 @@ func TestRequestLifecycle_ClosesOnlyStalePendingRows(t *testing.T) {
 	assert.Equal(t, LogTypeError, stale.Type)
 	assert.Contains(t, stale.Content, "408")
 	assert.Equal(t, LogTypeProcessing, fresh.Type)
-	assert.Equal(t, LogTypeProcessing, charged.Type)
+	assert.Equal(t, LogTypeError, charged.Type)
+	assert.Equal(t, BillingStatusSettlementFail, charged.BillingStatus)
 }
 
 func TestRequestLifecycle_ActiveLeaseSurvivesOldTimeout(t *testing.T) {
@@ -425,6 +426,7 @@ func TestRequestLifecycle_UsesConfiguredProcessingTimeout(t *testing.T) {
 	require.NoError(t, LOG_DB.Where("request_id = ?", outsideID).First(&outside).Error)
 	assert.Equal(t, LogTypeProcessing, inside.Type)
 	assert.Equal(t, LogTypeError, outside.Type)
+	assert.Equal(t, BillingStatusNoCharge, outside.BillingStatus)
 }
 
 func TestRequestLifecycle_ClosesLegacyEmptyOtherPendingRows(t *testing.T) {

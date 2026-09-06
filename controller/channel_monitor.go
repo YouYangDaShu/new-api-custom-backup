@@ -55,6 +55,7 @@ type monitorAdmin struct {
 	ExtraModels     []string               `json:"extra_models"`
 	IntervalSeconds int                    `json:"interval_seconds"`
 	Enabled         bool                   `json:"enabled"`
+	SortOrder       int                    `json:"sort_order"`
 	LastCheckedAt   int64                  `json:"last_checked_at"`
 	Models          map[string]monitorStat `json:"models"`
 	CreatedAt       int64                  `json:"created_at"`
@@ -187,7 +188,7 @@ func monitorBadRequest(c *gin.Context, err error) {
 
 func monitorAdminView(m model.ChannelMonitor, checks []model.ChannelMonitorCheck) monitorAdmin {
 	extra := parseMonitorModels(&m)
-	admin := monitorAdmin{ID: m.ID, Name: m.Name, Group: m.Group, PrimaryModel: m.PrimaryModel, ExtraModels: extra, IntervalSeconds: m.IntervalSeconds, Enabled: m.Enabled, LastCheckedAt: m.LastCheckedAt, Models: map[string]monitorStat{}, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt, ModuleEnabled: common.ChannelMonitorEnabled}
+	admin := monitorAdmin{ID: m.ID, Name: m.Name, Group: m.Group, PrimaryModel: m.PrimaryModel, ExtraModels: extra, IntervalSeconds: m.IntervalSeconds, Enabled: m.Enabled, SortOrder: m.SortOrder, LastCheckedAt: m.LastCheckedAt, Models: map[string]monitorStat{}, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt, ModuleEnabled: common.ChannelMonitorEnabled}
 	now := time.Now().Unix()
 	windows := []int64{int64(24 * time.Hour.Seconds()), int64(7 * 24 * time.Hour.Seconds()), int64(30 * 24 * time.Hour.Seconds())}
 	for _, name := range append([]string{m.PrimaryModel}, extra...) {
@@ -365,7 +366,7 @@ func AdminCreateChannelMonitor(c *gin.Context) {
 	if in.Enabled != nil {
 		enabled = *in.Enabled
 	}
-	row := model.ChannelMonitor{Name: strings.TrimSpace(name), Group: group, PrimaryModel: strings.TrimSpace(*in.PrimaryModel), ExtraModelsJSON: string(raw), IntervalSeconds: interval, Enabled: enabled}
+	row := model.ChannelMonitor{Name: strings.TrimSpace(name), Group: group, PrimaryModel: strings.TrimSpace(*in.PrimaryModel), ExtraModelsJSON: string(raw), IntervalSeconds: interval, Enabled: enabled, SortOrder: model.NextChannelMonitorSortOrder()}
 	if err := model.DB.Create(&row).Error; err != nil {
 		common.ApiError(c, err)
 		return
@@ -440,6 +441,45 @@ func AdminDeleteChannelMonitor(c *gin.Context) {
 			return err
 		}
 		return tx.Delete(&model.ChannelMonitor{}, idNum).Error
+	}); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, nil)
+}
+
+func AdminMoveChannelMonitor(c *gin.Context) {
+	id, err := parseMonitorID(c)
+	if err != nil {
+		monitorBadRequest(c, err)
+		return
+	}
+	var req struct {
+		Direction int `json:"direction"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &req); err != nil || (req.Direction != -1 && req.Direction != 1) {
+		monitorBadRequest(c, errors.New("direction must be -1 or 1"))
+		return
+	}
+	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		var current, neighbor model.ChannelMonitor
+		if err := tx.First(&current, id).Error; err != nil {
+			return err
+		}
+		q := tx.Where("sort_order < ? OR (sort_order = ? AND id < ?)", current.SortOrder, current.SortOrder, current.ID)
+		order := "sort_order desc, id desc"
+		if req.Direction > 0 {
+			q = tx.Where("sort_order > ? OR (sort_order = ? AND id > ?)", current.SortOrder, current.SortOrder, current.ID)
+			order = "sort_order asc, id asc"
+		}
+		if err := q.Order(order).First(&neighbor).Error; err != nil {
+			return err
+		}
+		old := current.SortOrder
+		if err := tx.Model(&current).Update("sort_order", neighbor.SortOrder).Error; err != nil {
+			return err
+		}
+		return tx.Model(&neighbor).Update("sort_order", old).Error
 	}); err != nil {
 		common.ApiError(c, err)
 		return

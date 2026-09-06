@@ -28,7 +28,10 @@ func TestGetLotteryIncludesRecentDraw(t *testing.T) {
 	operation_setting.USDExchangeRate = 1
 	require.NoError(t, model.SaveLotteryConfig(model.LotteryConfig{Enabled: true, Threshold: 20_000_000, Prizes: []model.LotteryPrize{{ID: "cash", Name: "Cash", Weight: 1}}, SchemaVersion: 2, Unit: "raw_quota"}))
 	require.NoError(t, db.Create(&model.UserLotteryProgress{UserID: 77}).Error)
-	require.NoError(t, db.Create(&model.LotteryDraw{UserID: 77, PrizeID: "cash", PrizeName: "Cash", PrizeAmount: 123, CreatedAt: 456}).Error)
+	require.NoError(t, db.Create(&[]model.LotteryDraw{
+		{UserID: 77, PrizeID: "cash", PrizeName: "Cash", PrizeAmount: 123, CreatedAt: 456},
+		{UserID: 77, PrizeID: "cash2", PrizeName: "Cash 2", PrizeAmount: 45, CreatedAt: 457},
+	}).Error)
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -40,16 +43,27 @@ func TestGetLotteryIncludesRecentDraw(t *testing.T) {
 	var response struct {
 		Data struct {
 			RecentDraw map[string]interface{} `json:"recent_draw"`
+			History    struct {
+				Items    []map[string]interface{} `json:"items"`
+				Total    int64                    `json:"total"`
+				PageSize int                      `json:"page_size"`
+			} `json:"history"`
 		} `json:"data"`
 	}
 	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
 	require.Equal(t, map[string]interface{}{
-		"id":           float64(1),
-		"prize_id":     "cash",
-		"prize_name":   "Cash",
-		"prize_amount": float64(123),
-		"created_at":   float64(456),
+		"id":           float64(2),
+		"prize_id":     "cash2",
+		"prize_name":   "Cash 2",
+		"prize_amount": float64(45),
+		"created_at":   float64(457),
 	}, response.Data.RecentDraw)
 	require.NotContains(t, response.Data.RecentDraw, "user_id")
 	require.NotContains(t, response.Data.RecentDraw, "weight")
+	require.Equal(t, int64(2), response.Data.History.Total)
+	require.Equal(t, 10, response.Data.History.PageSize)
+	require.Len(t, response.Data.History.Items, 2)
+	require.Equal(t, "Cash 2", response.Data.History.Items[0]["prize_name"])
+	require.NotContains(t, response.Data.History.Items[0], "user_id")
+	require.NotContains(t, response.Data.History.Items[0], "weight")
 }
