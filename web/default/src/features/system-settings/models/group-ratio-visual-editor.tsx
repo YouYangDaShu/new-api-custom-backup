@@ -26,7 +26,7 @@ import {
   Plus,
   Trash2,
 } from 'lucide-react'
-import { useState, useMemo, useEffect, useCallback, memo } from 'react'
+import { useState, useMemo, useEffect, useCallback, memo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
@@ -575,6 +575,7 @@ function GroupPricingTable({
       gptContextModes
     )
   )
+  const pendingEmitSignature = useRef<string | null>(null)
 
   useEffect(() => {
     const incomingSignature = sourceGroupPricingSignature(
@@ -584,6 +585,13 @@ function GroupPricingTable({
       membershipGroups,
       gptContextModes
     )
+    // emitRows updates several form fields in succession. Keep the edited rows
+    // while those callbacks are settling; otherwise an intermediate parent
+    // snapshot can rebuild the table and erase a newly selected context mode.
+    if (pendingEmitSignature.current !== null) {
+      if (pendingEmitSignature.current !== incomingSignature) return
+      pendingEmitSignature.current = null
+    }
     setRows((currentRows) => {
       if (groupPricingSignature(currentRows) === incomingSignature) {
         return currentRows
@@ -608,6 +616,13 @@ function GroupPricingTable({
     (nextRows: GroupPricingRow[]) => {
       setRows(nextRows)
       const serialized = serializeGroupPricingRows(nextRows)
+      pendingEmitSignature.current = sourceGroupPricingSignature(
+        serialized.GroupRatio,
+        serialized.UserUsableGroups,
+        serialized.TopupGroupRatio,
+        serialized.MembershipGroups,
+        serialized.GPTContextModes
+      )
       onChange('GroupRatio', serialized.GroupRatio)
       onChange('UserUsableGroups', serialized.UserUsableGroups)
       onChange('TopupGroupRatio', serialized.TopupGroupRatio)

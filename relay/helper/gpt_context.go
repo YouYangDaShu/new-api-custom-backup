@@ -16,13 +16,22 @@ const GPTLongContextThreshold = 272000
 // established long-context pricing rule.
 func IsGPTTextRelay(modelName string, relayMode int) bool {
 	name := strings.ToLower(strings.TrimSpace(modelName))
-	if !(name == "gpt-5.4" || strings.HasPrefix(name, "gpt-5.4-") || name == "gpt-5.5" || strings.HasPrefix(name, "gpt-5.5-")) {
+	if !strings.HasPrefix(name, "gpt-") || strings.HasPrefix(name, "gpt-oss") {
 		return false
 	}
-	if strings.Contains(name, "-image") || strings.Contains(name, "-audio") || strings.Contains(name, "-video") || strings.HasPrefix(name, "gpt-oss") {
+	if strings.Contains(name, "-image") || strings.Contains(name, "-audio") || strings.Contains(name, "-video") {
 		return false
 	}
 	return relayMode == relayconstant.RelayModeChatCompletions || relayMode == relayconstant.RelayModeCompletions || relayMode == relayconstant.RelayModeResponses
+}
+
+// DefaultGPTLongContextBillingExpr is the official GPT long-context rule used
+// when an administrator enables gpt_long_context for a group. An explicit
+// per-model tiered expression still takes precedence.
+const DefaultGPTLongContextBillingExpr = `len <= 272000 ? tier("standard", p * 2.5 + c * 15 + cr * 0.25) : tier("long_context", p * 5 + c * 22.5 + cr * 0.5)`
+
+func GPTGroupUsesTieredBilling(modelName string, relayMode int, group string) bool {
+	return IsGPTTextRelay(modelName, relayMode) && GPTContextModeForGroup(group) == dto.GPTContextModeLongContext
 }
 
 func GPTContextModeForGroup(group string) dto.GPTContextMode {

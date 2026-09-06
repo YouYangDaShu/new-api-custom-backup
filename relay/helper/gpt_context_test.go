@@ -12,7 +12,7 @@ import (
 func TestGPTContextEligibilityAndTwoChoicePolicy(t *testing.T) {
 	require.True(t, IsGPTTextRelay("gpt-5.4", relayconstant.RelayModeResponses))
 	require.True(t, IsGPTTextRelay("gpt-5.5-pro", relayconstant.RelayModeChatCompletions))
-	require.False(t, IsGPTTextRelay("gpt-4.1", relayconstant.RelayModeResponses))
+	require.True(t, IsGPTTextRelay("gpt-4.1", relayconstant.RelayModeResponses))
 	require.False(t, IsGPTTextRelay("gpt-5.4-image", relayconstant.RelayModeResponses))
 	require.Error(t, ValidateGPTContextMode("unsupported"))
 
@@ -21,6 +21,16 @@ func TestGPTContextEligibilityAndTwoChoicePolicy(t *testing.T) {
 	require.NoError(t, ratio_setting.UpdateGPTContextModesByJSONString(`{"long":"gpt_long_context"}`))
 	require.Equal(t, dto.GPTContextModeLongContext, GPTContextModeForGroup("long"))
 	require.Equal(t, dto.GPTContextModeStandard, GPTContextModeForGroup("missing"))
+}
+
+func TestGPTGroupUsesTieredBillingForAnyGPTTextModel(t *testing.T) {
+	original := ratio_setting.GPTContextModes2JSONString()
+	t.Cleanup(func() { _ = ratio_setting.UpdateGPTContextModesByJSONString(original) })
+	require.NoError(t, ratio_setting.UpdateGPTContextModesByJSONString(`{"long":"gpt_long_context"}`))
+	require.True(t, GPTGroupUsesTieredBilling("gpt-5.6-sol", relayconstant.RelayModeResponses, "long"))
+	require.True(t, GPTGroupUsesTieredBilling("gpt-4.1", relayconstant.RelayModeChatCompletions, "long"))
+	require.False(t, GPTGroupUsesTieredBilling("gpt-image-1", relayconstant.RelayModeResponses, "long"))
+	require.False(t, GPTGroupUsesTieredBilling("claude-sonnet", relayconstant.RelayModeResponses, "long"))
 }
 
 func TestGPTContextExpressionAndLengthPolicy(t *testing.T) {

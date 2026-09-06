@@ -63,6 +63,11 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 
 	groupRatioInfo := HandleGroupRatio(c, info)
 
+	// A GPT group explicitly marked gpt_long_context uses the official GPT
+	// expression even when no model-specific billing_setting entry exists.
+	if GPTGroupUsesTieredBilling(info.OriginModelName, info.RelayMode, info.UsingGroup) {
+		return modelPriceHelperTieredExpr(c, info, promptTokens, meta, groupRatioInfo, DefaultGPTLongContextBillingExpr)
+	}
 	// Check if this model uses tiered_expr billing
 	if billing_setting.GetBillingMode(info.OriginModelName) == billing_setting.BillingModeTieredExpr {
 		return modelPriceHelperTiered(c, info, promptTokens, meta, groupRatioInfo)
@@ -237,10 +242,10 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, promptT
 	if !ok {
 		return types.PriceData{}, fmt.Errorf("model %s is configured as tiered_expr but has no billing expression", info.OriginModelName)
 	}
+	return modelPriceHelperTieredExpr(c, info, promptTokens, meta, groupRatioInfo, exprStr)
+}
 
-	if err := ValidateGPTLongContextBillingExpr(info.OriginModelName, info.RelayMode, promptTokens, exprStr, info.UsingGroup); err != nil {
-		return types.PriceData{}, err
-	}
+func modelPriceHelperTieredExpr(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta, groupRatioInfo types.GroupRatioInfo, exprStr string) (types.PriceData, error) {
 	estimatedPromptTokens := promptTokens
 	estimatedPromptLen := promptTokens
 	estimatedCompletionTokens := 0
