@@ -33,10 +33,13 @@ describe('dashboard date range presets', () => {
     assert.deepEqual(range.start, new Date(2026, 6, 19, 0, 0, 0, 0))
     assert.deepEqual(range.end, now)
     assert.equal(
-      detectDashboardRangePresetDays({
-        start_timestamp: range.start,
-        end_timestamp: range.end,
-      }),
+      detectDashboardRangePresetDays(
+        {
+          start_timestamp: range.start,
+          end_timestamp: range.end,
+        },
+        now
+      ),
       0
     )
   })

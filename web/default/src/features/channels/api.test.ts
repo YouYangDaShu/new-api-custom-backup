@@ -37,9 +37,15 @@ vi.mock('@/features/users/api', () => ({
 
 describe('channel collection API paths', () => {
   beforeEach(() => {
-    vi.mocked(api.get).mockReset().mockResolvedValue({ data: {} })
-    vi.mocked(api.post).mockReset().mockResolvedValue({ data: {} })
-    vi.mocked(api.put).mockReset().mockResolvedValue({ data: {} })
+    ;(api.get as unknown as ReturnType<typeof vi.fn>)
+      .mockReset()
+      .mockResolvedValue({ data: {} })
+    ;(api.post as unknown as ReturnType<typeof vi.fn>)
+      .mockReset()
+      .mockResolvedValue({ data: {} })
+    ;(api.put as unknown as ReturnType<typeof vi.fn>)
+      .mockReset()
+      .mockResolvedValue({ data: {} })
   })
 
   test('uses the trailing-slash collection path for GET', async () => {
