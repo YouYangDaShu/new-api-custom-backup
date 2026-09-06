@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Code2, Eye, HelpCircle } from 'lucide-react'
-import { memo, useCallback, useMemo, useState, type ReactNode } from 'react'
+import { memo, useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { UseFormReturn } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 
@@ -80,6 +80,15 @@ type GroupRatioFormProps = {
   isSaving: boolean
 }
 
+type VisualGroupValues = Pick<
+  GroupFormValues,
+  | 'GroupRatio'
+  | 'UserUsableGroups'
+  | 'TopupGroupRatio'
+  | 'MembershipGroups'
+  | 'GPTContextModes'
+>
+
 export const GroupRatioForm = memo(function GroupRatioForm({
   form,
   onSave,
@@ -88,6 +97,7 @@ export const GroupRatioForm = memo(function GroupRatioForm({
   const { t } = useTranslation()
   const [editMode, setEditMode] = useState<'visual' | 'json'>('visual')
   const [guideOpen, setGuideOpen] = useState(false)
+  const visualValuesRef = useRef<VisualGroupValues | null>(null)
 
   const handleFieldChange = useCallback(
     (field: keyof GroupFormValues, value: string) => {
@@ -100,6 +110,7 @@ export const GroupRatioForm = memo(function GroupRatioForm({
   )
 
   const toggleEditMode = useCallback(() => {
+    visualValuesRef.current = null
     setEditMode((prev) => (prev === 'visual' ? 'json' : 'visual'))
   }, [])
 
@@ -163,7 +174,9 @@ export const GroupRatioForm = memo(function GroupRatioForm({
                 document.activeElement.blur()
               }
               window.setTimeout(() => {
-                void form.handleSubmit(onSave)()
+                void form.handleSubmit((values) =>
+                  onSave({ ...values, ...(visualValuesRef.current ?? {}) })
+                )()
               }, 0)
             }}
             disabled={isSaving}
@@ -185,6 +198,13 @@ export const GroupRatioForm = memo(function GroupRatioForm({
               onChange={(field, value) =>
                 handleFieldChange(field as keyof GroupFormValues, value)
               }
+              onSerializedChange={(values) => {
+                visualValuesRef.current = values
+                form.setValue('GPTContextModes', values.GPTContextModes, {
+                  shouldValidate: true,
+                  shouldDirty: true,
+                })
+              }}
             />
 
             <GroupSpecialUsableRulesEditor

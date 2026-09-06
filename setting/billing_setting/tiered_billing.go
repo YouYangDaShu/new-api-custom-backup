@@ -9,10 +9,11 @@ import (
 )
 
 const (
-	BillingModeRatio      = "ratio"
-	BillingModeTieredExpr = "tiered_expr"
-	BillingModeField      = "billing_mode"
-	BillingExprField      = "billing_expr"
+	BillingModeRatio                 = "ratio"
+	BillingModeTieredExpr            = "tiered_expr"
+	BillingModeField                 = "billing_mode"
+	BillingExprField                 = "billing_expr"
+	DefaultGPTLongContextBillingExpr = `len <= 272000 ? tier("standard", p * 2.5 + c * 15 + cr * 0.25) : tier("long_context", p * 5 + c * 22.5 + cr * 0.5)`
 )
 
 // BillingSetting is managed by config.GlobalConfig.Register.

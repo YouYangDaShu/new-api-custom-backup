@@ -414,7 +414,10 @@ export function RatioSettingsCard({
       }
 
       groupNormalizedDefaults.current = normalized
-      queryClient.invalidateQueries({ queryKey: ['system-options'] })
+      await queryClient.refetchQueries({
+        queryKey: ['system-options'],
+        type: 'active',
+      })
       toast.success(t('Setting updated successfully'))
     },
     [queryClient, t]
