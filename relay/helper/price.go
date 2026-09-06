@@ -246,6 +246,9 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, promptT
 }
 
 func modelPriceHelperTieredExpr(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta, groupRatioInfo types.GroupRatioInfo, exprStr string) (types.PriceData, error) {
+	if err := ValidateGPTLongContextBillingExpr(info.OriginModelName, info.RelayMode, promptTokens, exprStr, info.UsingGroup); err != nil {
+		return types.PriceData{}, err
+	}
 	estimatedPromptTokens := promptTokens
 	estimatedPromptLen := promptTokens
 	estimatedCompletionTokens := 0
