@@ -29,6 +29,7 @@ type ChannelMonitor struct {
 	ExtraModelsJSON string `json:"-" gorm:"type:text"`
 	IntervalSeconds int    `json:"interval_seconds" gorm:"not null"`
 	Enabled         bool   `json:"enabled" gorm:"not null"`
+	SortOrder       int    `json:"sort_order" gorm:"not null;index"`
 	LastCheckedAt   int64  `json:"last_checked_at" gorm:"index"`
 	CreatedAt       int64  `json:"created_at"`
 	UpdatedAt       int64  `json:"updated_at"`
@@ -78,8 +79,14 @@ func GetChannelMonitor(id int64) (*ChannelMonitor, error) {
 
 func ListChannelMonitors() ([]ChannelMonitor, error) {
 	var rows []ChannelMonitor
-	err := DB.Order("id asc").Find(&rows).Error
+	err := DB.Order("sort_order asc, id asc").Find(&rows).Error
 	return rows, err
+}
+
+func NextChannelMonitorSortOrder() int {
+	var max int
+	DB.Model(&ChannelMonitor{}).Select("COALESCE(MAX(sort_order), -1)").Scan(&max)
+	return max + 1
 }
 
 func ListChannelMonitorChecks(monitorID int64, since int64, limit int) ([]ChannelMonitorCheck, error) {

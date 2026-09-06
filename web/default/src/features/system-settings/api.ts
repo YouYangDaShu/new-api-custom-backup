@@ -41,6 +41,13 @@ export async function updateSystemOption(request: UpdateOptionRequest) {
   return res.data
 }
 
+export async function updateSystemOptionsBulk(values: Record<string, string>) {
+  const res = await api.put<UpdateOptionResponse>('/api/option/bulk', {
+    values,
+  })
+  return res.data
+}
+
 export async function confirmPaymentCompliance() {
   const res = await api.post<ConfirmPaymentComplianceResponse>(
     '/api/option/payment_compliance',

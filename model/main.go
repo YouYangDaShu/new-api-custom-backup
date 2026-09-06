@@ -268,6 +268,15 @@ func migrateDB() error {
 		return err
 	}
 
+	// SQLite cannot add a NOT NULL column to a populated table without a default.
+	// Give legacy channel monitors a stable zero value before AutoMigrate adds the index.
+	if err := ensureChannelMonitorSortOrderSQLite(); err != nil {
+		return err
+	}
+	if err := ensureLogFinishedAtSQLite(); err != nil {
+		return err
+	}
+
 	err := DB.AutoMigrate(
 		&Channel{},
 		&Token{},
@@ -424,6 +433,9 @@ func migrateClickHouseLogDB() error {
 	if err := LOG_DB.Exec(clickHouseLogCreateTableSQL(ttlDays)).Error; err != nil {
 		return err
 	}
+	if err := LOG_DB.Exec("ALTER TABLE logs ADD COLUMN IF NOT EXISTS finished_at Int64 DEFAULT 0").Error; err != nil {
+		return err
+	}
 	return syncClickHouseLogTTL(ttlDays)
 }
 
@@ -456,6 +468,7 @@ CREATE TABLE IF NOT EXISTS logs (
 	id Int64 DEFAULT 0,
 	user_id Int32 DEFAULT 0,
 	created_at Int64 DEFAULT 0,
+	finished_at Int64 DEFAULT 0,
 	type Int32 DEFAULT 0,
 	content String DEFAULT '',
 	username String DEFAULT '',
@@ -511,6 +524,32 @@ func clickHouseCreateTableHasTTL(createTableSQL string) bool {
 type sqliteColumnDef struct {
 	Name string
 	DDL  string
+}
+
+func ensureChannelMonitorSortOrderSQLite() error {
+	if !common.UsingMainDatabase(common.DatabaseTypeSQLite) || !DB.Migrator().HasTable("channel_monitors") {
+		return nil
+	}
+	if DB.Migrator().HasColumn(&ChannelMonitor{}, "sort_order") {
+		return nil
+	}
+	if err := DB.Exec("ALTER TABLE `channel_monitors` ADD COLUMN `sort_order` integer DEFAULT 0").Error; err != nil {
+		return err
+	}
+	return DB.Exec("UPDATE `channel_monitors` SET `sort_order` = `id` WHERE `sort_order` = 0").Error
+}
+
+func ensureLogFinishedAtSQLite() error {
+	if !common.UsingMainDatabase(common.DatabaseTypeSQLite) || !DB.Migrator().HasTable("logs") {
+		return nil
+	}
+	if DB.Migrator().HasColumn(&Log{}, "finished_at") {
+		return nil
+	}
+	if err := DB.Exec("ALTER TABLE `logs` ADD COLUMN `finished_at` integer DEFAULT 0").Error; err != nil {
+		return err
+	}
+	return nil
 }
 
 func ensureSubscriptionPlanTableSQLite() error {

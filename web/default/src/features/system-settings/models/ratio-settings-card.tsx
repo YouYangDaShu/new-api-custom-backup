@@ -27,7 +27,7 @@ import * as z from 'zod'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
-import { resetModelRatios } from '../api'
+import { resetModelRatios, updateSystemOptionsBulk } from '../api'
 import { SettingsPageTitleStatusPortal } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
@@ -398,12 +398,26 @@ export function RatioSettingsCard({
         (key) => normalized[key] !== groupNormalizedDefaults.current[key]
       )
 
+      if (updates.length === 0) {
+        toast.info(t('No group ratio changes to save'))
+        return
+      }
+
+      const payload: Record<string, string> = {}
       for (const key of updates) {
         const apiKey = apiKeyMap[key] || key
-        await updateOption.mutateAsync({ key: apiKey, value: normalized[key] })
+        payload[apiKey] = String(normalized[key])
       }
+      const response = await updateSystemOptionsBulk(payload)
+      if (!response.success) {
+        throw new Error(response.message || t('Failed to update setting'))
+      }
+
+      groupNormalizedDefaults.current = normalized
+      queryClient.invalidateQueries({ queryKey: ['system-options'] })
+      toast.success(t('Setting updated successfully'))
     },
-    [updateOption]
+    [queryClient, t]
   )
 
   const handleResetRatios = useCallback(() => {

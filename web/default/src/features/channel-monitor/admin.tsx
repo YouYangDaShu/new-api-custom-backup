@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { isAxiosError } from 'axios'
+import { ArrowDown, ArrowUp } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -20,6 +21,7 @@ import {
   deleteChannelMonitor,
   getAdminChannelMonitors,
   getChannelMonitorModels,
+  moveChannelMonitor,
   runChannelMonitor,
   updateChannelMonitor,
   updateChannelMonitorConfig,
@@ -280,6 +282,14 @@ export function ChannelMonitorAdminPage() {
       void client.invalidateQueries({ queryKey: ['admin-channel-monitors'] }),
     onError: () => setError(t('Unable to delete channel monitor')),
   })
+  const move = useMutation({
+    mutationFn: ({ id, direction }: { id: number; direction: 'up' | 'down' }) =>
+      moveChannelMonitor(id, direction),
+    onSuccess: () =>
+      void client.invalidateQueries({ queryKey: ['admin-channel-monitors'] }),
+    onError: () => setError(t('Unable to reorder channel monitor')),
+  })
+
   const run = useMutation({
     mutationFn: runChannelMonitor,
     onSuccess: () =>
@@ -532,7 +542,7 @@ export function ChannelMonitorAdminPage() {
         </p>
       )}
       <div className='space-y-3'>
-        {(query.data?.data ?? []).map((row) => (
+        {(query.data?.data ?? []).map((row, index) => (
           <section className='rounded-lg border p-4' key={row.id}>
             <div className='flex flex-wrap items-start justify-between gap-3'>
               <div>
@@ -548,6 +558,8 @@ export function ChannelMonitorAdminPage() {
                 </div>
               </div>
               <div className='flex flex-wrap gap-2'>
+                <button type='button' className='rounded-md border p-1.5' title={t('Move monitor up')} aria-label={t('Move monitor up')} disabled={move.isPending || index === 0} onClick={() => move.mutate({ id: row.id, direction: 'up' })}><ArrowUp className='size-4' /></button>
+                <button type='button' className='rounded-md border p-1.5' title={t('Move monitor down')} aria-label={t('Move monitor down')} disabled={move.isPending || index === (query.data?.data.length ?? 1) - 1} onClick={() => move.mutate({ id: row.id, direction: 'down' })}><ArrowDown className='size-4' /></button>
                 <button
                   type='button'
                   className='rounded-md border px-3 py-1.5 text-sm'
