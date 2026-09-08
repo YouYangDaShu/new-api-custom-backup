@@ -63,11 +63,6 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 
 	groupRatioInfo := HandleGroupRatio(c, info)
 
-	// A GPT group explicitly marked gpt_long_context uses the official GPT
-	// expression even when no model-specific billing_setting entry exists.
-	if GPTGroupUsesTieredBilling(info.OriginModelName, info.RelayMode, info.UsingGroup) {
-		return modelPriceHelperTieredExpr(c, info, promptTokens, meta, groupRatioInfo, DefaultGPTLongContextBillingExpr)
-	}
 	// Check if this model uses tiered_expr billing
 	if billing_setting.GetBillingMode(info.OriginModelName) == billing_setting.BillingModeTieredExpr {
 		return modelPriceHelperTiered(c, info, promptTokens, meta, groupRatioInfo)
@@ -246,9 +241,6 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, promptT
 }
 
 func modelPriceHelperTieredExpr(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta, groupRatioInfo types.GroupRatioInfo, exprStr string) (types.PriceData, error) {
-	if err := ValidateGPTLongContextBillingExpr(info.OriginModelName, info.RelayMode, promptTokens, exprStr, info.UsingGroup); err != nil {
-		return types.PriceData{}, err
-	}
 	estimatedPromptTokens := promptTokens
 	estimatedPromptLen := promptTokens
 	estimatedCompletionTokens := 0
@@ -261,12 +253,10 @@ func modelPriceHelperTieredExpr(c *gin.Context, info *relaycommon.RelayInfo, pro
 		return types.PriceData{}, err
 	}
 
-	contextMode := GPTContextModeForGroup(info.UsingGroup)
-	exprLen := NormalizeGPTContextLen(info.OriginModelName, info.RelayMode, promptTokens, contextMode)
 	rawCost, trace, err := billingexpr.RunExprWithRequest(exprStr, billingexpr.TokenParams{
 		P:   float64(estimatedPromptTokens),
 		C:   float64(estimatedCompletionTokens),
-		Len: float64(exprLen),
+		Len: float64(promptTokens),
 	}, requestInput)
 	if err != nil {
 		return types.PriceData{}, fmt.Errorf("model %s tiered expr run failed: %w", info.OriginModelName, err)
@@ -292,7 +282,6 @@ func modelPriceHelperTieredExpr(c *gin.Context, info *relaycommon.RelayInfo, pro
 		GroupRatio:                groupRatioInfo.GroupRatio,
 		EstimatedPromptTokens:     estimatedPromptTokens,
 		EstimatedPromptLen:        estimatedPromptLen,
-		GPTContextMode:            string(contextMode),
 		EstimatedCompletionTokens: estimatedCompletionTokens,
 		EstimatedQuotaBeforeGroup: quotaBeforeGroup,
 		EstimatedQuotaAfterGroup:  preConsumedQuota,

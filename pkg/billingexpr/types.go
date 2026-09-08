@@ -46,7 +46,6 @@ type BillingSnapshot struct {
 	GroupRatio                float64 `json:"group_ratio"`
 	EstimatedPromptTokens     int     `json:"estimated_prompt_tokens"`
 	EstimatedPromptLen        int     `json:"estimated_prompt_len"`
-	GPTContextMode            string  `json:"gpt_context_mode,omitempty"`
 	EstimatedCompletionTokens int     `json:"estimated_completion_tokens"`
 	EstimatedQuotaBeforeGroup float64 `json:"estimated_quota_before_group"`
 	EstimatedQuotaAfterGroup  int     `json:"estimated_quota_after_group"`

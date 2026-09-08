@@ -80,14 +80,12 @@ type GroupRatioVisualEditorProps = {
   autoGroups: string
   groupSpecialUsableGroup: string
   membershipGroups: string
-  gptContextModes: string
   onChange: (field: string, value: string) => void
   onSerializedChange?: (values: {
     GroupRatio: string
     UserUsableGroups: string
     TopupGroupRatio: string
     MembershipGroups: string
-    GPTContextModes: string
   }) => void
 }
 
@@ -100,7 +98,6 @@ type GroupPricingRow = {
   selectable: boolean
   membership: boolean
   description: string
-  gptContextMode: 'standard' | 'gpt_long_context'
 }
 
 type RegistryEntry = {
@@ -213,17 +210,12 @@ function buildGroupPricingRows(
   groupRatio: string,
   userUsableGroups: string,
   topupGroupRatio: string,
-  membershipGroups: string,
-  gptContextModes: string
+  membershipGroups: string
 ): GroupPricingRow[] {
   const ratioMap = parseRatioMap(groupRatio)
   const usableMap = parseUsableMap(userUsableGroups)
   const topupMap = parseRatioMap(topupGroupRatio)
   const membershipMap = parseMembershipMap(membershipGroups)
-  const contextModes = safeJsonParse<Record<string, string>>(gptContextModes, {
-    fallback: {},
-    silent: true,
-  })
   const hasMembershipConfig = Object.keys(membershipMap).length > 0
   // Preserve key order from GroupRatio (manual ↑↓). Only append missing names.
   const orderedNames: string[] = []
@@ -258,10 +250,6 @@ function buildGroupPricingRows(
       selectable: membership ? false : Object.hasOwn(usableMap, name),
       membership,
       description: String(usableMap[name] ?? ''),
-      gptContextMode:
-        contextModes[name] === 'gpt_long_context'
-          ? 'gpt_long_context'
-          : 'standard',
     }
   })
 }
@@ -271,7 +259,6 @@ function serializeGroupPricingRows(rows: GroupPricingRow[]) {
   const userUsableGroups: Record<string, string> = {}
   const topupGroupRatio: Record<string, number> = {}
   const membershipGroups: Record<string, boolean> = {}
-  const gptContextModes: Record<string, string> = {}
 
   for (const row of rows) {
     const name = row.name.trim()
@@ -287,7 +274,6 @@ function serializeGroupPricingRows(rows: GroupPricingRow[]) {
     if (topup !== '' && Number.isFinite(Number(topup))) {
       topupGroupRatio[name] = Number(topup)
     }
-    if (!row.membership) gptContextModes[name] = row.gptContextMode
   }
 
   return {
@@ -295,7 +281,6 @@ function serializeGroupPricingRows(rows: GroupPricingRow[]) {
     UserUsableGroups: JSON.stringify(userUsableGroups, null, 2),
     TopupGroupRatio: JSON.stringify(topupGroupRatio, null, 2),
     MembershipGroups: JSON.stringify(membershipGroups, null, 2),
-    GPTContextModes: JSON.stringify(gptContextModes, null, 2),
   }
 }
 
@@ -308,10 +293,6 @@ function groupPricingSignature(rows: GroupPricingRow[]): string {
     userUsableGroups: parseUsableMap(serialized.UserUsableGroups),
     topupGroupRatio: parseRatioMap(serialized.TopupGroupRatio),
     membershipGroups: parseMembershipMap(serialized.MembershipGroups),
-    gptContextModes: safeJsonParse<Record<string, string>>(
-      serialized.GPTContextModes,
-      { fallback: {}, silent: true }
-    ),
   })
 }
 
@@ -319,8 +300,7 @@ function sourceGroupPricingSignature(
   groupRatio: string,
   userUsableGroups: string,
   topupGroupRatio: string,
-  membershipGroups: string,
-  gptContextModes: string
+  membershipGroups: string
 ): string {
   return JSON.stringify({
     order: Object.keys(parseRatioMap(groupRatio)),
@@ -328,10 +308,6 @@ function sourceGroupPricingSignature(
     userUsableGroups: parseUsableMap(userUsableGroups),
     topupGroupRatio: parseRatioMap(topupGroupRatio),
     membershipGroups: parseMembershipMap(membershipGroups),
-    gptContextModes: safeJsonParse<Record<string, string>>(gptContextModes, {
-      fallback: {},
-      silent: true,
-    }),
   })
 }
 
@@ -392,7 +368,6 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
   autoGroups,
   groupSpecialUsableGroup,
   membershipGroups,
-  gptContextModes,
   onChange,
   onSerializedChange,
 }: GroupRatioVisualEditorProps) {
@@ -466,7 +441,6 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
         userUsableGroups={userUsableGroups}
         topupGroupRatio={topupGroupRatio}
         membershipGroups={membershipGroups}
-        gptContextModes={gptContextModes}
         onChange={onChange}
         onSerializedChange={onSerializedChange}
         onShowDetail={setDetailGroup}
@@ -560,14 +534,12 @@ type GroupPricingTableProps = {
   userUsableGroups: string
   topupGroupRatio: string
   membershipGroups: string
-  gptContextModes: string
   onChange: (field: string, value: string) => void
   onSerializedChange?: (values: {
     GroupRatio: string
     UserUsableGroups: string
     TopupGroupRatio: string
     MembershipGroups: string
-    GPTContextModes: string
   }) => void
   onShowDetail: (name: string) => void
 }
@@ -577,7 +549,6 @@ function GroupPricingTable({
   userUsableGroups,
   topupGroupRatio,
   membershipGroups,
-  gptContextModes,
   onChange,
   onSerializedChange,
   onShowDetail,
@@ -589,7 +560,6 @@ function GroupPricingTable({
       userUsableGroups,
       topupGroupRatio,
       membershipGroups,
-      gptContextModes
     )
   )
   const pendingEmitSignature = useRef<string | null>(null)
@@ -600,7 +570,6 @@ function GroupPricingTable({
       userUsableGroups,
       topupGroupRatio,
       membershipGroups,
-      gptContextModes
     )
     // emitRows updates several form fields in succession. Keep the edited rows
     // while those callbacks are settling; otherwise an intermediate parent
@@ -618,7 +587,6 @@ function GroupPricingTable({
         userUsableGroups,
         topupGroupRatio,
         membershipGroups,
-        gptContextModes
       )
     })
   }, [
@@ -626,7 +594,6 @@ function GroupPricingTable({
     userUsableGroups,
     topupGroupRatio,
     membershipGroups,
-    gptContextModes,
   ])
 
   const emitRows = useCallback(
@@ -639,13 +606,11 @@ function GroupPricingTable({
         serialized.UserUsableGroups,
         serialized.TopupGroupRatio,
         serialized.MembershipGroups,
-        serialized.GPTContextModes
       )
       onChange('GroupRatio', serialized.GroupRatio)
       onChange('UserUsableGroups', serialized.UserUsableGroups)
       onChange('TopupGroupRatio', serialized.TopupGroupRatio)
       onChange('MembershipGroups', serialized.MembershipGroups)
-      onChange('GPTContextModes', serialized.GPTContextModes)
     },
     [onChange, onSerializedChange]
   )
@@ -702,7 +667,6 @@ function GroupPricingTable({
         selectable: true,
         membership: false,
         description: '',
-        gptContextMode: 'standard',
       },
     ])
   }, [emitRows, rows])
@@ -850,57 +814,6 @@ function GroupPricingTable({
                     }}
                   />
                 ),
-              },
-              {
-                id: 'gpt-context-mode',
-                header: t('GPT long-context tiered billing'),
-                className: 'w-[220px] min-w-[210px]',
-                cell: (row) => {
-                  const checked = row.gptContextMode === 'gpt_long_context'
-                  return row.membership ? (
-                    <span className='text-muted-foreground px-3 text-sm'>
-                      -
-                    </span>
-                  ) : (
-                    <div className='flex items-center gap-2'>
-                      <Checkbox
-                        checked={checked}
-                        onCheckedChange={(value) => {
-                          const nextMode: GroupPricingRow['gptContextMode'] =
-                            value === true ? 'gpt_long_context' : 'standard'
-                          const nextRows = rows.map((candidate) =>
-                            candidate._id === row._id
-                              ? { ...candidate, gptContextMode: nextMode }
-                              : candidate
-                          )
-                          const serialized = serializeGroupPricingRows(nextRows)
-                          setRows(nextRows)
-                          onSerializedChange?.(serialized)
-                          pendingEmitSignature.current = sourceGroupPricingSignature(
-                            serialized.GroupRatio,
-                            serialized.UserUsableGroups,
-                            serialized.TopupGroupRatio,
-                            serialized.MembershipGroups,
-                            serialized.GPTContextModes
-                          )
-                          onChange('GPTContextModes', serialized.GPTContextModes)
-                        }}
-                        aria-label={t('Enable GPT long-context tiered billing')}
-                      />
-                      <span
-                        className={
-                          checked
-                            ? 'text-success text-sm font-medium'
-                            : 'text-muted-foreground text-sm'
-                        }
-                      >
-                        {checked
-                          ? t('Tiered pricing enabled')
-                          : t('Standard pricing')}
-                      </span>
-                    </div>
-                  )
-                },
               },
               {
                 id: 'membership',

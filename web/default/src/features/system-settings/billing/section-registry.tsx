@@ -50,7 +50,6 @@ const getGroupDefaults = (settings: BillingSettings) => ({
   GroupSpecialUsableGroup:
     settings['group_ratio_setting.group_special_usable_group'],
   MembershipGroups: settings['group_ratio_setting.membership_groups'] || '{}',
-  GPTContextModes: settings['group_ratio_setting.gpt_context_modes'] || '{}',
 })
 
 const BILLING_SECTIONS = [

@@ -130,7 +130,6 @@ const createGroupSchema = (t: Translate) =>
     DefaultUseAutoGroup: z.boolean(),
     GroupSpecialUsableGroup: createJsonStringField(t),
     MembershipGroups: createJsonStringField(t),
-    GPTContextModes: createJsonStringField(t),
   })
 
 type ModelFormValues = z.infer<ReturnType<typeof createModelSchema>>
@@ -205,7 +204,6 @@ export function RatioSettingsCard({
     MembershipGroups: normalizeJsonString(
       groupDefaults.MembershipGroups || '{}'
     ),
-    GPTContextModes: normalizeJsonString(groupDefaults.GPTContextModes || '{}'),
   })
   const modelSchema = useMemo(() => createModelSchema(t), [t])
   const groupSchema = useMemo(() => createGroupSchema(t), [t])
@@ -245,9 +243,6 @@ export function RatioSettingsCard({
       ),
       MembershipGroups: formatJsonForTextarea(
         groupDefaults.MembershipGroups || '{}'
-      ),
-      GPTContextModes: formatJsonForTextarea(
-        groupDefaults.GPTContextModes || '{}'
       ),
     },
   })
@@ -301,9 +296,6 @@ export function RatioSettingsCard({
       MembershipGroups: normalizeJsonString(
         groupDefaults.MembershipGroups || '{}'
       ),
-      GPTContextModes: normalizeJsonString(
-        groupDefaults.GPTContextModes || '{}'
-      ),
     }
 
     groupForm.reset({
@@ -318,9 +310,6 @@ export function RatioSettingsCard({
       ),
       MembershipGroups: formatJsonForTextarea(
         groupDefaults.MembershipGroups || '{}'
-      ),
-      GPTContextModes: formatJsonForTextarea(
-        groupDefaults.GPTContextModes || '{}'
       ),
     })
   }, [groupDefaults, groupForm])
@@ -381,7 +370,6 @@ export function RatioSettingsCard({
           values.GroupSpecialUsableGroup
         ),
         MembershipGroups: normalizeJsonString(values.MembershipGroups || '{}'),
-        GPTContextModes: normalizeJsonString(values.GPTContextModes || '{}'),
       }
 
       // Map form field names to API keys (most are 1:1, except nested group_ratio_setting)
@@ -389,7 +377,6 @@ export function RatioSettingsCard({
         GroupSpecialUsableGroup:
           'group_ratio_setting.group_special_usable_group',
         MembershipGroups: 'group_ratio_setting.membership_groups',
-        GPTContextModes: 'group_ratio_setting.gpt_context_modes',
       }
 
       const updates = (

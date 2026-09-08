@@ -107,25 +107,6 @@ func GetModelSupportEndpointTypes(model string) []constant.EndpointType {
 	return make([]constant.EndpointType, 0)
 }
 
-func isGPTTextModel(modelName string) bool {
-	name := strings.ToLower(strings.TrimSpace(modelName))
-	if !strings.HasPrefix(name, "gpt-") || strings.HasPrefix(name, "gpt-oss") {
-		return false
-	}
-	return !strings.Contains(name, "-image") &&
-		!strings.Contains(name, "-audio") &&
-		!strings.Contains(name, "-video")
-}
-
-func hasGPTLongContextGroup(groups []string) bool {
-	for _, group := range groups {
-		if mode, ok := ratio_setting.GetGPTContextMode(group); ok && mode == "gpt_long_context" {
-			return true
-		}
-	}
-	return false
-}
-
 func updatePricing() {
 	//modelRatios := common.GetModelRatios()
 	enableAbilities, err := GetAllEnableAbilityWithChannels()
@@ -355,9 +336,6 @@ func updatePricing() {
 				pricing.BillingMode = billingMode
 				pricing.BillingExpr = expr
 			}
-		} else if isGPTTextModel(model) && hasGPTLongContextGroup(groups.Items()) {
-			pricing.BillingMode = billing_setting.BillingModeTieredExpr
-			pricing.BillingExpr = billing_setting.DefaultGPTLongContextBillingExpr
 		}
 		pricingMap = append(pricingMap, pricing)
 	}

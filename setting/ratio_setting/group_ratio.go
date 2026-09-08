@@ -24,7 +24,6 @@ var defaultGroupGroupRatio = map[string]map[string]float64{
 }
 
 var groupGroupRatioMap = types.NewRWMap[string, map[string]float64]()
-var gptContextModeMap = types.NewRWMap[string, string]()
 
 var defaultGroupSpecialUsableGroup = map[string]map[string]string{
 	"vip": {
@@ -48,8 +47,7 @@ type GroupRatioSetting struct {
 	GroupGroupRatio         *types.RWMap[string, map[string]float64] `json:"group_group_ratio"`
 	GroupSpecialUsableGroup *types.RWMap[string, map[string]string]  `json:"group_special_usable_group"`
 	// MembershipGroups: group name -> true means membership tier (discount only, not token-selectable).
-	MembershipGroups *types.RWMap[string, bool]   `json:"membership_groups"`
-	GPTContextModes  *types.RWMap[string, string] `json:"gpt_context_modes"`
+	MembershipGroups *types.RWMap[string, bool] `json:"membership_groups"`
 }
 
 var groupRatioSetting GroupRatioSetting
@@ -69,46 +67,9 @@ func init() {
 		GroupRatio:              groupRatioMap,
 		GroupGroupRatio:         groupGroupRatioMap,
 		MembershipGroups:        membershipGroups,
-		GPTContextModes:         gptContextModeMap,
 	}
 
 	config.GlobalConfig.Register("group_ratio_setting", &groupRatioSetting)
-}
-
-func GPTContextModes2JSONString() string {
-	return GetGroupRatioSetting().GPTContextModes.MarshalJSONString()
-}
-
-func GetGPTContextMode(group string) (string, bool) {
-	mode, ok := GetGroupRatioSetting().GPTContextModes.Get(group)
-	if ok && (mode == "standard" || mode == "gpt_long_context") {
-		return mode, true
-	}
-	return "standard", false
-}
-
-func validateGPTContextModes(jsonStr string) error {
-	var values map[string]string
-	if err := common.Unmarshal([]byte(jsonStr), &values); err != nil {
-		return err
-	}
-	for group, mode := range values {
-		if mode != "standard" && mode != "gpt_long_context" {
-			return errors.New("invalid gpt context mode for group: " + group)
-		}
-	}
-	return nil
-}
-
-func UpdateGPTContextModesByJSONString(jsonStr string) error {
-	if err := validateGPTContextModes(jsonStr); err != nil {
-		return err
-	}
-	return types.LoadFromJsonString(GetGroupRatioSetting().GPTContextModes, jsonStr)
-}
-
-func CheckGPTContextModes(jsonStr string) error {
-	return validateGPTContextModes(jsonStr)
 }
 
 func GetGroupRatioSetting() *GroupRatioSetting {
@@ -119,9 +80,6 @@ func GetGroupRatioSetting() *GroupRatioSetting {
 	if groupRatioSetting.MembershipGroups == nil {
 		groupRatioSetting.MembershipGroups = types.NewRWMap[string, bool]()
 		groupRatioSetting.MembershipGroups.AddAll(defaultMembershipGroups)
-	}
-	if groupRatioSetting.GPTContextModes == nil {
-		groupRatioSetting.GPTContextModes = types.NewRWMap[string, string]()
 	}
 	return &groupRatioSetting
 }

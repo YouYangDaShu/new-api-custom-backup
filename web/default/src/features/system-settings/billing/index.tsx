@@ -60,7 +60,6 @@ const defaultBillingSettings: BillingSettings = {
   GroupRatio: '',
   UserUsableGroups: '',
   MembershipGroups: '{}',
-  'group_ratio_setting.gpt_context_modes': '{}',
   GroupGroupRatio: '',
   AutoGroups: '',
   DefaultUseAutoGroup: false,

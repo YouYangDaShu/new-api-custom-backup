@@ -8,10 +8,8 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/config"
-	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -61,38 +59,4 @@ func TestModelPriceHelperTieredUsesPreloadedRequestInput(t *testing.T) {
 	require.Equal(t, "stream", info.TieredBillingSnapshot.EstimatedTier)
 	require.Equal(t, billing_setting.BillingModeTieredExpr, info.TieredBillingSnapshot.BillingMode)
 	require.Equal(t, common.QuotaPerUnit, info.TieredBillingSnapshot.QuotaPerUnit)
-}
-
-func TestModelPriceHelperTieredUsesGroupGPTPolicyWithoutModelEntry(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	saved := map[string]string{}
-	require.NoError(t, config.GlobalConfig.SaveToDB(func(key, value string) error { saved[key] = value; return nil }))
-	t.Cleanup(func() { require.NoError(t, config.GlobalConfig.LoadFromDB(saved)) })
-	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
-		"billing_setting.billing_mode": "{}",
-		"billing_setting.billing_expr": "{}",
-	}))
-	original := ratio_setting.GPTContextModes2JSONString()
-	t.Cleanup(func() { _ = ratio_setting.UpdateGPTContextModesByJSONString(original) })
-	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"long":1}`))
-	t.Cleanup(func() { _ = ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"vip":1,"svip":1}`) })
-	require.NoError(t, ratio_setting.UpdateGPTContextModesByJSONString(`{"long":"gpt_long_context"}`))
-	recorder := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	info := &relaycommon.RelayInfo{
-		OriginModelName: "gpt-5.6-sol", UserGroup: "default", UsingGroup: "long",
-		RelayMode:      relayconstant.RelayModeResponses,
-		RequestHeaders: map[string]string{"Content-Type": "application/json"},
-		BillingRequestInput: &billingexpr.RequestInput{
-			Headers: map[string]string{"Content-Type": "application/json"},
-			Body:    []byte(`{"model":"gpt-5.6-sol"}`),
-		},
-	}
-	priceData, err := ModelPriceHelper(ctx, info, 300000, &types.TokenCountMeta{})
-	require.NoError(t, err)
-	require.NotNil(t, info.TieredBillingSnapshot)
-	require.Equal(t, "long_context", info.TieredBillingSnapshot.EstimatedTier)
-	require.Equal(t, billing_setting.BillingModeTieredExpr, info.TieredBillingSnapshot.BillingMode)
-	require.Equal(t, 750000, priceData.QuotaToPreConsume)
 }

@@ -71,7 +71,6 @@ type GroupFormValues = {
   DefaultUseAutoGroup: boolean
   GroupSpecialUsableGroup: string
   MembershipGroups: string
-  GPTContextModes: string
 }
 
 type GroupRatioFormProps = {
@@ -86,7 +85,6 @@ type VisualGroupValues = Pick<
   | 'UserUsableGroups'
   | 'TopupGroupRatio'
   | 'MembershipGroups'
-  | 'GPTContextModes'
 >
 
 export const GroupRatioForm = memo(function GroupRatioForm({
@@ -194,16 +192,11 @@ export const GroupRatioForm = memo(function GroupRatioForm({
               autoGroups={form.watch('AutoGroups')}
               groupSpecialUsableGroup={form.watch('GroupSpecialUsableGroup')}
               membershipGroups={form.watch('MembershipGroups') || '{}'}
-              gptContextModes={form.watch('GPTContextModes') || '{}'}
               onChange={(field, value) =>
                 handleFieldChange(field as keyof GroupFormValues, value)
               }
               onSerializedChange={(values) => {
                 visualValuesRef.current = values
-                form.setValue('GPTContextModes', values.GPTContextModes, {
-                  shouldValidate: true,
-                  shouldDirty: true,
-                })
               }}
             />
 

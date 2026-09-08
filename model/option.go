@@ -157,7 +157,6 @@ func InitOptionMap() {
 	common.OptionMap["CreateCacheRatio"] = ratio_setting.CreateCacheRatio2JSONString()
 	common.OptionMap["GroupRatio"] = ratio_setting.GroupRatio2JSONString()
 	common.OptionMap["GroupGroupRatio"] = ratio_setting.GroupGroupRatio2JSONString()
-	common.OptionMap["group_ratio_setting.gpt_context_modes"] = ratio_setting.GPTContextModes2JSONString()
 	common.OptionMap["UserUsableGroups"] = setting.UserUsableGroups2JSONString()
 	common.OptionMap["CompletionRatio"] = ratio_setting.CompletionRatio2JSONString()
 	common.OptionMap["ImageRatio"] = ratio_setting.ImageRatio2JSONString()
@@ -234,8 +233,6 @@ func UpdateOption(key string, value string) error {
 
 func validateCustomOptionValue(key, value string) error {
 	switch key {
-	case "group_ratio_setting.gpt_context_modes":
-		return ratio_setting.CheckGPTContextModes(value)
 	case "ChannelMonitorDefaultIntervalSeconds":
 		v, err := strconv.Atoi(value)
 		if err != nil || v < 30 || v > 86400 {
@@ -623,8 +620,6 @@ func updateOptionMap(key string, value string) (err error) {
 		err = ratio_setting.UpdateGroupRatioByJSONString(value)
 	case "GroupGroupRatio":
 		err = ratio_setting.UpdateGroupGroupRatioByJSONString(value)
-	case "group_ratio_setting.gpt_context_modes":
-		err = ratio_setting.UpdateGPTContextModesByJSONString(value)
 	case "UserUsableGroups":
 		err = setting.UpdateUserUsableGroupsByJSONString(value)
 	case "CompletionRatio":
