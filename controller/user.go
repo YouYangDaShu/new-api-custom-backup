@@ -342,6 +342,7 @@ func GetAllUsers(c *gin.Context) {
 	}
 
 	pageInfo.SetTotal(int(total))
+	applyUserConcurrencyStatus(c, users)
 	pageInfo.SetItems(users)
 
 	common.ApiSuccess(c, pageInfo)
@@ -372,6 +373,7 @@ func SearchUsers(c *gin.Context) {
 	}
 
 	pageInfo.SetTotal(int(total))
+	applyUserConcurrencyStatus(c, users)
 	pageInfo.SetItems(users)
 	common.ApiSuccess(c, pageInfo)
 	return
@@ -398,6 +400,7 @@ func GetUser(c *gin.Context) {
 		return
 	}
 	user.AdminPermissions = authz.Capabilities(user.Id, user.Role)
+	applyUserConcurrencyStatus(c, []*model.User{user})
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -468,6 +471,7 @@ func GetSelf(c *gin.Context) {
 		return
 	}
 	responseData := buildSelfUserData(user)
+	responseData["concurrency"] = userConcurrencyStatus(c, user)
 	// The authenticated role is loaded from GetUserCache. It should equal the
 	// row role, but use it for capabilities so GetSelf and login/refresh remain
 	// consistent with the authorization decision made for this request.
@@ -992,6 +996,15 @@ func CreateUser(c *gin.Context) {
 		Password:    user.Password,
 		DisplayName: user.DisplayName,
 		Role:        user.Role, // 保持管理员设置的角色
+	}
+	if user.ConcurrencyOverride {
+		if user.Concurrency < 0 || user.Concurrency > common.MaxUserConcurrency {
+			common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+			return
+		}
+		cleanUser.Concurrency = user.Concurrency
+		cleanUser.ConcurrencyOverride = true
+		cleanUser.ConcurrencySet = true
 	}
 	authzTouched := false
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {

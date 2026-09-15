@@ -11,28 +11,34 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const userCacheSchemaVersion = 2
+const userCacheSchemaVersion = 3
 
 type UserBase struct {
-	Id          int    `json:"id"`
-	Group       string `json:"group"`
-	Email       string `json:"email"`
-	Quota       int    `json:"quota"`
-	Status      int    `json:"status"`
-	Role        int    `json:"role"`
-	Username    string `json:"username"`
-	Setting     string `json:"setting"`
-	AuthVersion int64  `json:"-"`
-	CacheSchema int    `json:"-"`
+	Id                  int    `json:"id"`
+	Group               string `json:"group"`
+	Email               string `json:"email"`
+	Quota               int    `json:"quota"`
+	Status              int    `json:"status"`
+	Role                int    `json:"role"`
+	Concurrency         int    `json:"concurrency"`
+	ConcurrencyOverride bool   `json:"concurrency_override"`
+	Username            string `json:"username"`
+	Setting             string `json:"setting"`
+	AuthVersion         int64  `json:"-"`
+	CacheSchema         int    `json:"-"`
 }
 
 func (user *UserBase) WriteContext(c *gin.Context) {
+	c.Set("id", user.Id)
+	c.Set("role", user.Role)
 	common.SetContextKey(c, constant.ContextKeyUserGroup, user.Group)
 	common.SetContextKey(c, constant.ContextKeyUserQuota, user.Quota)
 	common.SetContextKey(c, constant.ContextKeyUserStatus, user.Status)
 	common.SetContextKey(c, constant.ContextKeyUserEmail, user.Email)
 	common.SetContextKey(c, constant.ContextKeyUserName, user.Username)
 	common.SetContextKey(c, constant.ContextKeyUserSetting, user.GetSetting())
+	common.SetContextKey(c, "user_concurrency", user.Concurrency)
+	common.SetContextKey(c, "user_concurrency_override", user.ConcurrencyOverride)
 }
 
 func (user *UserBase) GetSetting() dto.UserSetting {

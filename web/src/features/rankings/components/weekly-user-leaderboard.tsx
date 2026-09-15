@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
 
+import { formatTotalTokens } from '../lib/format'
 import type { WeeklyUserRankingRow, WeeklyUserRankingSnapshot } from '../types'
 
 function formatTokens(value: number) {
@@ -66,7 +67,7 @@ export function WeeklyUserLeaderboard(props: {
                 <span className='text-right font-mono'>{formatTokens(row.input_tokens)}</span>
                 <span className='text-right font-mono'>{formatTokens(row.output_tokens)}</span>
                 <span className='text-right font-mono'>{formatTokens(row.cache_tokens)}</span>
-                <span className='text-right font-mono font-semibold'>{formatTokens(row.total_tokens)}</span>
+                <span className='text-right font-mono font-semibold'>{formatTotalTokens(row.total_tokens)}</span>
               </div>
             ))}
             {currentUserOutsideRows ? (
@@ -79,7 +80,7 @@ export function WeeklyUserLeaderboard(props: {
                   <span className='text-right font-mono'>{formatTokens(currentUserOutsideRows.input_tokens)}</span>
                   <span className='text-right font-mono'>{formatTokens(currentUserOutsideRows.output_tokens)}</span>
                   <span className='text-right font-mono'>{formatTokens(currentUserOutsideRows.cache_tokens)}</span>
-                  <span className='text-right font-mono font-semibold'>{formatTokens(currentUserOutsideRows.total_tokens)}</span>
+                  <span className='text-right font-mono font-semibold'>{formatTotalTokens(currentUserOutsideRows.total_tokens)}</span>
                 </div>
               </>
             ) : null}

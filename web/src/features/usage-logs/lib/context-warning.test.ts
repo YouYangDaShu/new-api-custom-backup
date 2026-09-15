@@ -1,20 +1,18 @@
 import { describe, expect, test } from 'vitest'
 
-import { isGptLongContextWarningModel } from './context-warning'
+import { getTieredInputTokenThreshold } from './context-warning'
 
-describe('GPT context warning model filter', () => {
-  test('matches GPT text models regardless of case or surrounding whitespace', () => {
-    expect(isGptLongContextWarningModel('gpt-5.4')).toBe(true)
-    expect(isGptLongContextWarningModel(' GPT-5.6-SOL ')).toBe(true)
-    expect(isGptLongContextWarningModel('gpt-4.1-mini')).toBe(true)
+describe('tiered context warning threshold', () => {
+  test('reads the input boundary from the billing expression', () => {
+    expect(
+      getTieredInputTokenThreshold(
+        'len <= 200000 ? tier("short", p * 2 + c * 4) : tier("long", p * 4 + c * 8)'
+      )
+    ).toBe(200000)
   })
 
-  test('excludes non-GPT and GPT media models', () => {
-    expect(isGptLongContextWarningModel('claude-4')).toBe(false)
-    expect(isGptLongContextWarningModel('gpt-image-1')).toBe(false)
-    expect(isGptLongContextWarningModel('gpt-5.4-image')).toBe(false)
-    expect(isGptLongContextWarningModel('gpt-5.4-audio')).toBe(false)
-    expect(isGptLongContextWarningModel('gpt-5.4-video')).toBe(false)
-    expect(isGptLongContextWarningModel(undefined)).toBe(false)
+  test('does not warn for malformed expressions or expressions without tiers', () => {
+    expect(getTieredInputTokenThreshold('not a billing expression')).toBeNull()
+    expect(getTieredInputTokenThreshold('tier("base", p * 2 + c * 4)')).toBeNull()
   })
 })

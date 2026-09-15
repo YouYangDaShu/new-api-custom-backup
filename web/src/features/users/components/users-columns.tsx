@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import type { ColumnDef } from '@tanstack/react-table'
+import { Gauge } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { ActivityTimeCell } from '@/components/activity-time-cell'
@@ -38,6 +39,7 @@ import { useSystemConfigStore } from '@/stores/system-config-store'
 import {
   USER_STATUS,
   USER_STATUSES,
+  USER_ROLE,
   USER_ROLES,
   isUserDeleted,
 } from '../constants'
@@ -206,6 +208,35 @@ export function useUsersColumns(): ColumnDef<User>[] {
       },
       size: 140,
       meta: { mobileOrder: 30 },
+    },
+    {
+      id: 'concurrency',
+      header: t('Concurrency'),
+      cell: ({ row }) => {
+        const user = row.original
+        if (user.role >= USER_ROLE.ADMIN) {
+          return <span className='text-muted-foreground text-xs'>{t('Admin exempt')}</span>
+        }
+        const limit = user.effective_concurrency ?? user.concurrency ?? 0
+        const used = user.current_concurrency
+        const queued = user.queued_concurrency ?? 0
+        const source = user.concurrency_source ?? (user.concurrency_override ? 'custom' : 'default')
+        return (
+          <div className='flex min-w-[150px] items-center gap-2 text-xs'>
+            <Gauge className='text-muted-foreground size-3.5 shrink-0' aria-hidden='true' />
+            <div className='min-w-0'>
+              <div className='font-mono tabular-nums'>
+                {used == null ? '—' : used} / {limit === 0 ? t('Unlimited') : limit}
+                {queued > 0 ? ` · ${t('Queued')}: ${queued}` : ''}
+              </div>
+              <div className='text-muted-foreground'>{source === 'custom' ? t('Custom') : t('System default')}</div>
+            </div>
+          </div>
+        )
+      },
+      enableSorting: false,
+      size: 190,
+      meta: { mobileHidden: true },
     },
     {
       accessorKey: 'role',

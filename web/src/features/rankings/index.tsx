@@ -29,9 +29,8 @@ import {
   ModelsSection,
   PulseSection,
   RankingsHero,
-  WeeklyUserLeaderboard,
 } from './components'
-import { useRankings, useWeeklyUserRanking } from './hooks/use-rankings'
+import { useRankings } from './hooks/use-rankings'
 import type { RankingPeriod } from './types'
 
 const VALID_PERIODS = new Set<RankingPeriod>(['today', 'week', 'month', 'year'])
@@ -46,8 +45,6 @@ export function Rankings() {
     : 'week'
 
   const rankingsQuery = useRankings(period)
-  const weeklyPeriod = period === 'today' ? 'day' : 'week'
-  const weeklyQuery = useWeeklyUserRanking(weeklyPeriod)
   const snapshot = rankingsQuery.data?.data
 
   const handlePeriodChange = (next: RankingPeriod) => {
@@ -73,12 +70,6 @@ export function Rankings() {
   } else {
     content = (
       <>
-        {weeklyQuery.data?.data ? (
-          <WeeklyUserLeaderboard
-            snapshot={weeklyQuery.data.data}
-            period={weeklyPeriod}
-          />
-        ) : null}
         <ModelsSection
           history={snapshot.models_history}
           rows={snapshot.models}

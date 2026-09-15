@@ -18,6 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import type { UserPermissions } from '@/stores/auth-store'
 
+import type { ConcurrencyStatus } from '@/features/concurrency/types'
+
 // ============================================================================
 // Profile Type Definitions
 // ============================================================================
@@ -73,6 +75,8 @@ export interface UserProfile {
   created_time: number
   /** User settings (JSON string) */
   setting?: string
+  /** Read-only concurrency status returned by the profile API when available */
+  concurrency?: ConcurrencyStatus
   /** WeChat ID (OAuth) */
   wechat_id?: string
   /** GitHub ID (OAuth) */

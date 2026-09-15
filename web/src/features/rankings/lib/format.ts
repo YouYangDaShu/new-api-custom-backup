@@ -55,3 +55,10 @@ export function formatReleaseDate(iso: string): string {
     day: 'numeric',
   })
 }
+
+/** Format the user leaderboard total-token column as fixed two-decimal M. */
+export function formatTotalTokens(value: number): string {
+  const tokens = Number(value)
+  if (!Number.isFinite(tokens) || tokens <= 0) return '0.00M'
+  return `${(tokens / 1_000_000).toFixed(2)}M`
+}

@@ -50,12 +50,9 @@ import { formatBillingCurrencyFromUSD } from '@/lib/currency'
 import { formatLogQuota, formatTimestampToDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-import {
-  CONTEXT_TOKEN_WARNING_THRESHOLD,
-  LOG_TYPE_ALL_VALUE,
-} from '../../constants'
+import { LOG_TYPE_ALL_VALUE } from '../../constants'
 import type { UsageLog } from '../../data/schema'
-import { isGptLongContextWarningModel } from '../../lib/context-warning'
+import { getTieredInputTokenThreshold } from '../../lib/context-warning'
 import {
   formatModelName,
   decodeBillingExprB64,
@@ -717,9 +714,12 @@ export function useCommonLogsColumns(
         const cacheWriteTokens = hasSplitCache
           ? cacheWrite5m + cacheWrite1h
           : other?.cache_creation_tokens || 0
+        const inputTokenThreshold =
+          other?.billing_mode === 'tiered_expr'
+            ? getTieredInputTokenThreshold(decodeBillingExprB64(other.expr_b64))
+            : null
         const isContextWarning =
-          promptTokens > CONTEXT_TOKEN_WARNING_THRESHOLD &&
-          isGptLongContextWarningModel(log.model_name)
+          inputTokenThreshold != null && promptTokens > inputTokenThreshold
 
         return (
           <div className='flex flex-col gap-0.5'>
@@ -728,7 +728,7 @@ export function useCommonLogsColumns(
                 'flex items-center gap-1 font-mono text-xs font-medium tabular-nums',
                 isContextWarning && 'text-red-600 dark:text-red-400'
               )}
-              title={isContextWarning ? t('Context over 272K') : undefined}
+              title={isContextWarning ? t('Context threshold exceeded') : undefined}
             >
               {isContextWarning && (
                 <AlertTriangle
@@ -736,13 +736,12 @@ export function useCommonLogsColumns(
                   aria-hidden='true'
                 />
               )}
-              {promptTokens.toLocaleString()} /{' '}
-              {completionTokens.toLocaleString()}
-              {isContextWarning && (
-                <span className='font-sans text-[10px] font-semibold text-amber-700 dark:text-amber-300'>
-                  {t('Context over 272K')}
-                </span>
-              )}
+              <span className={isContextWarning ? 'text-red-600 dark:text-red-400' : undefined}>
+                {promptTokens.toLocaleString()}
+              </span>{' '}/{' '}
+              <span className={isContextWarning ? 'text-red-600 dark:text-red-400' : undefined}>
+                {completionTokens.toLocaleString()}
+              </span>
             </span>
             {(cacheReadTokens > 0 || cacheWriteTokens > 0) && (
               <div className='flex items-center gap-1 text-[11px]'>

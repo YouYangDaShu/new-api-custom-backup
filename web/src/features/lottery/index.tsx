@@ -14,6 +14,7 @@ import { useTranslation } from 'react-i18next'
 import { PageTransition } from '@/components/page-transition'
 import { Button } from '@/components/ui/button'
 import { formatLocalCurrencyAmount } from '@/lib/currency'
+import { formatTimestampToDate } from '@/lib/format'
 
 import { drawLottery, getLottery } from './api'
 
@@ -292,8 +293,13 @@ export function Lottery() {
                   key={item.id}
                 >
                   <span className='truncate text-sm'>{item.prize_name}</span>
-                  <span className='shrink-0 text-sm font-semibold text-amber-500 tabular-nums'>
-                    +{formatPrizeAmount(item.prize_amount)}
+                  <span className='flex shrink-0 items-end gap-2 text-right'>
+                    <span className='text-muted-foreground text-xs tabular-nums'>
+                      {formatTimestampToDate(item.created_at)}
+                    </span>
+                    <span className='text-sm font-semibold text-amber-500 tabular-nums'>
+                      +{formatPrizeAmount(item.prize_amount)}
+                    </span>
                   </span>
                 </div>
               ))}

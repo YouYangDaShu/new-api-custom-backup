@@ -30,11 +30,15 @@ import { Button } from '@/components/ui/button'
 import { getUserAvatarFallback, getUserAvatarStyle } from '@/lib/avatar'
 import dayjs from '@/lib/dayjs'
 import { formatLogQuota, formatTimestampToDate } from '@/lib/format'
+import { cn } from '@/lib/utils'
 
-import { CONTEXT_TOKEN_WARNING_THRESHOLD } from '../constants'
 import type { UsageLog } from '../data/schema'
-import { isGptLongContextWarningModel } from '../lib/context-warning'
-import { formatModelName, parseLogOther } from '../lib/format'
+import { getTieredInputTokenThreshold } from '../lib/context-warning'
+import {
+  decodeBillingExprB64,
+  formatModelName,
+  parseLogOther,
+} from '../lib/format'
 import {
   getLogTypeConfig,
   isDisplayableLogType,
@@ -143,9 +147,12 @@ export function CommonLogMobileCard<TData>(props: {
       log.completion_tokens > 0 ||
       cacheRead > 0 ||
       cacheWrite > 0)
+  const inputTokenThreshold =
+    other?.billing_mode === 'tiered_expr'
+      ? getTieredInputTokenThreshold(decodeBillingExprB64(other.expr_b64))
+      : null
   const isContextWarning =
-    log.prompt_tokens > CONTEXT_TOKEN_WARNING_THRESHOLD &&
-    isGptLongContextWarningModel(log.model_name)
+    inputTokenThreshold != null && log.prompt_tokens > inputTokenThreshold
 
   return (
     <div className='min-w-0 space-y-2.5 text-sm leading-5'>
@@ -295,20 +302,32 @@ export function CommonLogMobileCard<TData>(props: {
       {showTokens && (
         <div className='text-muted-foreground flex flex-wrap gap-x-3 gap-y-1 text-xs [overflow-wrap:anywhere]'>
           {isContextWarning && (
-            <span className='flex items-center gap-1 font-semibold text-amber-700 dark:text-amber-300'>
-              <AlertTriangle className='size-3.5 shrink-0' aria-hidden='true' />
-              {t('Context over 272K')}
+            <span className='text-amber-700 dark:text-amber-300' title={t('Long context warning')}>
+              <AlertTriangle
+                className='size-3.5 shrink-0'
+                aria-label={t('Long context warning')}
+              />
             </span>
           )}
           <span>
             {t('Input')}{' '}
-            <span className='text-foreground tabular-nums'>
+            <span
+              className={cn(
+                'tabular-nums',
+                isContextWarning && 'text-red-600 dark:text-red-400'
+              )}
+            >
               {log.prompt_tokens.toLocaleString()}
             </span>
           </span>
           <span>
             {t('Output')}{' '}
-            <span className='text-foreground tabular-nums'>
+            <span
+              className={cn(
+                'tabular-nums',
+                isContextWarning && 'text-red-600 dark:text-red-400'
+              )}
+            >
               {log.completion_tokens.toLocaleString()}
             </span>
           </span>

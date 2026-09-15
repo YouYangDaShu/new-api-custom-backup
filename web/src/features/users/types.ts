@@ -62,6 +62,13 @@ export const userSchema = z.object({
   admin_permissions: z
     .record(z.string(), z.record(z.string(), z.boolean()))
     .optional(),
+  concurrency: z.number().optional(),
+  concurrency_override: z.boolean().optional(),
+  current_concurrency: z.number().optional(),
+  queued_concurrency: z.number().optional(),
+  remaining_concurrency: z.number().optional(),
+  effective_concurrency: z.number().optional(),
+  concurrency_source: z.string().optional(),
 })
 export type User = z.infer<typeof userSchema>
 
@@ -126,6 +133,8 @@ export interface UserFormData {
   group?: string // Only used when updating user
   remark?: string // Only used when updating user
   admin_permissions?: AdminPermissionMatrix
+  concurrency?: number
+  concurrency_override?: boolean
 }
 
 export type ManageUserAction =

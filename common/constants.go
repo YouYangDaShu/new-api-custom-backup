@@ -5,6 +5,7 @@ import (
 	//"os"
 	//"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,6 +32,25 @@ var ChannelMonitorDefaultIntervalSeconds = 60
 var DataExportInterval = 5         // unit: minute
 var DataExportDefaultTime = "hour" // unit: minute
 var DefaultCollapseSidebar = false // default value of collapse sidebar
+
+const (
+	DefaultUserConcurrency = 5
+	MaxUserConcurrency     = 10000
+)
+
+var userConcurrencyDefault atomic.Int64
+
+func init() {
+	userConcurrencyDefault.Store(DefaultUserConcurrency)
+}
+
+func GetUserConcurrencyDefault() int {
+	return int(userConcurrencyDefault.Load())
+}
+
+func SetUserConcurrencyDefault(value int) {
+	userConcurrencyDefault.Store(int64(value))
+}
 
 // Any options with "Secret", "Token" in its key won't be return by GetOptions
 

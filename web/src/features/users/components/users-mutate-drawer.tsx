@@ -68,6 +68,7 @@ import { formatQuota, parseQuotaFromDollars } from '@/lib/format'
 import { accountPasswordSchema } from '@/lib/password-policy'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
+import { updateUserConcurrency } from '@/features/concurrency/api'
 
 import {
   createUser,
@@ -176,6 +177,24 @@ export function UsersMutateDrawer({
         : await createUser(payload)
 
       if (result.success) {
+        if (isUpdate && currentRow) {
+          const concurrencyResult = await updateUserConcurrency(
+            currentRow.id,
+            {
+              source: data.concurrency_source ?? 'default',
+              limit:
+                data.concurrency_source === 'custom'
+                  ? data.concurrency_limit ?? 0
+                  : 0,
+            }
+          )
+          if (!concurrencyResult.success) {
+            toast.error(
+              concurrencyResult.message || t('Failed to update concurrency')
+            )
+            return
+          }
+        }
         toast.success(
           isUpdate
             ? t(SUCCESS_MESSAGES.USER_UPDATED)
@@ -428,6 +447,76 @@ placeholder={t('Select a group')}
                       </FormItem>
                     )}
                   />
+
+                  <FormField
+                    control={form.control}
+                    name='concurrency_source'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Request concurrency')}</FormLabel>
+                        <Select
+                          items={[
+                            { value: 'default', label: t('Follow system default') },
+                            { value: 'custom', label: t('Custom limit') },
+                          ]}
+                          value={field.value}
+                          onValueChange={(value) =>
+                            value !== null && field.onChange(value)
+                          }
+                        >
+                          <FormControl>
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent alignItemWithTrigger={false}>
+                            <SelectGroup>
+                              <SelectItem value='default'>
+                                {t('Follow system default')}
+                              </SelectItem>
+                              <SelectItem value='custom'>
+                                {t('Custom limit')}
+                              </SelectItem>
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                        <FormDescription>
+                          {t('Administrators are exempt. A custom limit of 0 means unlimited.')}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  {form.watch('concurrency_source') === 'custom' && (
+                    <FormField
+                      control={form.control}
+                      name='concurrency_limit'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>{t('Custom concurrent requests')}</FormLabel>
+                          <FormControl>
+                            <Input
+                              type='number'
+                              min={0}
+                              max={10000}
+                              step={1}
+                              {...field}
+                              onChange={(event) =>
+                                field.onChange(
+                                  Number.parseInt(event.target.value) || 0
+                                )
+                              }
+                            />
+                          </FormControl>
+                          <FormDescription>
+                            {t('Allowed range: 0–10000. 0 means unlimited.')}
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  )}
                 </SideDrawerSection>
               )}
 

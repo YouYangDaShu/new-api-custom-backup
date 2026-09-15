@@ -110,6 +110,24 @@ export async function updateUser(
   return res.data
 }
 
+export async function updateUserConcurrency(
+  userId: number,
+  payload: import('../concurrency/types').UpdateUserConcurrencyPayload
+): Promise<import('../concurrency/types').ConcurrencyMutationResponse> {
+  const res = await api.patch(
+    `/api/user/${userId}/concurrency`,
+    payload
+  )
+  return res.data
+}
+
+export async function batchUpdateUserConcurrency(
+  payload: import('../concurrency/types').BatchUserConcurrencyPayload
+): Promise<import('../concurrency/types').ConcurrencyMutationResponse> {
+  const res = await api.post('/api/user/batch-limits', payload)
+  return res.data
+}
+
 /**
  * Delete a single user (hard delete)
  */

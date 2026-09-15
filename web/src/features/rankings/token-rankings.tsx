@@ -5,9 +5,9 @@ import { PageTransition } from '@/components/page-transition'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { formatTokens } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
+import { formatTotalTokens } from './lib/format'
 import { WeeklyUserLeaderboard } from './components'
 import { useWeeklyUserRanking } from './hooks/use-rankings'
 import type { WeeklyUserRankingRow } from './types'
@@ -66,7 +66,7 @@ function WeeklyTopThree(props: {
                   {row.display_name}
                 </p>
                 <p className='font-mono text-lg font-semibold'>
-                  {formatTokens(row.total_tokens)}
+                  {formatTotalTokens(row.total_tokens)}
                 </p>
                 <p className='text-muted-foreground text-xs'>
                   {row.request_count.toLocaleString('zh-CN')} 次请求

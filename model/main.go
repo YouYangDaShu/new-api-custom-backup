@@ -340,6 +340,7 @@ func migrateDB() error {
 		return err
 	}
 
+	userConcurrencyColumnExists := DB.Migrator().HasColumn(&User{}, "concurrency")
 	err := DB.AutoMigrate(
 		&Channel{},
 		&Token{},
@@ -385,6 +386,9 @@ func migrateDB() error {
 		&AuthzRole{},
 	)
 	if err != nil {
+		return err
+	}
+	if err := migrateUserConcurrencyDefaults(DB, !userConcurrencyColumnExists); err != nil {
 		return err
 	}
 	if err := InitializeUserAuthVersions(); err != nil {
