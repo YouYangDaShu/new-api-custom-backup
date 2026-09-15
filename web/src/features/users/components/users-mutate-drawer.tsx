@@ -293,7 +293,7 @@ export function UsersMutateDrawer({
                             { value: '10', label: t('Admin') },
                           ]}
                           onValueChange={(value) =>
-                            value !== null && field.onChange(parseInt(value))
+                            value !== null && field.onChange(Number.parseInt(value))
                           }
                           value={String(field.value)}
                         >

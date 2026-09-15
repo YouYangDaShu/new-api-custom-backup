@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { type Table } from '@tanstack/react-table'
+import type { Table } from '@tanstack/react-table'
 import { Gauge } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -30,7 +30,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { batchUpdateUserConcurrency } from '@/features/concurrency/api'
 
-import { type User } from '../types'
+import type { User } from '../types'
 import { useUsers } from './users-provider'
 
 interface DataTableBulkActionsProps {

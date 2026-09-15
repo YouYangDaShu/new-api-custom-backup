@@ -103,7 +103,7 @@ export function UserConcurrencySection({
           <SettingsPageFormActions
             onSave={form.handleSubmit(onSubmit)}
             isSaving={updateOption.isPending}
-            saveLabel='Save concurrency default'
+            saveLabel={t('Save concurrency default')}
           />
           <FormField
             control={form.control}

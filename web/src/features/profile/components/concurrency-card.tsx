@@ -34,6 +34,14 @@ function valueText(status: ConcurrencyStatus, t: (key: string) => string) {
   return `${status.current} / ${status.limit}`
 }
 
+function sourceText(status: ConcurrencyStatus, t: (key: string) => string) {
+  if (status.admin_exempt) return t('Administrator exempt')
+  if (status.source === 'custom') return t('Custom')
+  if (status.source === 'unlimited') return t('Unlimited')
+  if (status.source === 'unavailable') return t('Unavailable')
+  return t('System default')
+}
+
 export function ConcurrencyCard() {
   const { t } = useTranslation()
   const { data, isLoading } = useSelfConcurrency()
@@ -84,15 +92,7 @@ export function ConcurrencyCard() {
         <div>
           <p className='text-muted-foreground text-xs'>{t('Source')}</p>
           <p className='mt-1 text-sm font-semibold'>
-            {status.admin_exempt
-              ? t('Administrator exempt')
-              : status.source === 'custom'
-                ? t('Custom')
-                : status.source === 'unlimited'
-                  ? t('Unlimited')
-                  : status.source === 'unavailable'
-                    ? t('Unavailable')
-                    : t('System default')}
+            {sourceText(status, t)}
           </p>
         </div>
       </div>
