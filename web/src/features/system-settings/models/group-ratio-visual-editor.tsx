@@ -16,7 +16,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Combobox } from '@/components/ui/combobox'
 import {
   AlertTriangle,
   ChevronDown,
@@ -58,9 +57,9 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
+import { Combobox } from '@/components/ui/combobox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-
 import {
   Sheet,
   SheetContent,
@@ -79,6 +78,7 @@ type GroupRatioVisualEditorProps = {
   autoGroups: string
   maxTokenAutoGroupsField: ReactNode
   groupSpecialUsableGroup: string
+  membershipGroups: string
   onChange: (field: string, value: string) => void
 }
 
@@ -88,6 +88,7 @@ type GroupPricingRow = {
   ratio: string
   topupRatio: string
   selectable: boolean
+  membership: boolean
   description: string
 }
 
@@ -125,6 +126,13 @@ function parseUsableMap(value: string): Record<string, string> {
   })
 }
 
+function parseMembershipMap(value: string): Record<string, boolean> {
+  return safeJsonParse<Record<string, boolean>>(value, {
+    fallback: {},
+    silent: true,
+  })
+}
+
 function parseNestedRatioMap(
   value: string
 ): Record<string, Record<string, number>> {
@@ -137,36 +145,45 @@ function parseNestedRatioMap(
 function buildGroupPricingRows(
   groupRatio: string,
   userUsableGroups: string,
-  topupGroupRatio: string
+  topupGroupRatio: string,
+  membershipGroups: string
 ): GroupPricingRow[] {
   const ratioMap = parseRatioMap(groupRatio)
   const usableMap = parseUsableMap(userUsableGroups)
   const topupMap = parseRatioMap(topupGroupRatio)
+  const membershipMap = parseMembershipMap(membershipGroups)
   const names = new Set([
     ...Object.keys(ratioMap),
     ...Object.keys(usableMap),
     ...Object.keys(topupMap),
+    ...Object.keys(membershipMap),
   ])
 
-  return [...names].map((name) => ({
-    _id: createGroupPricingId(),
-    name,
-    ratio: String(normalizeRatio(ratioMap[name])),
-    topupRatio: Object.hasOwn(topupMap, name) ? String(topupMap[name]) : '',
-    selectable: Object.hasOwn(usableMap, name),
-    description: String(usableMap[name] ?? ''),
-  }))
+  return [...names].map((name) => {
+    const membership = membershipMap[name] === true
+    return {
+      _id: createGroupPricingId(),
+      name,
+      ratio: String(normalizeRatio(ratioMap[name])),
+      topupRatio: Object.hasOwn(topupMap, name) ? String(topupMap[name]) : '',
+      selectable: Object.hasOwn(usableMap, name),
+      membership,
+      description: String(usableMap[name] ?? ''),
+    }
+  })
 }
 
 function serializeGroupPricingRows(rows: GroupPricingRow[]) {
   const groupRatio: Record<string, number> = {}
   const userUsableGroups: Record<string, string> = {}
   const topupGroupRatio: Record<string, number> = {}
+  const membershipGroups: Record<string, boolean> = {}
 
   for (const row of rows) {
     const name = row.name.trim()
     if (!name) continue
     groupRatio[name] = normalizeRatio(row.ratio)
+    if (row.membership) membershipGroups[name] = true
     if (row.selectable) {
       userUsableGroups[name] = row.description
     }
@@ -180,6 +197,7 @@ function serializeGroupPricingRows(rows: GroupPricingRow[]) {
     GroupRatio: JSON.stringify(groupRatio, null, 2),
     UserUsableGroups: JSON.stringify(userUsableGroups, null, 2),
     TopupGroupRatio: JSON.stringify(topupGroupRatio, null, 2),
+    MembershipGroups: JSON.stringify(membershipGroups, null, 2),
   }
 }
 
@@ -189,18 +207,21 @@ function groupPricingSignature(rows: GroupPricingRow[]): string {
     groupRatio: parseRatioMap(serialized.GroupRatio),
     userUsableGroups: parseUsableMap(serialized.UserUsableGroups),
     topupGroupRatio: parseRatioMap(serialized.TopupGroupRatio),
+    membershipGroups: parseMembershipMap(serialized.MembershipGroups),
   })
 }
 
 function sourceGroupPricingSignature(
   groupRatio: string,
   userUsableGroups: string,
-  topupGroupRatio: string
+  topupGroupRatio: string,
+  membershipGroups: string
 ): string {
   return JSON.stringify({
     groupRatio: parseRatioMap(groupRatio),
     userUsableGroups: parseUsableMap(userUsableGroups),
     topupGroupRatio: parseRatioMap(topupGroupRatio),
+    membershipGroups: parseMembershipMap(membershipGroups),
   })
 }
 
@@ -232,13 +253,15 @@ function GroupNameSelect(props: GroupNameSelectProps) {
 
   return (
     <Combobox
-  options={options.map((name) => ({ value: name, label: name }))}
-  value={props.value}
-  onValueChange={(value) => { if (value) props.onValueChange(value) }}
-  className={props.className ?? 'w-48'}
-  placeholder={props.placeholder}
-  aria-label={props.placeholder}
-/>
+      options={options.map((name) => ({ value: name, label: name }))}
+      value={props.value}
+      onValueChange={(value) => {
+        if (value) props.onValueChange(value)
+      }}
+      className={props.className ?? 'w-48'}
+      placeholder={props.placeholder}
+      aria-label={props.placeholder}
+    />
   )
 }
 
@@ -250,10 +273,15 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
   autoGroups,
   maxTokenAutoGroupsField,
   groupSpecialUsableGroup,
+  membershipGroups,
   onChange,
 }: GroupRatioVisualEditorProps) {
   const { t } = useTranslation()
   const [detailGroup, setDetailGroup] = useState<string | null>(null)
+  const membershipMap = useMemo(
+    () => parseMembershipMap(membershipGroups),
+    [membershipGroups]
+  )
 
   const registry = useMemo<RegistryEntry[]>(() => {
     const ratioMap = parseRatioMap(groupRatio)
@@ -263,16 +291,35 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
       ...Object.keys(ratioMap),
       ...Object.keys(usableMap),
       ...Object.keys(topupMap),
+      ...Object.keys(membershipMap),
     ])
     return [...names].map((name) => ({
       name,
       ratio: normalizeRatio(ratioMap[name]),
     }))
-  }, [groupRatio, userUsableGroups, topupGroupRatio])
+  }, [groupRatio, userUsableGroups, topupGroupRatio, membershipMap])
+
+  const routeRegistry = useMemo(
+    () => registry.filter((entry) => membershipMap[entry.name] !== true),
+    [membershipMap, registry]
+  )
+  const membershipRegistry = useMemo(
+    () => registry.filter((entry) => membershipMap[entry.name] === true),
+    [membershipMap, registry]
+  )
+
+  const membershipReservedNames = useMemo(
+    () => membershipRegistry.map((entry) => entry.name),
+    [membershipRegistry]
+  )
+  const routeReservedNames = useMemo(
+    () => routeRegistry.map((entry) => entry.name),
+    [routeRegistry]
+  )
 
   const registryNames = useMemo(
-    () => registry.map((entry) => entry.name),
-    [registry]
+    () => routeRegistry.map((entry) => entry.name),
+    [routeRegistry]
   )
 
   // Auto groups
@@ -318,15 +365,30 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
   return (
     <div className='space-y-4'>
       <GroupPricingTable
+        kind='route'
         groupRatio={groupRatio}
         userUsableGroups={userUsableGroups}
         topupGroupRatio={topupGroupRatio}
+        membershipGroups={membershipGroups}
+        reservedNames={membershipReservedNames}
+        onChange={onChange}
+        onShowDetail={setDetailGroup}
+      />
+
+      <GroupPricingTable
+        kind='membership'
+        groupRatio={groupRatio}
+        userUsableGroups={userUsableGroups}
+        topupGroupRatio={topupGroupRatio}
+        membershipGroups={membershipGroups}
+        reservedNames={routeReservedNames}
         onChange={onChange}
         onShowDetail={setDetailGroup}
       />
 
       <GroupOverrideRules
-        registry={registry}
+        userRegistry={membershipRegistry}
+        routeRegistry={routeRegistry}
         groupGroupRatio={groupGroupRatio}
         onChange={onChange}
       />
@@ -366,6 +428,8 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
                         size='sm'
                         disabled={index === 0}
                         onClick={() => handleAutoGroupMove(index, 'up')}
+                        aria-label={t('Move up')}
+                        title={t('Move up')}
                       >
                         ↑
                       </Button>
@@ -374,6 +438,8 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
                         size='sm'
                         disabled={index === autoGroupsList.length - 1}
                         onClick={() => handleAutoGroupMove(index, 'down')}
+                        aria-label={t('Move down')}
+                        title={t('Move down')}
                       >
                         ↓
                       </Button>
@@ -381,6 +447,8 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
                         variant='ghost'
                         size='sm'
                         onClick={() => handleAutoGroupDelete(index)}
+                        aria-label={t('Delete')}
+                        title={t('Delete')}
                       >
                         <Trash2 className='h-4 w-4' />
                       </Button>
@@ -410,52 +478,96 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
 })
 
 type GroupPricingTableProps = {
+  kind: 'route' | 'membership'
   groupRatio: string
   userUsableGroups: string
   topupGroupRatio: string
+  membershipGroups: string
+  reservedNames: string[]
   onChange: (field: string, value: string) => void
   onShowDetail: (name: string) => void
 }
 
 function GroupPricingTable({
+  kind,
   groupRatio,
   userUsableGroups,
   topupGroupRatio,
+  membershipGroups,
+  reservedNames,
   onChange,
   onShowDetail,
 }: GroupPricingTableProps) {
   const { t } = useTranslation()
-  const [rows, setRows] = useState<GroupPricingRow[]>(() =>
-    buildGroupPricingRows(groupRatio, userUsableGroups, topupGroupRatio)
+  const buildVisibleRows = useCallback(
+    () =>
+      buildGroupPricingRows(
+        groupRatio,
+        userUsableGroups,
+        topupGroupRatio,
+        membershipGroups
+      ).filter((row) => row.membership === (kind === 'membership')),
+    [groupRatio, userUsableGroups, topupGroupRatio, membershipGroups, kind]
   )
+  const [rows, setRows] = useState<GroupPricingRow[]>(buildVisibleRows)
 
   useEffect(() => {
     const incomingSignature = sourceGroupPricingSignature(
       groupRatio,
       userUsableGroups,
-      topupGroupRatio
+      topupGroupRatio,
+      membershipGroups
     )
     setRows((currentRows) => {
       if (groupPricingSignature(currentRows) === incomingSignature) {
         return currentRows
       }
-      return buildGroupPricingRows(
-        groupRatio,
-        userUsableGroups,
-        topupGroupRatio
-      )
+      return buildVisibleRows()
     })
-  }, [groupRatio, userUsableGroups, topupGroupRatio])
+  }, [
+    buildVisibleRows,
+    groupRatio,
+    userUsableGroups,
+    topupGroupRatio,
+    membershipGroups,
+  ])
 
   const emitRows = useCallback(
     (nextRows: GroupPricingRow[]) => {
       setRows(nextRows)
-      const serialized = serializeGroupPricingRows(nextRows)
+      const names = nextRows
+        .map((row) => row.name.trim())
+        .filter((name) => name.length > 0)
+      if (
+        new Set(names).size !== names.length ||
+        names.some((name) => reservedNames.includes(name))
+      ) {
+        return
+      }
+      const allRows = buildGroupPricingRows(
+        groupRatio,
+        userUsableGroups,
+        topupGroupRatio,
+        membershipGroups
+      )
+      const hiddenRows = allRows.filter(
+        (row) => row.membership !== (kind === 'membership')
+      )
+      const serialized = serializeGroupPricingRows([...hiddenRows, ...nextRows])
       onChange('GroupRatio', serialized.GroupRatio)
       onChange('UserUsableGroups', serialized.UserUsableGroups)
       onChange('TopupGroupRatio', serialized.TopupGroupRatio)
+      onChange('MembershipGroups', serialized.MembershipGroups)
     },
-    [onChange]
+    [
+      groupRatio,
+      userUsableGroups,
+      topupGroupRatio,
+      membershipGroups,
+      kind,
+      onChange,
+      reservedNames,
+    ]
   )
 
   const updateRow = useCallback(
@@ -465,14 +577,20 @@ function GroupPricingTable({
       value: string | number | boolean
     ) => {
       emitRows(
-        rows.map((row) => (row._id === id ? { ...row, [field]: value } : row))
+        rows.map((row) => {
+          if (row._id !== id) return row
+          return { ...row, [field]: value }
+        })
       )
     },
     [emitRows, rows]
   )
 
   const addRow = useCallback(() => {
-    const existingNames = new Set(rows.map((row) => row.name))
+    const existingNames = new Set([
+      ...rows.map((row) => row.name),
+      ...reservedNames,
+    ])
     let index = 1
     let name = `group_${index}`
     while (existingNames.has(name)) {
@@ -487,10 +605,11 @@ function GroupPricingTable({
         ratio: '1',
         topupRatio: '',
         selectable: true,
+        membership: kind === 'membership',
         description: '',
       },
     ])
-  }, [emitRows, rows])
+  }, [emitRows, kind, reservedNames, rows])
 
   const removeRow = useCallback(
     (id: string) => {
@@ -507,20 +626,28 @@ function GroupPricingTable({
       counts.set(name, (counts.get(name) ?? 0) + 1)
     }
     return [...counts.entries()]
-      .filter(([, count]) => count > 1)
+      .filter(([name, count]) => count > 1 || reservedNames.includes(name))
       .map(([name]) => name)
-  }, [rows])
+  }, [reservedNames, rows])
 
   return (
     <Card className={sectionCardClassName}>
       <CardHeader className={sectionHeaderClassName}>
         <div className='flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between'>
           <div>
-            <CardTitle>{t('Pricing groups')}</CardTitle>
+            <CardTitle>
+              {kind === 'membership'
+                ? t('👤 Membership tier groups')
+                : t('📦 Model route groups')}
+            </CardTitle>
             <CardDescription>
-              {t(
-                'All group names live here. Ratio applies when calls are billed as this group; top-up ratio applies to users whose account is in this group.'
-              )}
+              {kind === 'membership'
+                ? t(
+                    'Manage user identity and discounts here. Membership tiers never enter token or smart-routing candidates.'
+                  )
+                : t(
+                    'Manage model pools and routes here. These groups are used by tokens, channels, logs, and smart routing.'
+                  )}
             </CardDescription>
           </div>
           <Button onClick={addRow} size='sm' className='sm:self-start'>
@@ -632,6 +759,7 @@ function GroupPricingTable({
                       onClick={() => onShowDetail(row.name.trim())}
                       disabled={!row.name.trim()}
                       aria-label={t('Details')}
+                      title={t('Details')}
                     >
                       <Info className='h-4 w-4' />
                     </Button>
@@ -640,6 +768,7 @@ function GroupPricingTable({
                       size='sm'
                       onClick={() => removeRow(row._id)}
                       aria-label={t('Delete')}
+                      title={t('Delete')}
                     >
                       <Trash2 className='h-4 w-4' />
                     </Button>
@@ -668,13 +797,15 @@ type GroupOverride = {
 }
 
 type GroupOverrideRulesProps = {
-  registry: RegistryEntry[]
+  userRegistry: RegistryEntry[]
+  routeRegistry: RegistryEntry[]
   groupGroupRatio: string
   onChange: (field: string, value: string) => void
 }
 
 function GroupOverrideRules({
-  registry,
+  userRegistry,
+  routeRegistry,
   groupGroupRatio,
   onChange,
 }: GroupOverrideRulesProps) {
@@ -688,16 +819,20 @@ function GroupOverrideRules({
   const [overrideEditData, setOverrideEditData] =
     useState<GroupOverride | null>(null)
 
-  const registryNames = useMemo(
-    () => registry.map((entry) => entry.name),
-    [registry]
+  const userRegistryNames = useMemo(
+    () => userRegistry.map((entry) => entry.name),
+    [userRegistry]
+  )
+  const routeRegistryNames = useMemo(
+    () => routeRegistry.map((entry) => entry.name),
+    [routeRegistry]
   )
 
   const baseRatioByName = useMemo(() => {
     const map = new Map<string, number>()
-    for (const entry of registry) map.set(entry.name, entry.ratio)
+    for (const entry of routeRegistry) map.set(entry.name, entry.ratio)
     return map
-  }, [registry])
+  }, [routeRegistry])
 
   const groupGroupRatioList = useMemo(() => {
     const map = parseNestedRatioMap(groupGroupRatio)
@@ -820,7 +955,9 @@ function GroupOverrideRules({
                         <span className='font-semibold'>
                           {userGroupData.userGroup}
                         </span>
-                        {!registryNames.includes(userGroupData.userGroup) && (
+                        {!userRegistryNames.includes(
+                          userGroupData.userGroup
+                        ) && (
                           <AlertTriangle
                             className='text-destructive h-4 w-4'
                             aria-label={t('Not in pricing table')}
@@ -868,7 +1005,7 @@ function GroupOverrideRules({
                                 cell: (override) => (
                                   <span className='inline-flex items-center gap-1.5'>
                                     {override.targetGroup}
-                                    {!registryNames.includes(
+                                    {!routeRegistryNames.includes(
                                       override.targetGroup
                                     ) && (
                                       <AlertTriangle
@@ -968,7 +1105,7 @@ function GroupOverrideRules({
             <Label>{t('User group name')}</Label>
             <GroupNameSelect
               className='w-full'
-              options={registryNames}
+              options={userRegistryNames}
               value={userGroupInput}
               placeholder={t('Select a group')}
               onValueChange={setUserGroupInput}
@@ -983,7 +1120,7 @@ function GroupOverrideRules({
         onSave={handleOverrideSave}
         editData={overrideEditData}
         userGroup={overrideUserGroup}
-        groupOptions={registryNames}
+        groupOptions={routeRegistryNames}
         baseRatioByName={baseRatioByName}
       />
     </Card>

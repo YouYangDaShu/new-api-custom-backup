@@ -96,6 +96,9 @@ func IsMultiGroupToken(tokenGroup string) bool {
 
 func NormalizeTokenGroup(tokenGroup string) string {
 	tokenGroup = strings.TrimSpace(tokenGroup)
+	if tokenGroup == "" {
+		return TokenGroupAuto
+	}
 	if IsManualTokenGroup(tokenGroup) {
 		if normalized := EncodeManualTokenGroup(ParseManualTokenGroups(tokenGroup)); normalized != "" {
 			return normalized

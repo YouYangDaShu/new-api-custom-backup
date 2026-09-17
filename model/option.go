@@ -1,11 +1,15 @@
 package model
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -18,12 +22,15 @@ import (
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type Option struct {
 	Key   string `json:"key" gorm:"primaryKey"`
 	Value string `json:"value"`
 }
+
+var optionUpdateMutex sync.Mutex
 
 func AllOption() ([]*Option, error) {
 	var options []*Option
@@ -216,6 +223,105 @@ func loadOptionsFromDatabase() {
 	}
 }
 
+func MigrateMembershipGroupsOption() error {
+	optionUpdateMutex.Lock()
+	defer optionUpdateMutex.Unlock()
+
+	const key = "group_ratio_setting.membership_groups"
+	var option Option
+	err := DB.Where("key = ?", key).First(&option).Error
+	if err == nil {
+		return ratio_setting.CheckMembershipGroups(option.Value)
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+
+	membershipGroups := ratio_setting.GetMembershipGroupsCopy()
+	legacyRouteGroups := map[string]struct{}{}
+	addRouteGroups := func(raw string) {
+		for _, group := range strings.Split(raw, ",") {
+			group = strings.TrimSpace(group)
+			if group != "" {
+				legacyRouteGroups[group] = struct{}{}
+			}
+		}
+	}
+
+	if DB.Migrator().HasTable(&User{}) {
+		var userGroups []string
+		if err := DB.Model(&User{}).Distinct().Pluck("group", &userGroups).Error; err != nil {
+			return err
+		}
+		for _, group := range userGroups {
+			group = strings.TrimSpace(group)
+			if group != "" {
+				membershipGroups[group] = true
+			}
+		}
+	}
+	if DB.Migrator().HasTable(&Channel{}) {
+		var channelGroups []string
+		if err := DB.Model(&Channel{}).Distinct().Pluck("group", &channelGroups).Error; err != nil {
+			return err
+		}
+		for _, raw := range channelGroups {
+			addRouteGroups(raw)
+		}
+	}
+	if DB.Migrator().HasTable(&Ability{}) {
+		var abilityGroups []string
+		if err := DB.Model(&Ability{}).Distinct().Pluck("group", &abilityGroups).Error; err != nil {
+			return err
+		}
+		for _, group := range abilityGroups {
+			addRouteGroups(group)
+		}
+	}
+	if DB.Migrator().HasTable(&Token{}) {
+		var tokens []Token
+		if err := DB.Select("group", "auto_groups").Find(&tokens).Error; err != nil {
+			return err
+		}
+		for _, token := range tokens {
+			group := strings.TrimSpace(token.Group)
+			switch {
+			case strings.HasPrefix(group, "@manual:"):
+				addRouteGroups(strings.TrimPrefix(group, "@manual:"))
+			case group != "" && group != "auto" && !strings.HasPrefix(group, "@smart:"):
+				addRouteGroups(group)
+			}
+			if autoGroups, parseErr := token.GetAutoGroups(); parseErr == nil {
+				for _, candidate := range autoGroups {
+					addRouteGroups(candidate)
+				}
+			}
+		}
+	}
+
+	// Ambiguous legacy names remain routes so an upgrade cannot invalidate a
+	// working token/channel. Administrators can rename the route and then mark
+	// the identity name as a membership explicitly.
+	for group := range legacyRouteGroups {
+		delete(membershipGroups, group)
+	}
+	encoded, err := common.Marshal(membershipGroups)
+	if err != nil {
+		return err
+	}
+	candidate := Option{Key: key, Value: string(encoded)}
+	if err := DB.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "key"}},
+		DoNothing: true,
+	}).Create(&candidate).Error; err != nil {
+		return err
+	}
+	if err := DB.Where("key = ?", key).First(&candidate).Error; err != nil {
+		return err
+	}
+	return ratio_setting.CheckMembershipGroups(candidate.Value)
+}
+
 func SyncOptions(frequency int) {
 	for {
 		time.Sleep(time.Duration(frequency) * time.Second)
@@ -224,7 +330,132 @@ func SyncOptions(frequency int) {
 	}
 }
 
+func validateJSONNoDuplicateKeys(value string) error {
+	decoder := json.NewDecoder(strings.NewReader(value))
+	var decodeValue func() error
+	decodeValue = func() error {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		delimiter, ok := token.(json.Delim)
+		if !ok {
+			return nil
+		}
+		switch delimiter {
+		case '{':
+			seen := map[string]struct{}{}
+			for decoder.More() {
+				keyToken, err := decoder.Token()
+				if err != nil {
+					return err
+				}
+				key, ok := keyToken.(string)
+				if !ok {
+					return errors.New("JSON object key must be a string")
+				}
+				if _, exists := seen[key]; exists {
+					return fmt.Errorf("duplicate JSON key: %s", key)
+				}
+				seen[key] = struct{}{}
+				if err := decodeValue(); err != nil {
+					return err
+				}
+			}
+			_, err = decoder.Token()
+			return err
+		case '[':
+			for decoder.More() {
+				if err := decodeValue(); err != nil {
+					return err
+				}
+			}
+			_, err = decoder.Token()
+			return err
+		default:
+			return fmt.Errorf("unexpected JSON delimiter: %s", delimiter)
+		}
+	}
+	if err := decodeValue(); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("JSON must contain one value")
+		}
+		return err
+	}
+	return nil
+}
+
 func validateOptionValue(key string, value string) error {
+	if key == "GroupRatio" || key == "TopupGroupRatio" || key == "UserUsableGroups" || key == "GroupGroupRatio" || key == "group_ratio_setting.membership_groups" || key == "group_ratio_setting.group_special_usable_group" {
+		if err := validateJSONNoDuplicateKeys(value); err != nil {
+			return err
+		}
+	}
+	if key == "GroupRatio" {
+		return ratio_setting.CheckGroupRatio(value)
+	}
+	if key == "TopupGroupRatio" {
+		var ratios map[string]float64
+		if err := common.Unmarshal([]byte(value), &ratios); err != nil || ratios == nil {
+			return fmt.Errorf("top-up group ratios must be a JSON object")
+		}
+		for name, ratio := range ratios {
+			if name == "" || math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio < 0 {
+				return fmt.Errorf("invalid top-up group ratio: %s", name)
+			}
+		}
+		return nil
+	}
+	if key == "UserUsableGroups" {
+		var groups map[string]string
+		if err := common.Unmarshal([]byte(value), &groups); err != nil || groups == nil {
+			return fmt.Errorf("user usable groups must be a JSON object")
+		}
+		return nil
+	}
+	if key == "GroupGroupRatio" {
+		var ratios map[string]map[string]float64
+		if err := common.Unmarshal([]byte(value), &ratios); err != nil || ratios == nil {
+			return fmt.Errorf("group overrides must be a JSON object")
+		}
+		for userGroup, overrides := range ratios {
+			if userGroup == "" || overrides == nil {
+				return fmt.Errorf("invalid group override: %s", userGroup)
+			}
+			for routeGroup, ratio := range overrides {
+				if routeGroup == "" || math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio < 0 {
+					return fmt.Errorf("invalid group override: %s -> %s", userGroup, routeGroup)
+				}
+			}
+		}
+		return nil
+	}
+	if key == "AutoGroups" {
+		var groups []string
+		if err := common.Unmarshal([]byte(value), &groups); err != nil || groups == nil {
+			return fmt.Errorf("auto groups must be a JSON array")
+		}
+		seen := make(map[string]struct{}, len(groups))
+		for _, group := range groups {
+			if strings.TrimSpace(group) == "" {
+				return fmt.Errorf("auto group cannot be empty")
+			}
+			if _, ok := seen[group]; ok {
+				return fmt.Errorf("duplicate auto group: %s", group)
+			}
+			seen[group] = struct{}{}
+		}
+		return nil
+	}
+	if key == "DefaultUseAutoGroup" {
+		if _, err := strconv.ParseBool(value); err != nil {
+			return fmt.Errorf("DefaultUseAutoGroup must be boolean")
+		}
+		return nil
+	}
 	if key == "UserConcurrencyDefault" {
 		parsed, err := strconv.Atoi(strings.TrimSpace(value))
 		if err != nil || parsed < 1 || parsed > common.MaxUserConcurrency {
@@ -240,6 +471,16 @@ func validateOptionValue(key string, value string) error {
 	}
 	if key == "MaxTokenAutoGroups" {
 		return setting.ValidateMaxTokenAutoGroups(value)
+	}
+	if key == "group_ratio_setting.membership_groups" {
+		return ratio_setting.CheckMembershipGroups(value)
+	}
+	if key == "group_ratio_setting.group_special_usable_group" {
+		var rules map[string]map[string]string
+		if err := common.Unmarshal([]byte(value), &rules); err != nil || rules == nil {
+			return fmt.Errorf("group special rules must be a JSON object")
+		}
+		return nil
 	}
 	if key == "TokenRankingRewards" {
 		var rewards []float64
@@ -267,6 +508,9 @@ func validateOptionValue(key string, value string) error {
 }
 
 func UpdateOption(key string, value string) error {
+	optionUpdateMutex.Lock()
+	defer optionUpdateMutex.Unlock()
+
 	if IsModelPricingOption(key) {
 		return UpdateModelPricingOptions(map[string]string{key: value})
 	}
@@ -294,6 +538,9 @@ func UpdateOption(key string, value string) error {
 // is touched — safe for callers that must commit a set of related options
 // atomically (e.g. payment gateway binding).
 func UpdateOptionsBulk(values map[string]string) error {
+	optionUpdateMutex.Lock()
+	defer optionUpdateMutex.Unlock()
+
 	if len(values) == 0 {
 		return nil
 	}
@@ -320,6 +567,7 @@ func UpdateOptionsBulk(values map[string]string) error {
 	}
 	for k, v := range values {
 		if err := updateOptionMap(k, v); err != nil {
+			loadOptionsFromDatabase()
 			return err
 		}
 	}
@@ -711,7 +959,10 @@ func handleConfigUpdate(key, value string) bool {
 	configMap := map[string]string{
 		configKey: value,
 	}
-	config.UpdateConfigFromMap(cfg, configMap)
+	if err := config.UpdateConfigFromMap(cfg, configMap); err != nil {
+		common.SysLog("failed to update config " + key + ": " + err.Error())
+		return false
+	}
 
 	// 特定配置的后处理
 	if configName == "performance_setting" {

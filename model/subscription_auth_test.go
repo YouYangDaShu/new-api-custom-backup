@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	"github.com/QuantumNous/new-api/types"
 	"github.com/glebarez/sqlite"
 	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
@@ -17,8 +19,21 @@ import (
 	"gorm.io/gorm"
 )
 
+func useSubscriptionMembershipGroups(t *testing.T, ratios, groups string) {
+	t.Helper()
+	oldRatios := ratio_setting.GroupRatio2JSONString()
+	oldGroups := ratio_setting.MembershipGroups2JSONString()
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(ratios))
+	require.NoError(t, types.LoadFromJsonString(ratio_setting.GetGroupRatioSetting().MembershipGroups, groups))
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(oldRatios))
+		require.NoError(t, types.LoadFromJsonString(ratio_setting.GetGroupRatioSetting().MembershipGroups, oldGroups))
+	})
+}
+
 func TestSubscriptionGroupTransitionsPreserveAuthVersionAndSessions(t *testing.T) {
 	truncateTables(t)
+	useSubscriptionMembershipGroups(t, `{"default":1,"pro":0.8}`, `{"default":true,"pro":true}`)
 	useUserCacheMiniRedis(t)
 	now := time.Now().Unix()
 	user := User{
@@ -85,7 +100,85 @@ func TestSubscriptionGroupTransitionsPreserveAuthVersionAndSessions(t *testing.T
 	assert.Equal(t, "default", cached.Group)
 }
 
+func TestSubscriptionRejectsHistoricalNonMembershipGroupTargets(t *testing.T) {
+	truncateTables(t)
+	useSubscriptionMembershipGroups(t, `{"default":1,"vip":0.9,"grok":1.2}`, `{"default":true,"vip":true}`)
+
+	user := User{
+		Username: "subscription-invalid-group-user",
+		Password: "unused-password-hash",
+		Role:     common.RoleCommonUser,
+		Status:   common.UserStatusEnabled,
+		Group:    "default",
+	}
+	require.NoError(t, DB.Create(&user).Error)
+
+	for _, tc := range []struct {
+		name string
+		plan SubscriptionPlan
+	}{
+		{
+			name: "route group upgrade",
+			plan: SubscriptionPlan{Title: "bad-upgrade", DurationUnit: SubscriptionDurationMonth, DurationValue: 1, UpgradeGroup: "grok", Enabled: true},
+		},
+		{
+			name: "deleted downgrade group",
+			plan: SubscriptionPlan{Title: "bad-downgrade", DurationUnit: SubscriptionDurationMonth, DurationValue: 1, UpgradeGroup: "vip", DowngradeGroup: "deleted", Enabled: true},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := tc.plan
+			require.NoError(t, DB.Create(&plan).Error)
+			_, err := CreateUserSubscriptionFromPlanTx(DB, user.Id, &plan, "test")
+			require.Error(t, err)
+			var updated User
+			require.NoError(t, DB.First(&updated, user.Id).Error)
+			assert.Equal(t, "default", updated.Group)
+			var count int64
+			require.NoError(t, DB.Model(&UserSubscription{}).Where("plan_id = ?", plan.Id).Count(&count).Error)
+			assert.Zero(t, count)
+		})
+	}
+}
+
+func TestSubscriptionRejectsHistoricalInvalidDowngradeAndExpiryTargets(t *testing.T) {
+	truncateTables(t)
+	useSubscriptionMembershipGroups(t, `{"default":1,"vip":0.9,"grok":1.2}`, `{"default":true,"vip":true}`)
+
+	user := User{
+		Username: "subscription-invalid-expiry-user",
+		Password: "unused-password-hash",
+		Role:     common.RoleCommonUser,
+		Status:   common.UserStatusEnabled,
+		Group:    "vip",
+	}
+	require.NoError(t, DB.Create(&user).Error)
+	now := common.GetTimestamp()
+	badDowngrade := UserSubscription{
+		UserId: user.Id, Status: "active", EndTime: now + 60,
+		UpgradeGroup: "vip", DowngradeGroup: "grok",
+	}
+	require.NoError(t, DB.Create(&badDowngrade).Error)
+	require.Error(t, DB.Transaction(func(tx *gorm.DB) error {
+		_, err := downgradeUserGroupForSubscriptionTx(tx, &badDowngrade, now)
+		return err
+	}))
+
+	require.NoError(t, DB.Model(&badDowngrade).Updates(map[string]any{
+		"status":          "active",
+		"end_time":        now - 1,
+		"downgrade_group": "",
+		"prev_user_group": "grok",
+	}).Error)
+	_, err := ExpireDueSubscriptions(10)
+	require.Error(t, err)
+	var updated User
+	require.NoError(t, DB.First(&updated, user.Id).Error)
+	assert.Equal(t, "vip", updated.Group)
+}
+
 func TestSubscriptionGroupCacheRefreshFailureDoesNotChangeCommittedResult(t *testing.T) {
+	useSubscriptionMembershipGroups(t, `{"default":1,"pro":0.8}`, `{"default":true,"pro":true}`)
 	previousDB, previousLogDB := DB, LOG_DB
 	previousMainDatabaseType, previousLogDatabaseType := common.MainDatabaseType(), common.LogDatabaseType()
 	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)

@@ -218,21 +218,24 @@ func TestGetUserModelsFiltersByRequestedGroup(t *testing.T) {
 func TestGetUserModelsExpandsAutoGroupsInConfiguredOrder(t *testing.T) {
 	originalAutoGroups := setting.AutoGroups2JsonString()
 	originalUsableGroups := setting.UserUsableGroups2JSONString()
+	originalRatios := ratio_setting.GroupRatio2JSONString()
 	originalSpecialGroups := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup.ReadAll()
 	t.Cleanup(func() {
 		require.NoError(t, setting.UpdateAutoGroupsByJsonString(originalAutoGroups))
 		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(originalUsableGroups))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(originalRatios))
 		specialGroups := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup
 		specialGroups.Clear()
 		specialGroups.AddAll(originalSpecialGroups)
 	})
 
-	require.NoError(t, setting.UpdateAutoGroupsByJsonString(`["vip","default","unavailable"]`))
-	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"auto":"自动分组","default":"默认分组","unavailable":"不可用分组"}`))
+	require.NoError(t, setting.UpdateAutoGroupsByJsonString(`["plus","grok","unavailable"]`))
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"auto":"自动分组","plus":"Plus 分组","grok":"Grok 分组","unavailable":"不可用分组"}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"vip":1,"svip":1,"plus":1,"grok":1,"unavailable":1}`))
 	specialGroups := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup
 	specialGroups.Clear()
 	specialGroups.Set("default", map[string]string{
-		"+:vip":         "VIP 分组",
+		"+:plus":        "Plus 分组",
 		"-:unavailable": "",
 	})
 
@@ -245,10 +248,10 @@ func TestGetUserModelsExpandsAutoGroupsInConfiguredOrder(t *testing.T) {
 		Status:   common.UserStatusEnabled,
 	}).Error)
 	require.NoError(t, db.Create(&[]model.Ability{
-		{Group: "vip", Model: "zz-vip-model", ChannelId: 1, Enabled: true},
-		{Group: "vip", Model: "zz-shared-model", ChannelId: 1, Enabled: true},
-		{Group: "default", Model: "zz-default-model", ChannelId: 1, Enabled: true},
-		{Group: "default", Model: "zz-shared-model", ChannelId: 2, Enabled: true},
+		{Group: "plus", Model: "zz-plus-model", ChannelId: 1, Enabled: true},
+		{Group: "plus", Model: "zz-shared-model", ChannelId: 1, Enabled: true},
+		{Group: "grok", Model: "zz-grok-model", ChannelId: 1, Enabled: true},
+		{Group: "grok", Model: "zz-shared-model", ChannelId: 2, Enabled: true},
 		{Group: "unavailable", Model: "zz-unavailable-model", ChannelId: 1, Enabled: true},
 	}).Error)
 
@@ -261,8 +264,8 @@ func TestGetUserModelsExpandsAutoGroupsInConfiguredOrder(t *testing.T) {
 
 	models := decodeUserModelsResponse(t, recorder)
 	require.Len(t, models, 3)
-	assert.ElementsMatch(t, []string{"zz-vip-model", "zz-shared-model"}, models[:2])
-	assert.Equal(t, "zz-default-model", models[2])
+	assert.ElementsMatch(t, []string{"zz-plus-model", "zz-shared-model"}, models[:2])
+	assert.Equal(t, "zz-grok-model", models[2])
 }
 
 func TestListModelsIncludesTieredBillingModel(t *testing.T) {
@@ -437,8 +440,8 @@ func TestListModelsTokenLimitUsesResolvedCustomAutoGroups(t *testing.T) {
 	originalUsableGroups := setting.UserUsableGroups2JSONString()
 	originalRatios := ratio_setting.GroupRatio2JSONString()
 	require.NoError(t, setting.UpdateMaxTokenAutoGroups("5"))
-	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default","vip":"VIP"}`))
-	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"vip":1}`))
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"plus":"Plus","grok":"Grok"}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"vip":1,"svip":1,"plus":1,"grok":1}`))
 	t.Cleanup(func() {
 		require.NoError(t, setting.UpdateMaxTokenAutoGroups(fmt.Sprintf("%d", originalMax)))
 		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(originalUsableGroups))
@@ -447,9 +450,9 @@ func TestListModelsTokenLimitUsesResolvedCustomAutoGroups(t *testing.T) {
 
 	db := setupModelListControllerTestDB(t)
 	require.NoError(t, db.Create(&[]model.Ability{
-		{Group: "vip", Model: "zz-vip-allowed", ChannelId: 1, Enabled: true},
-		{Group: "vip", Model: "zz-vip-denied", ChannelId: 1, Enabled: true},
-		{Group: "default", Model: "zz-default-outside-snapshot", ChannelId: 1, Enabled: true},
+		{Group: "plus", Model: "zz-plus-allowed", ChannelId: 1, Enabled: true},
+		{Group: "plus", Model: "zz-plus-denied", ChannelId: 1, Enabled: true},
+		{Group: "grok", Model: "zz-grok-outside-snapshot", ChannelId: 1, Enabled: true},
 	}).Error)
 
 	recorder := httptest.NewRecorder()
@@ -457,27 +460,27 @@ func TestListModelsTokenLimitUsesResolvedCustomAutoGroups(t *testing.T) {
 	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
 	common.SetContextKey(ctx, constant.ContextKeyTokenGroup, "auto")
-	common.SetContextKey(ctx, constant.ContextKeyTokenAutoGroups, []string{"vip"})
+	common.SetContextKey(ctx, constant.ContextKeyTokenAutoGroups, []string{"plus"})
 	common.SetContextKey(ctx, constant.ContextKeyTokenModelLimitEnabled, true)
 	common.SetContextKey(ctx, constant.ContextKeyTokenModelLimit, map[string]bool{
-		"zz-vip-allowed":              true,
-		"zz-default-outside-snapshot": true,
-		"zz-not-enabled":              true,
+		"zz-plus-allowed":          true,
+		"zz-grok-outside-snapshot": true,
+		"zz-not-enabled":           true,
 	})
 
 	ListModels(ctx, constant.ChannelTypeOpenAI)
 	ids := decodeListModelsResponse(t, recorder)
-	require.Equal(t, map[string]struct{}{"zz-vip-allowed": {}}, ids)
+	require.Equal(t, map[string]struct{}{"zz-plus-allowed": {}}, ids)
 
-	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default"}`))
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"grok":"Grok"}`))
 	emptyRecorder := httptest.NewRecorder()
 	emptyCtx, _ := gin.CreateTestContext(emptyRecorder)
 	emptyCtx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	common.SetContextKey(emptyCtx, constant.ContextKeyUserGroup, "default")
 	common.SetContextKey(emptyCtx, constant.ContextKeyTokenGroup, "auto")
-	common.SetContextKey(emptyCtx, constant.ContextKeyTokenAutoGroups, []string{"vip"})
+	common.SetContextKey(emptyCtx, constant.ContextKeyTokenAutoGroups, []string{"plus"})
 	common.SetContextKey(emptyCtx, constant.ContextKeyTokenModelLimitEnabled, true)
-	common.SetContextKey(emptyCtx, constant.ContextKeyTokenModelLimit, map[string]bool{"zz-vip-allowed": true})
+	common.SetContextKey(emptyCtx, constant.ContextKeyTokenModelLimit, map[string]bool{"zz-plus-allowed": true})
 
 	require.NotPanics(t, func() {
 		ListModels(emptyCtx, constant.ChannelTypeAnthropic)

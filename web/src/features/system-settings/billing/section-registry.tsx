@@ -19,9 +19,9 @@ For commercial licensing, please contact support@quantumnous.com
 import { parseCurrencyDisplayType } from '@/lib/currency'
 
 import { CheckinSettingsSection } from '../general/checkin-settings-section'
-import { WeeklyRankingSettingsSection } from '../general/weekly-ranking-settings-section'
 import { PricingSection } from '../general/pricing-section'
 import { QuotaSettingsSection } from '../general/quota-settings-section'
+import { WeeklyRankingSettingsSection } from '../general/weekly-ranking-settings-section'
 import { PaymentSettingsSection } from '../integrations/payment-settings-section'
 import { RatioSettingsCard } from '../models/ratio-settings-card'
 import type { BillingSettings } from '../types'
@@ -45,6 +45,7 @@ const getGroupDefaults = (settings: BillingSettings) => ({
   TopupGroupRatio: settings.TopupGroupRatio,
   GroupRatio: settings.GroupRatio,
   UserUsableGroups: settings.UserUsableGroups,
+  MembershipGroups: settings['group_ratio_setting.membership_groups'],
   GroupGroupRatio: settings.GroupGroupRatio,
   AutoGroups: settings.AutoGroups,
   MaxTokenAutoGroups: settings.MaxTokenAutoGroups,
@@ -210,14 +211,27 @@ const BILLING_SECTIONS = [
       let rewards: number[] = []
       try {
         const parsed = JSON.parse(settings.TokenRankingRewards)
-        if (Array.isArray(parsed)) rewards = parsed.filter((value): value is number => typeof value === 'number')
+        if (Array.isArray(parsed)) {
+          rewards = parsed.filter(
+            (value): value is number => typeof value === 'number'
+          )
+        }
       } catch {
         rewards = []
       }
       if (rewards.length === 0) {
-        rewards = [settings.WeeklyRankReward1, settings.WeeklyRankReward2, settings.WeeklyRankReward3]
+        rewards = [
+          settings.WeeklyRankReward1,
+          settings.WeeklyRankReward2,
+          settings.WeeklyRankReward3,
+        ]
       }
-      return <WeeklyRankingSettingsSection enabled={settings.TokenRankingEnabled} rewards={rewards} />
+      return (
+        <WeeklyRankingSettingsSection
+          enabled={settings.TokenRankingEnabled}
+          rewards={rewards}
+        />
+      )
     },
   },
 ] as const

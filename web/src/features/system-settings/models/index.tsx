@@ -58,6 +58,8 @@ const defaultModelSettings: ModelSettings = {
   TopupGroupRatio: '',
   GroupRatio: '',
   UserUsableGroups: '',
+  'group_ratio_setting.membership_groups':
+    '{"default":true,"vip":true,"svip":true}',
   GroupGroupRatio: '',
   AutoGroups: '',
   MaxTokenAutoGroups: 5,

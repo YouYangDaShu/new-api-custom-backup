@@ -114,7 +114,7 @@ func Distribute() func(c *gin.Context) {
 						return
 					}
 					if playgroundRequest.Group != "" {
-						if !service.GroupInUserUsableGroups(usingGroup, playgroundRequest.Group) && playgroundRequest.Group != usingGroup {
+						if !service.IsUserSelectableGroup(common.GetContextKeyString(c, constant.ContextKeyUserGroup), playgroundRequest.Group) {
 							abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied))
 							return
 						}
@@ -212,7 +212,7 @@ func Distribute() func(c *gin.Context) {
 }
 
 func resolveTokenRoutingGroup(c *gin.Context, usingGroup string) string {
-	tokenGroup := common.GetContextKeyString(c, constant.ContextKeyTokenGroup)
+	tokenGroup := service.NormalizeTokenGroup(common.GetContextKeyString(c, constant.ContextKeyTokenGroup))
 	if service.IsMultiGroupToken(tokenGroup) {
 		return tokenGroup
 	}

@@ -41,8 +41,8 @@ func setupSmartRouteTest(t *testing.T) *gorm.DB {
 	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.PerfMetric{}))
 	model.DB = db
 	common.MemoryCacheEnabled = true
-	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default","cheap":"Cheap","fast":"Fast","extra":"Extra"}`))
-	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"cheap":0.5,"fast":2,"extra":1}`))
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"standard":"Standard","cheap":"Cheap","fast":"Fast","extra":"Extra"}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"vip":1,"svip":1,"standard":1,"cheap":0.5,"fast":2,"extra":1}`))
 	require.NoError(t, setting.UpdateMaxTokenAutoGroups("3"))
 	smartPerfMu.Lock()
 	smartPerfCache = map[string]smartPerfSnap{}
@@ -80,30 +80,30 @@ func addSmartRouteMetric(t *testing.T, db *gorm.DB, modelName, group string, req
 func TestRankGroupsForModelModesAndSamples(t *testing.T) {
 	db := setupSmartRouteTest(t)
 	modelName := "smart-ranking-model"
-	addSmartRouteChannel(t, db, 3101, "default", modelName)
+	addSmartRouteChannel(t, db, 3101, "standard", modelName)
 	addSmartRouteChannel(t, db, 3102, "cheap", modelName)
 	addSmartRouteChannel(t, db, 3103, "fast", modelName)
-	addSmartRouteMetric(t, db, modelName, "default", 10, 9, 900)
+	addSmartRouteMetric(t, db, modelName, "standard", 10, 9, 900)
 	addSmartRouteMetric(t, db, modelName, "cheap", 10, 3, 800)
 	addSmartRouteMetric(t, db, modelName, "fast", 10, 10, 100)
 	model.InitChannelCache()
-	candidates := []string{"default", "cheap", "fast", "extra"}
-	assert.Equal(t, []string{"cheap", "default", "fast"}, RankGroupsForModel("default", modelName, SmartModePrice, "/v1/chat/completions", candidates))
-	assert.Equal(t, []string{"fast", "default", "cheap"}, RankGroupsForModel("default", modelName, SmartModeSuccessRate, "/v1/chat/completions", candidates))
-	assert.Equal(t, []string{"fast", "default", "cheap"}, RankGroupsForModel("default", modelName, SmartModeBalanced, "/v1/chat/completions", candidates))
+	candidates := []string{"standard", "cheap", "fast", "extra"}
+	assert.Equal(t, []string{"cheap", "standard", "fast"}, RankGroupsForModel("default", modelName, SmartModePrice, "/v1/chat/completions", candidates))
+	assert.Equal(t, []string{"fast", "standard", "cheap"}, RankGroupsForModel("default", modelName, SmartModeSuccessRate, "/v1/chat/completions", candidates))
+	assert.Equal(t, []string{"fast", "standard", "cheap"}, RankGroupsForModel("default", modelName, SmartModeBalanced, "/v1/chat/completions", candidates))
 }
 
 func TestSmartSuccessRateUnknownAndZeroSuccess(t *testing.T) {
 	db := setupSmartRouteTest(t)
 	modelName := "smart-success-samples"
-	addSmartRouteChannel(t, db, 3201, "default", modelName)
+	addSmartRouteChannel(t, db, 3201, "standard", modelName)
 	addSmartRouteChannel(t, db, 3202, "cheap", modelName)
 	addSmartRouteChannel(t, db, 3203, "fast", modelName)
-	addSmartRouteMetric(t, db, modelName, "default", 4, 0, 400)
+	addSmartRouteMetric(t, db, modelName, "standard", 4, 0, 400)
 	addSmartRouteMetric(t, db, modelName, "cheap", 0, 0, 0)
 	addSmartRouteMetric(t, db, modelName, "fast", 4, 2, 400)
 	model.InitChannelCache()
-	got := RankGroupsForModel("default", modelName, SmartModeSuccessRate, "", []string{"default", "cheap", "fast"})
+	got := RankGroupsForModel("default", modelName, SmartModeSuccessRate, "", []string{"standard", "cheap", "fast"})
 	assert.Equal(t, []string{"fast", "cheap"}, got)
 }
 
@@ -111,21 +111,21 @@ func TestSmartRouteUsesOnlyTokenAutoGroupsAndRealSelection(t *testing.T) {
 	db := setupSmartRouteTest(t)
 	modelName := "smart-token-scope"
 	addSmartRouteChannel(t, db, 3301, "cheap", modelName)
-	addSmartRouteChannel(t, db, 3302, "default", modelName)
+	addSmartRouteChannel(t, db, 3302, "standard", modelName)
 	addSmartRouteChannel(t, db, 3303, "extra", modelName)
 	addSmartRouteMetric(t, db, modelName, "cheap", 5, 5, 100)
-	addSmartRouteMetric(t, db, modelName, "default", 5, 5, 100)
+	addSmartRouteMetric(t, db, modelName, "standard", 5, 5, 100)
 	addSmartRouteMetric(t, db, modelName, "extra", 5, 5, 1)
 	model.InitChannelCache()
 	gin.SetMode(gin.TestMode)
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
-	common.SetContextKey(ctx, constant.ContextKeyTokenAutoGroups, []string{"default", "cheap"})
+	common.SetContextKey(ctx, constant.ContextKeyTokenAutoGroups, []string{"standard", "cheap"})
 	retry := 0
 	channel, selected, err := CacheGetRandomSatisfiedChannel(&RetryParam{Ctx: ctx, TokenGroup: "@smart:balanced", ModelName: modelName, RequestPath: "/v1/chat/completions", Retry: &retry})
 	require.NoError(t, err)
 	require.NotNil(t, channel)
-	assert.Contains(t, []string{"default", "cheap"}, selected)
+	assert.Contains(t, []string{"standard", "cheap"}, selected)
 	assert.NotEqual(t, "extra", selected)
 	assert.Equal(t, selected, common.GetContextKeyString(ctx, constant.ContextKeyAutoGroup))
 }

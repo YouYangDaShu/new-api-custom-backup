@@ -648,7 +648,7 @@ export async function getOllamaVersion(
 /**
  * Get all available groups (re-exported from users API for convenience)
  */
-export const getGroups = getUserGroups
+export const getGroups = () => getUserGroups('channel')
 
 // ============================================================================
 // Prefill Groups (Model Groups)

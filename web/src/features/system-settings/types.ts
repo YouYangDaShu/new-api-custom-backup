@@ -34,6 +34,10 @@ export type UpdateOptionRequest = {
   value: string | boolean | number
 }
 
+export type UpdateOptionsBulkRequest = {
+  options: UpdateOptionRequest[]
+}
+
 export type UpdateOptionResponse = {
   success: boolean
   message: string
@@ -224,6 +228,7 @@ export type ModelSettings = {
   TopupGroupRatio: string
   GroupRatio: string
   UserUsableGroups: string
+  'group_ratio_setting.membership_groups': string
   GroupGroupRatio: string
   AutoGroups: string
   MaxTokenAutoGroups: number
@@ -289,6 +294,7 @@ export type BillingSettings = {
   TopupGroupRatio: string
   GroupRatio: string
   UserUsableGroups: string
+  'group_ratio_setting.membership_groups': string
   GroupGroupRatio: string
   AutoGroups: string
   MaxTokenAutoGroups: number

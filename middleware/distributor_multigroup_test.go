@@ -17,6 +17,14 @@ func TestResolveTokenRoutingGroupUsesManualTokenGroup(t *testing.T) {
 	assert.Equal(t, "@manual:ST,gemini", resolveTokenRoutingGroup(ctx, "vip"))
 }
 
+func TestResolveTokenRoutingGroupNormalizesLegacyEmptyGroupToAuto(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(nil)
+	common.SetContextKey(ctx, constant.ContextKeyTokenGroup, "")
+
+	assert.Equal(t, "auto", resolveTokenRoutingGroup(ctx, "vip"))
+}
+
 func TestResolveTokenRoutingGroupKeepsSingleUsingGroup(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := gin.CreateTestContext(nil)

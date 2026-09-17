@@ -370,26 +370,21 @@ func RecalculateTaskQuotaByTokens(ctx context.Context, task *model.Task, totalTo
 		return false
 	}
 
-	// 获取用户和组的倍率信息
-	group := task.Group
-	if group == "" {
-		user, err := model.GetUserById(task.UserId, false)
-		if err == nil {
-			group = user.Group
-		}
-	}
-	if group == "" {
+	// Prefer the submit-time combined multiplier snapshot. Legacy tasks without
+	// a snapshot fall back to the current membership × route calculation.
+	routeGroup := task.Group
+	if routeGroup == "" {
 		return false
 	}
-
-	groupRatio := ratio_setting.GetGroupRatio(group)
-	userGroupRatio, hasUserGroupRatio := ratio_setting.GetGroupGroupRatio(group, group)
-
-	var finalGroupRatio float64
-	if hasUserGroupRatio {
-		finalGroupRatio = userGroupRatio
+	finalGroupRatio := 0.0
+	if billingContext := task.PrivateData.BillingContext; billingContext != nil && billingContext.GroupRatioSet {
+		finalGroupRatio = billingContext.GroupRatio
 	} else {
-		finalGroupRatio = groupRatio
+		user, err := model.GetUserById(task.UserId, false)
+		if err != nil || user.Group == "" {
+			return false
+		}
+		finalGroupRatio, _, _ = ratio_setting.ResolveGroupRatio(user.Group, routeGroup)
 	}
 
 	// 计算 OtherRatios 乘积（视频折扣、时长等）

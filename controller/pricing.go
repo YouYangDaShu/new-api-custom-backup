@@ -1,8 +1,6 @@
 package controller
 
 import (
-	"maps"
-
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
@@ -40,29 +38,20 @@ func GetPricing(c *gin.Context) {
 	userId, exists := c.Get("id")
 	usableGroup := map[string]string{}
 	groupRatio := map[string]float64{}
-	maps.Copy(groupRatio, ratio_setting.GetGroupRatioCopy())
 	var group string
 	if exists {
 		user, err := model.GetUserCache(userId.(int))
 		if err == nil {
 			group = user.Group
-			for g := range groupRatio {
-				ratio, ok := ratio_setting.GetGroupGroupRatio(group, g)
-				if ok {
-					groupRatio[g] = ratio
-				}
-			}
 		}
 	}
 
-	usableGroup = service.GetUserUsableGroups(group)
-	pricing = filterPricingByUsableGroups(pricing, usableGroup)
-	// check groupRatio contains usableGroup
-	for group := range ratio_setting.GetGroupRatioCopy() {
-		if _, ok := usableGroup[group]; !ok {
-			delete(groupRatio, group)
-		}
+	usableGroup = service.GetUserTokenSelectableGroups(group)
+	for routeGroup := range usableGroup {
+		ratio, _, _ := ratio_setting.ResolveGroupRatio(group, routeGroup)
+		groupRatio[routeGroup] = ratio
 	}
+	pricing = filterPricingByUsableGroups(pricing, usableGroup)
 
 	c.JSON(200, gin.H{
 		"success":            true,

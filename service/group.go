@@ -11,6 +11,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func IsMembershipGroup(name string) bool {
+	return ratio_setting.IsMembershipGroup(name)
+}
+
 func GetUserUsableGroups(userGroup string) map[string]string {
 	groupsCopy := setting.GetUserUsableGroupsCopy()
 	if userGroup != "" {
@@ -40,6 +44,16 @@ func GetUserUsableGroups(userGroup string) map[string]string {
 	return groupsCopy
 }
 
+func GetUserTokenSelectableGroups(userGroup string) map[string]string {
+	groups := GetUserUsableGroups(userGroup)
+	for name := range groups {
+		if IsMembershipGroup(name) {
+			delete(groups, name)
+		}
+	}
+	return groups
+}
+
 func GroupInUserUsableGroups(userGroup, groupName string) bool {
 	_, ok := GetUserUsableGroups(userGroup)[groupName]
 	return ok
@@ -49,7 +63,7 @@ func IsUserSelectableGroup(userGroup, groupName string) bool {
 	if groupName == "" || groupName == "auto" {
 		return false
 	}
-	return GroupInUserUsableGroups(userGroup, groupName) && ratio_setting.ContainsGroupRatio(groupName)
+	return !IsMembershipGroup(groupName) && GroupInUserUsableGroups(userGroup, groupName) && ratio_setting.ContainsGroupRatio(groupName)
 }
 
 // GetUserAutoGroup 根据用户分组获取自动分组设置
@@ -125,9 +139,6 @@ func GetGroupsEnabledModels(groups []string) []string {
 // userGroup 用户分组
 // group 需要获取倍率的分组
 func GetUserGroupRatio(userGroup, group string) float64 {
-	ratio, ok := ratio_setting.GetGroupGroupRatio(userGroup, group)
-	if ok {
-		return ratio
-	}
-	return ratio_setting.GetGroupRatio(group)
+	ratio, _, _ := ratio_setting.ResolveGroupRatio(userGroup, group)
+	return ratio
 }

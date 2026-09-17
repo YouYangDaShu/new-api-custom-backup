@@ -187,14 +187,14 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 	}
 	req.Plan.UpgradeGroup = strings.TrimSpace(req.Plan.UpgradeGroup)
 	if req.Plan.UpgradeGroup != "" {
-		if _, ok := ratio_setting.GetGroupRatioCopy()[req.Plan.UpgradeGroup]; !ok {
+		if _, ok := ratio_setting.GetGroupRatioCopy()[req.Plan.UpgradeGroup]; !ok || !ratio_setting.IsMembershipGroup(req.Plan.UpgradeGroup) {
 			common.ApiErrorMsg(c, "升级分组不存在")
 			return
 		}
 	}
 	req.Plan.DowngradeGroup = strings.TrimSpace(req.Plan.DowngradeGroup)
 	if req.Plan.DowngradeGroup != "" {
-		if _, ok := ratio_setting.GetGroupRatioCopy()[req.Plan.DowngradeGroup]; !ok {
+		if _, ok := ratio_setting.GetGroupRatioCopy()[req.Plan.DowngradeGroup]; !ok || !ratio_setting.IsMembershipGroup(req.Plan.DowngradeGroup) {
 			common.ApiErrorMsg(c, "降级分组不存在")
 			return
 		}
@@ -261,14 +261,14 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 	}
 	req.Plan.UpgradeGroup = strings.TrimSpace(req.Plan.UpgradeGroup)
 	if req.Plan.UpgradeGroup != "" {
-		if _, ok := ratio_setting.GetGroupRatioCopy()[req.Plan.UpgradeGroup]; !ok {
+		if _, ok := ratio_setting.GetGroupRatioCopy()[req.Plan.UpgradeGroup]; !ok || !ratio_setting.IsMembershipGroup(req.Plan.UpgradeGroup) {
 			common.ApiErrorMsg(c, "升级分组不存在")
 			return
 		}
 	}
 	req.Plan.DowngradeGroup = strings.TrimSpace(req.Plan.DowngradeGroup)
 	if req.Plan.DowngradeGroup != "" {
-		if _, ok := ratio_setting.GetGroupRatioCopy()[req.Plan.DowngradeGroup]; !ok {
+		if _, ok := ratio_setting.GetGroupRatioCopy()[req.Plan.DowngradeGroup]; !ok || !ratio_setting.IsMembershipGroup(req.Plan.DowngradeGroup) {
 			common.ApiErrorMsg(c, "降级分组不存在")
 			return
 		}

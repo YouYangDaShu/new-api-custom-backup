@@ -183,6 +183,12 @@ func chooseDB(envName string, isLog bool) (*gorm.DB, common.DatabaseType, error)
 	return db, common.DatabaseTypeSQLite, err
 }
 
+// InitSQLDialectColumns refreshes dialect-specific quoted column names after
+// tests or isolated runtimes replace the configured database type.
+func InitSQLDialectColumns() {
+	initCol()
+}
+
 func InitDB() (err error) {
 	db, dbType, err := chooseDB("SQL_DSN", false)
 	if err == nil {

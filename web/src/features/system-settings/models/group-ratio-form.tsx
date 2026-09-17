@@ -73,6 +73,7 @@ type GroupFormValues = {
   MaxTokenAutoGroups: number
   DefaultUseAutoGroup: boolean
   GroupSpecialUsableGroup: string
+  MembershipGroups: string
 }
 
 type GroupRatioFormProps = {
@@ -201,6 +202,7 @@ export const GroupRatioForm = memo(function GroupRatioForm({
                 />
               }
               groupSpecialUsableGroup={form.watch('GroupSpecialUsableGroup')}
+              membershipGroups={form.watch('MembershipGroups')}
               onChange={(field, value) =>
                 handleFieldChange(field as keyof GroupFormValues, value)
               }
@@ -239,6 +241,31 @@ export const GroupRatioForm = memo(function GroupRatioForm({
           </div>
         ) : (
           <SettingsForm onSubmit={form.handleSubmit(onSave)}>
+            <FormField
+              control={form.control}
+              name='MembershipGroups'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('👤 Membership tier groups')}</FormLabel>
+                  <FormControl>
+                    <JsonCodeEditor
+                      value={field.value}
+                      onChange={field.onChange}
+                      name={field.name}
+                      onBlur={field.onBlur}
+                      textareaRef={field.ref}
+                      heightClassName='h-40 min-h-40 max-h-40'
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'JSON map of membership tier names. These groups define user identity and discount, never token routing.'
+                    )}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
             <FormField
               control={form.control}
               name='GroupRatio'
@@ -492,7 +519,7 @@ function GroupPricingGuide({ open, onOpenChange }: GroupPricingGuideProps) {
           <SheetTitle>{t('Group pricing usage guide')}</SheetTitle>
           <SheetDescription>
             {t(
-              'Understand how user groups, token groups, ratios, and special rules work together.'
+              'Understand how membership tiers, model routes, combined ratios, and pair overrides work together.'
             )}
           </SheetDescription>
         </SheetHeader>
@@ -500,12 +527,12 @@ function GroupPricingGuide({ open, onOpenChange }: GroupPricingGuideProps) {
         <div className={sideDrawerFormClassName('gap-5')}>
           <section className='space-y-2'>
             <h3 className='text-sm font-semibold'>
-              {t('The two roles of a group')}
+              {t('Membership tiers and model routes')}
             </h3>
             <div className='text-muted-foreground space-y-2 text-sm leading-6'>
               <p>
                 {t(
-                  'Every group name in the pricing table can be used in two places: on a user (the user group, assigned by admins) and on a token (the token group, chosen when creating the token). Same name pool, two different jobs.'
+                  'Membership tier groups and model route groups are separate name spaces. Membership groups define user identity and discounts; route groups define token authorization, channel selection, logs, and smart routing.'
                 )}
               </p>
               <p>
@@ -514,7 +541,7 @@ function GroupPricingGuide({ open, onOpenChange }: GroupPricingGuideProps) {
                 </span>
                 {': '}
                 {t(
-                  'decides which channels are used and which base ratio applies.'
+                  'Route groups decide which channels are used and which route ratio applies.'
                 )}
               </p>
               <p>
@@ -523,7 +550,7 @@ function GroupPricingGuide({ open, onOpenChange }: GroupPricingGuideProps) {
                 </span>
                 {': '}
                 {t(
-                  'decides the top-up ratio, which groups the user can pick for tokens, and whether an override ratio applies.'
+                  'Membership groups define the user tier, membership discount, top-up ratio, and which route groups the user may select.'
                 )}
               </p>
             </div>
@@ -539,7 +566,7 @@ function GroupPricingGuide({ open, onOpenChange }: GroupPricingGuideProps) {
                   {t('Find the billing group.')}
                 </span>{' '}
                 {t(
-                  'Use the group set on the token. If the token has no group, use the user group. The auto group tries the auto assignment order from top to bottom.'
+                  'Use the route group authorized by the token. Historical empty groups are normalized to auto, which tries only the token-authorized auto route groups from top to bottom.'
                 )}
               </li>
               <li>
@@ -547,7 +574,7 @@ function GroupPricingGuide({ open, onOpenChange }: GroupPricingGuideProps) {
                   {t('Find the ratio.')}
                 </span>{' '}
                 {t(
-                  'Look for a special ratio rule matching this user group and this billing group. If one exists, use its ratio. Otherwise use the billing group base ratio from the pricing table.'
+                  'Look for an explicit membership × route override first. Otherwise multiply the route ratio by the membership discount.'
                 )}
               </li>
               <li>
@@ -555,13 +582,13 @@ function GroupPricingGuide({ open, onOpenChange }: GroupPricingGuideProps) {
                   {t('Charge.')}
                 </span>{' '}
                 {t(
-                  'Cost = model price × that one ratio. Nothing else from the group settings enters the formula.'
+                  'Cost = model price × final combined ratio. Membership and route zero ratios remain valid free pricing.'
                 )}
               </li>
             </ol>
             <p className='text-muted-foreground text-sm leading-6'>
               {t(
-                'Common pitfall: the user group base ratio is NOT a personal discount. It only applies when the user group itself is the billing group.'
+                'Membership tiers never become token routes. Their ratios are discounts that combine with the actual route ratio.'
               )}
             </p>
           </section>
@@ -576,7 +603,7 @@ function GroupPricingGuide({ open, onOpenChange }: GroupPricingGuideProps) {
 
             <div className='overflow-hidden rounded-lg border'>
               <div className='bg-muted/40 border-b px-3 py-1.5 text-xs font-medium'>
-                {t('Pricing groups')}
+                {t('Route ratios and membership discounts')}
               </div>
               <table className='w-full text-sm'>
                 <thead>
@@ -591,15 +618,15 @@ function GroupPricingGuide({ open, onOpenChange }: GroupPricingGuideProps) {
                 </thead>
                 <tbody>
                   <tr className='border-b'>
-                    <td className='px-3 py-1.5'>default</td>
+                    <td className='px-3 py-1.5'>default (membership)</td>
                     <td className='px-3 py-1.5 text-right'>1.0</td>
                   </tr>
                   <tr className='border-b'>
-                    <td className='px-3 py-1.5'>premium</td>
-                    <td className='px-3 py-1.5 text-right'>0.5</td>
+                    <td className='px-3 py-1.5'>plus (route)</td>
+                    <td className='px-3 py-1.5 text-right'>1.25</td>
                   </tr>
                   <tr>
-                    <td className='px-3 py-1.5'>vip</td>
+                    <td className='px-3 py-1.5'>vip (membership)</td>
                     <td className='px-3 py-1.5 text-right'>0.8</td>
                   </tr>
                 </tbody>
@@ -608,15 +635,15 @@ function GroupPricingGuide({ open, onOpenChange }: GroupPricingGuideProps) {
 
             <div className='overflow-hidden rounded-lg border'>
               <div className='bg-muted/40 border-b px-3 py-1.5 text-xs font-medium'>
-                {t('Special ratio rules')}
+                {t('Explicit pair override')}
               </div>
               <div className='p-3 text-sm leading-6'>
-                {t('Users of vip, when billed as premium, pay ratio')}{' '}
+                {t('Users of vip, when routed through plus, pay final ratio')}{' '}
                 <span className='bg-primary/10 ring-primary/40 rounded px-1.5 py-0.5 font-semibold ring-1'>
-                  0.3
+                  0.7
                 </span>{' '}
                 <span className='text-muted-foreground text-xs'>
-                  {t('(instead of {{ratio}})', { ratio: 0.5 })}
+                  {t('(instead of {{ratio}})', { ratio: 1.0 })}
                 </span>
               </div>
             </div>
@@ -630,22 +657,20 @@ function GroupPricingGuide({ open, onOpenChange }: GroupPricingGuideProps) {
             <div className='space-y-3'>
               <div className='overflow-hidden rounded-lg border'>
                 <div className='bg-muted/40 border-b px-3 py-2 text-sm font-medium'>
-                  {t('Call 1: the token group is premium')}
+                  {t('Call 1: vip membership through plus route')}
                 </div>
                 <div className='space-y-2 p-3'>
                   <GuideStepRow chip='1'>
-                    {t(
-                      'Billing group = premium (the token has a group, so use it)'
-                    )}
+                    {t('Route ratio 1.25 × membership discount 0.8 = 1.0')}
                   </GuideStepRow>
                   <GuideStepRow chip='2'>
                     {t(
-                      'There is a rule for vip billed as premium → use its ratio 0.3'
+                      'The explicit vip × plus override replaces 1.0 with 0.7'
                     )}
                   </GuideStepRow>
                   <GuideStepRow chip='='>
                     <span className='text-foreground font-medium'>
-                      {t('Cost = 10 × 0.3 = 3')}
+                      {t('Cost = 10 × 0.7 = 7')}
                     </span>
                   </GuideStepRow>
                 </div>
@@ -653,22 +678,20 @@ function GroupPricingGuide({ open, onOpenChange }: GroupPricingGuideProps) {
 
               <div className='overflow-hidden rounded-lg border'>
                 <div className='bg-muted/40 border-b px-3 py-2 text-sm font-medium'>
-                  {t('Call 2: the token group is default')}
+                  {t('Call 2: vip membership through grok route')}
                 </div>
                 <div className='space-y-2 p-3'>
                   <GuideStepRow chip='1'>
                     {t(
-                      'Billing group = default (the token has a group, so use it)'
+                      'No pair override exists, so use route ratio 1.2 × membership discount 0.8'
                     )}
                   </GuideStepRow>
                   <GuideStepRow chip='2'>
-                    {t(
-                      'No rule for vip billed as default → use the base ratio of default, 1.0 (the 0.8 of vip is not used)'
-                    )}
+                    {t('Final combined ratio = 0.96')}
                   </GuideStepRow>
                   <GuideStepRow chip='='>
                     <span className='text-foreground font-medium'>
-                      {t('Cost = 10 × 1.0 = 10')}
+                      {t('Cost = 10 × 0.96 = 9.6')}
                     </span>
                   </GuideStepRow>
                 </div>
@@ -676,22 +699,22 @@ function GroupPricingGuide({ open, onOpenChange }: GroupPricingGuideProps) {
 
               <div className='overflow-hidden rounded-lg border'>
                 <div className='bg-muted/40 border-b px-3 py-2 text-sm font-medium'>
-                  {t('Call 3: the token has no group')}
+                  {t('Call 3: a historical empty token group')}
                 </div>
                 <div className='space-y-2 p-3'>
                   <GuideStepRow chip='1'>
                     {t(
-                      'Billing group = vip (the token has no group, so use the user group)'
+                      'The empty group is normalized to auto; it never becomes the vip membership group'
                     )}
                   </GuideStepRow>
                   <GuideStepRow chip='2'>
                     {t(
-                      'No rule for vip billed as vip → use the base ratio of vip, 0.8'
+                      'Auto selects only an authorized route; billing then combines that route ratio with the vip discount'
                     )}
                   </GuideStepRow>
                   <GuideStepRow chip='='>
                     <span className='text-foreground font-medium'>
-                      {t('Cost = 10 × 0.8 = 8')}
+                      {t('Example: auto chooses grok → 10 × 1.2 × 0.8 = 9.6')}
                     </span>
                   </GuideStepRow>
                 </div>
@@ -705,7 +728,7 @@ function GroupPricingGuide({ open, onOpenChange }: GroupPricingGuideProps) {
               <AccordionContent className='space-y-3'>
                 <p className='text-muted-foreground text-sm leading-6'>
                   {t(
-                    'Use the pricing group table to manage the ratio and whether the group appears in the token creation dropdown.'
+                    'Use the two cards above to manage membership tiers and model routes independently. Both keep ratio, top-up ratio, user-selectable state, and description fields.'
                   )}
                 </p>
                 <GuideCodeBlock>
@@ -744,7 +767,7 @@ vip          0.5     ${t('No')}                ${t('Assigned by administrator on
               <AccordionContent className='space-y-3'>
                 <p className='text-muted-foreground text-sm leading-6'>
                   {t(
-                    'In JSON, the user group is the outer key and the billing group is the inner key. The example below means: vip users pay 0.8 when billed as standard, and 0.3 when billed as premium.'
+                    'In JSON, the membership group is the outer key and the route group is the inner key. The example below means: vip users pay final ratio 0.8 through standard and 0.3 through premium.'
                   )}
                 </p>
                 <GuideCodeBlock>{`{
@@ -755,7 +778,7 @@ vip          0.5     ${t('No')}                ${t('Assigned by administrator on
 }`}</GuideCodeBlock>
                 <p className='text-muted-foreground text-sm leading-6'>
                   {t(
-                    'Only configured combinations are overridden. All other calls keep the billing group base ratio.'
+                    'Only configured combinations are overridden. All other calls multiply the route ratio by the membership discount.'
                   )}
                 </p>
               </AccordionContent>
@@ -768,7 +791,7 @@ vip          0.5     ${t('No')}                ${t('Assigned by administrator on
               <AccordionContent className='space-y-3'>
                 <p className='text-muted-foreground text-sm leading-6'>
                   {t(
-                    'Special usable group rules make extra token groups visible to, or hide default ones from, users of a specific user group.'
+                    'Special usable route rules make extra token route groups visible to, or hide default route groups from, users of a specific membership tier.'
                   )}
                 </p>
                 <GuideCodeBlock>{`{

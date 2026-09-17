@@ -40,7 +40,10 @@ import { handleServerError } from '@/lib/handle-server-error'
 
 import { SettingsPageTitleStatusPortal } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
-import { useUpdateOption } from '../hooks/use-update-option'
+import {
+  useUpdateGroupRatioOptions,
+  useUpdateOption,
+} from '../hooks/use-update-option'
 import { positiveIntegerSchema } from '../utils/numeric-field'
 import { GroupRatioForm } from './group-ratio-form'
 import { ModelRatioForm } from './model-ratio-form'
@@ -144,6 +147,7 @@ const createGroupSchema = (t: Translate) =>
     MaxTokenAutoGroups: positiveIntegerSchema(t('Enter a positive integer')),
     DefaultUseAutoGroup: z.boolean(),
     GroupSpecialUsableGroup: createJsonStringField(t),
+    MembershipGroups: createJsonStringField(t),
   })
 
 type ModelFormValues = z.infer<ReturnType<typeof createModelSchema>>
@@ -172,6 +176,7 @@ export function RatioSettingsCard({
 }: RatioSettingsCardProps) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
+  const updateGroupRatioOptions = useUpdateGroupRatioOptions()
   const [confirmOpen, setConfirmOpen] = useState(false)
 
   const pricingQuery = useModelPricing()
@@ -248,6 +253,7 @@ export function RatioSettingsCard({
     GroupSpecialUsableGroup: normalizeJsonString(
       groupDefaults.GroupSpecialUsableGroup
     ),
+    MembershipGroups: normalizeJsonString(groupDefaults.MembershipGroups),
   })
   const modelSchema = useMemo(() => createModelSchema(t), [t])
   const groupSchema = useMemo(() => createGroupSchema(t), [t])
@@ -285,6 +291,7 @@ export function RatioSettingsCard({
       GroupSpecialUsableGroup: formatJsonForTextarea(
         groupDefaults.GroupSpecialUsableGroup
       ),
+      MembershipGroups: formatJsonForTextarea(groupDefaults.MembershipGroups),
     },
   })
 
@@ -335,6 +342,7 @@ export function RatioSettingsCard({
       GroupSpecialUsableGroup: normalizeJsonString(
         groupDefaults.GroupSpecialUsableGroup
       ),
+      MembershipGroups: normalizeJsonString(groupDefaults.MembershipGroups),
     }
 
     groupForm.reset({
@@ -347,6 +355,7 @@ export function RatioSettingsCard({
       GroupSpecialUsableGroup: formatJsonForTextarea(
         groupDefaults.GroupSpecialUsableGroup
       ),
+      MembershipGroups: formatJsonForTextarea(groupDefaults.MembershipGroups),
     })
   }, [groupDefaults, groupForm])
 
@@ -412,12 +421,14 @@ export function RatioSettingsCard({
         GroupSpecialUsableGroup: normalizeJsonString(
           values.GroupSpecialUsableGroup
         ),
+        MembershipGroups: normalizeJsonString(values.MembershipGroups),
       }
 
       // Map form field names to API keys (most are 1:1, except GroupSpecialUsableGroup)
       const apiKeyMap: Record<string, string> = {
         GroupSpecialUsableGroup:
           'group_ratio_setting.group_special_usable_group',
+        MembershipGroups: 'group_ratio_setting.membership_groups',
       }
 
       const updates = (
@@ -426,14 +437,18 @@ export function RatioSettingsCard({
         (key) => normalized[key] !== groupNormalizedDefaults.current[key]
       )
 
-      for (const key of updates) {
-        const apiKey = apiKeyMap[key] || key
-        await updateOption.mutateAsync({ key: apiKey, value: normalized[key] })
+      if (updates.length > 0) {
+        await updateGroupRatioOptions.mutateAsync({
+          options: updates.map((key) => ({
+            key: apiKeyMap[key] || key,
+            value: normalized[key],
+          })),
+        })
       }
 
       groupNormalizedDefaults.current = normalized
     },
-    [updateOption]
+    [updateGroupRatioOptions]
   )
 
   const handleResetRatios = useCallback(() => {
@@ -505,7 +520,7 @@ export function RatioSettingsCard({
         <GroupRatioForm
           form={groupForm}
           onSave={saveGroupRatios}
-          isSaving={updateOption.isPending}
+          isSaving={updateGroupRatioOptions.isPending}
         />
       )
     }

@@ -66,13 +66,16 @@ async function renderFilter(
     premium: { desc: '', ratio: 2 },
   }
 ) {
-  vi.spyOn(api, 'get').mockImplementation(async (url) => {
+  vi.spyOn(api, 'get').mockImplementation(async (url, config) => {
     if (url === '/api/user/self/groups' || url === '/api/group/') {
       if (groups === null) throw new Error('Group loading failed')
       return {
         data: {
           success: true,
-          data: url === '/api/group/' ? Object.keys(groups) : groups,
+          data:
+            url === '/api/group/' && config?.params?.type === 'channel'
+              ? Object.keys(groups)
+              : groups,
         },
       }
     }
@@ -142,7 +145,7 @@ it('loads personal groups and filters choices without submitting until Search', 
     })
   )
   expect(api.get).toHaveBeenCalledWith('/api/user/self/groups')
-  expect(api.get).not.toHaveBeenCalledWith('/api/group/')
+  expect(api.get).not.toHaveBeenCalledWith('/api/group/', expect.anything())
 })
 
 it('loads all groups in the administrator view', async () => {
@@ -150,7 +153,9 @@ it('loads all groups in the administrator view', async () => {
   await renderFilter()
   await userEvent.click(screen.getByRole('combobox', { name: 'Group' }))
   expect(await screen.findByRole('option', { name: 'premium' })).toBeVisible()
-  expect(api.get).toHaveBeenCalledWith('/api/group/')
+  expect(api.get).toHaveBeenCalledWith('/api/group/', {
+    params: { type: 'channel' },
+  })
   expect(api.get).not.toHaveBeenCalledWith('/api/user/self/groups')
 })
 

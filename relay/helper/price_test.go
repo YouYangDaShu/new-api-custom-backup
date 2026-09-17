@@ -15,10 +15,35 @@ import (
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	hosttypes "github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestHandleGroupRatioCombinesMembershipAndRoute(t *testing.T) {
+	oldRatios := ratio_setting.GroupRatio2JSONString()
+	oldOverrides := ratio_setting.GroupGroupRatio2JSONString()
+	oldMembershipGroups := ratio_setting.GetGroupRatioSetting().MembershipGroups.MarshalJSONString()
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(oldRatios))
+		require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(oldOverrides))
+		require.NoError(t, hosttypes.LoadFromJsonString(ratio_setting.GetGroupRatioSetting().MembershipGroups, oldMembershipGroups))
+	})
+
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"vip":0.8,"grok":1.25}`))
+	require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(`{}`))
+	require.NoError(t, hosttypes.LoadFromJsonString(ratio_setting.GetGroupRatioSetting().MembershipGroups, `{"vip":true}`))
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	info := &relaycommon.RelayInfo{UserGroup: "vip", UsingGroup: "grok"}
+
+	result := HandleGroupRatio(ctx, info)
+
+	assert.InDelta(t, 1.0, result.GroupRatio, 0.000001)
+	assert.InDelta(t, 0.8, result.GroupSpecialRatio, 0.000001)
+	assert.True(t, result.HasSpecialRatio)
+}
 
 func TestModelPriceHelperTieredUsesPreloadedRequestInput(t *testing.T) {
 	gin.SetMode(gin.TestMode)

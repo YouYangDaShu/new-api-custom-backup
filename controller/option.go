@@ -35,6 +35,62 @@ var completionRatioMetaOptionKeys = []string{
 	"AudioCompletionRatio",
 }
 
+var groupRatioBulkOptionKeys = map[string]struct{}{
+	"GroupRatio":          {},
+	"TopupGroupRatio":     {},
+	"UserUsableGroups":    {},
+	"GroupGroupRatio":     {},
+	"AutoGroups":          {},
+	"MaxTokenAutoGroups":  {},
+	"DefaultUseAutoGroup": {},
+	"group_ratio_setting.group_special_usable_group": {},
+	"group_ratio_setting.membership_groups":          {},
+}
+
+const maxGroupRatioOptionsBodyBytes int64 = 256 * 1024
+
+type updateOptionsBulkRequest struct {
+	Options []struct {
+		Key   string `json:"key"`
+		Value any    `json:"value"`
+	} `json:"options"`
+}
+
+func UpdateGroupRatioOptionsBulk(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxGroupRatioOptionsBodyBytes)
+	var request updateOptionsBulkRequest
+	if err := decodeStrictJSON(c, &request); err != nil || len(request.Options) == 0 || len(request.Options) > len(groupRatioBulkOptionKeys) {
+		common.ApiErrorMsg(c, "无效的分组设置")
+		return
+	}
+	values := make(map[string]string, len(request.Options))
+	for _, option := range request.Options {
+		if _, ok := groupRatioBulkOptionKeys[option.Key]; !ok {
+			common.ApiErrorMsg(c, "不允许批量修改配置项: "+option.Key)
+			return
+		}
+		if _, duplicated := values[option.Key]; duplicated {
+			common.ApiErrorMsg(c, "配置项重复: "+option.Key)
+			return
+		}
+		values[option.Key] = common.Interface2String(option.Value)
+	}
+	if err := model.UpdateOptionsBulk(values); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	recordManageAudit(c, "option.group_ratio.bulk_update", map[string]any{
+		"count": len(values),
+		"keys":  keys,
+	})
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": ""})
+}
+
 func isPaymentComplianceOptionKey(key string) bool {
 	return strings.HasPrefix(key, "payment_setting.compliance_")
 }

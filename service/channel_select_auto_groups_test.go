@@ -38,8 +38,8 @@ func setupChannelSelectAutoGroupsTest(t *testing.T) *gorm.DB {
 	common.RetryTimes = 0
 
 	require.NoError(t, setting.UpdateAutoGroupsByJsonString(`[]`))
-	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default","vip":"VIP"}`))
-	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"vip":2}`))
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"plus":"Plus","grok":"Grok"}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"vip":1,"svip":1,"plus":2,"grok":1}`))
 	require.NoError(t, setting.UpdateMaxTokenAutoGroups("2"))
 
 	t.Cleanup(func() {
@@ -92,14 +92,14 @@ func createChannelSelectAutoGroupsChannel(t *testing.T, db *gorm.DB, id int, gro
 func TestCacheGetRandomSatisfiedChannelUsesTokenAutoGroupsWhenGlobalAutoIsEmpty(t *testing.T) {
 	db := setupChannelSelectAutoGroupsTest(t)
 	const modelName = "auto-groups-runtime-model"
-	createChannelSelectAutoGroupsChannel(t, db, 2101, "vip", modelName)
-	createChannelSelectAutoGroupsChannel(t, db, 2102, "default", modelName)
+	createChannelSelectAutoGroupsChannel(t, db, 2101, "plus", modelName)
+	createChannelSelectAutoGroupsChannel(t, db, 2102, "grok", modelName)
 	model.InitChannelCache()
 
 	gin.SetMode(gin.TestMode)
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
-	common.SetContextKey(ctx, constant.ContextKeyTokenAutoGroups, []string{"vip", "default"})
+	common.SetContextKey(ctx, constant.ContextKeyTokenAutoGroups, []string{"plus", "grok"})
 	common.SetContextKey(ctx, constant.ContextKeyTokenCrossGroupRetry, true)
 
 	retry := 0
@@ -115,8 +115,8 @@ func TestCacheGetRandomSatisfiedChannelUsesTokenAutoGroupsWhenGlobalAutoIsEmpty(
 	require.NoError(t, err)
 	require.NotNil(t, first)
 	assert.Equal(t, 2101, first.Id)
-	assert.Equal(t, "vip", selectedGroup)
-	assert.Equal(t, "vip", common.GetContextKeyString(ctx, constant.ContextKeyAutoGroup))
+	assert.Equal(t, "plus", selectedGroup)
+	assert.Equal(t, "plus", common.GetContextKeyString(ctx, constant.ContextKeyAutoGroup))
 	assert.Empty(t, setting.GetAutoGroups(), "the selection must not depend on the global Auto list")
 
 	param.IncreaseRetry()
@@ -124,15 +124,15 @@ func TestCacheGetRandomSatisfiedChannelUsesTokenAutoGroupsWhenGlobalAutoIsEmpty(
 	require.NoError(t, err)
 	require.NotNil(t, second)
 	assert.Equal(t, 2102, second.Id)
-	assert.Equal(t, "default", selectedGroup)
-	assert.Equal(t, "default", common.GetContextKeyString(ctx, constant.ContextKeyAutoGroup))
+	assert.Equal(t, "grok", selectedGroup)
+	assert.Equal(t, "grok", common.GetContextKeyString(ctx, constant.ContextKeyAutoGroup))
 }
 
 func TestCacheGetRandomSatisfiedChannelUsesManualTokenGroupsInOrder(t *testing.T) {
 	db := setupChannelSelectAutoGroupsTest(t)
 	const modelName = "manual-groups-runtime-model"
-	createChannelSelectAutoGroupsChannel(t, db, 2201, "vip", modelName)
-	createChannelSelectAutoGroupsChannel(t, db, 2202, "default", modelName)
+	createChannelSelectAutoGroupsChannel(t, db, 2201, "plus", modelName)
+	createChannelSelectAutoGroupsChannel(t, db, 2202, "grok", modelName)
 	model.InitChannelCache()
 
 	gin.SetMode(gin.TestMode)
@@ -143,7 +143,7 @@ func TestCacheGetRandomSatisfiedChannelUsesManualTokenGroupsInOrder(t *testing.T
 	retry := 0
 	param := &RetryParam{
 		Ctx:         ctx,
-		TokenGroup:  "@manual:vip,default",
+		TokenGroup:  "@manual:plus,grok",
 		ModelName:   modelName,
 		RequestPath: "/v1/chat/completions",
 		Retry:       &retry,
@@ -153,14 +153,14 @@ func TestCacheGetRandomSatisfiedChannelUsesManualTokenGroupsInOrder(t *testing.T
 	require.NoError(t, err)
 	require.NotNil(t, first)
 	assert.Equal(t, 2201, first.Id)
-	assert.Equal(t, "vip", selectedGroup)
-	assert.Equal(t, "vip", common.GetContextKeyString(ctx, constant.ContextKeyAutoGroup))
+	assert.Equal(t, "plus", selectedGroup)
+	assert.Equal(t, "plus", common.GetContextKeyString(ctx, constant.ContextKeyAutoGroup))
 
 	param.IncreaseRetry()
 	second, selectedGroup, err := CacheGetRandomSatisfiedChannel(param)
 	require.NoError(t, err)
 	require.NotNil(t, second)
 	assert.Equal(t, 2202, second.Id)
-	assert.Equal(t, "default", selectedGroup)
-	assert.Equal(t, "default", common.GetContextKeyString(ctx, constant.ContextKeyAutoGroup))
+	assert.Equal(t, "grok", selectedGroup)
+	assert.Equal(t, "grok", common.GetContextKeyString(ctx, constant.ContextKeyAutoGroup))
 }

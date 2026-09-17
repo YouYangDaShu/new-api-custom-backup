@@ -21,9 +21,9 @@ func configureRequestAutoGroupsTest(t *testing.T) {
 	originalUsableGroups := setting.UserUsableGroups2JSONString()
 	originalRatios := ratio_setting.GroupRatio2JSONString()
 	require.NoError(t, setting.UpdateMaxTokenAutoGroups("2"))
-	require.NoError(t, setting.UpdateAutoGroupsByJsonString(`["vip","default","svip"]`))
-	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default","vip":"VIP","svip":"SVIP"}`))
-	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"vip":1,"svip":1}`))
+	require.NoError(t, setting.UpdateAutoGroupsByJsonString(`["plus","grok","image"]`))
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"plus":"Plus","grok":"Grok","image":"Image"}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"vip":1,"svip":1,"plus":1,"grok":1,"image":1}`))
 	t.Cleanup(func() {
 		require.NoError(t, setting.UpdateMaxTokenAutoGroups(fmt.Sprintf("%d", originalMax)))
 		require.NoError(t, setting.UpdateAutoGroupsByJsonString(originalAutoGroups))
@@ -44,27 +44,27 @@ func TestGetRequestAutoGroupsInheritedListIsNotLimited(t *testing.T) {
 
 	groups := GetRequestAutoGroups(ctx, "default")
 
-	assert.Equal(t, []string{"vip", "default", "svip"}, groups)
+	assert.Equal(t, []string{"plus", "grok", "image"}, groups)
 }
 
 func TestGetRequestAutoGroupsFiltersBeforeApplyingCurrentLimit(t *testing.T) {
 	configureRequestAutoGroupsTest(t)
 	ctx := newRequestAutoGroupsContext()
-	common.SetContextKey(ctx, constant.ContextKeyTokenAutoGroups, []string{"revoked", "vip", "default", "svip"})
+	common.SetContextKey(ctx, constant.ContextKeyTokenAutoGroups, []string{"revoked", "plus", "grok", "image"})
 	require.NoError(t, setting.UpdateAutoGroupsByJsonString(`[]`))
 
 	groups := GetRequestAutoGroups(ctx, "default")
 
-	assert.Equal(t, []string{"vip", "default"}, groups)
+	assert.Equal(t, []string{"plus", "grok"}, groups)
 	require.NoError(t, setting.UpdateMaxTokenAutoGroups("1"))
-	assert.Equal(t, []string{"vip"}, GetRequestAutoGroups(ctx, "default"))
+	assert.Equal(t, []string{"plus"}, GetRequestAutoGroups(ctx, "default"))
 }
 
 func TestGetRequestAutoGroupsDoesNotFallBackAfterPermissionChange(t *testing.T) {
 	configureRequestAutoGroupsTest(t)
 	ctx := newRequestAutoGroupsContext()
-	common.SetContextKey(ctx, constant.ContextKeyTokenAutoGroups, []string{"vip"})
-	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default"}`))
+	common.SetContextKey(ctx, constant.ContextKeyTokenAutoGroups, []string{"plus"})
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"grok":"Grok"}`))
 
 	groups := GetRequestAutoGroups(ctx, "default")
 

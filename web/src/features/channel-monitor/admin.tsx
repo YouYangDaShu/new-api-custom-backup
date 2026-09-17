@@ -125,7 +125,7 @@ export function ChannelMonitorAdminPage() {
   const groupsQuery = useQuery({
     queryKey: ['channel-monitor', 'system-groups'],
     queryFn: async () => {
-      const response = await getGroups()
+      const response = await getGroups('channel')
       if (!response.success) throw new Error(response.message)
       return response.data ?? []
     },
@@ -564,8 +564,29 @@ export function ChannelMonitorAdminPage() {
                 </div>
               </div>
               <div className='flex flex-wrap gap-2'>
-                <button type='button' className='rounded-md border p-1.5' title={t('Move monitor up')} aria-label={t('Move monitor up')} disabled={move.isPending || index === 0} onClick={() => move.mutate({ id: row.id, direction: 'up' })}><ArrowUp className='size-4' /></button>
-                <button type='button' className='rounded-md border p-1.5' title={t('Move monitor down')} aria-label={t('Move monitor down')} disabled={move.isPending || index === (query.data?.data.length ?? 1) - 1} onClick={() => move.mutate({ id: row.id, direction: 'down' })}><ArrowDown className='size-4' /></button>
+                <button
+                  type='button'
+                  className='rounded-md border p-1.5'
+                  title={t('Move monitor up')}
+                  aria-label={t('Move monitor up')}
+                  disabled={move.isPending || index === 0}
+                  onClick={() => move.mutate({ id: row.id, direction: 'up' })}
+                >
+                  <ArrowUp className='size-4' />
+                </button>
+                <button
+                  type='button'
+                  className='rounded-md border p-1.5'
+                  title={t('Move monitor down')}
+                  aria-label={t('Move monitor down')}
+                  disabled={
+                    move.isPending ||
+                    index === (query.data?.data.length ?? 1) - 1
+                  }
+                  onClick={() => move.mutate({ id: row.id, direction: 'down' })}
+                >
+                  <ArrowDown className='size-4' />
+                </button>
                 <button
                   type='button'
                   className='rounded-md border px-3 py-1.5 text-sm'

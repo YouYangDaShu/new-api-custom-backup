@@ -114,10 +114,7 @@ export async function updateUserConcurrency(
   userId: number,
   payload: import('../concurrency/types').UpdateUserConcurrencyPayload
 ): Promise<import('../concurrency/types').ConcurrencyMutationResponse> {
-  const res = await api.patch(
-    `/api/user/${userId}/concurrency`,
-    payload
-  )
+  const res = await api.patch(`/api/user/${userId}/concurrency`, payload)
   return res.data
 }
 
@@ -176,8 +173,12 @@ export async function resetUserTwoFA(id: number): Promise<ApiResponse> {
 /**
  * Get all available groups
  */
-export async function getGroups(): Promise<ApiResponse<string[]>> {
-  const res = await api.get('/api/group/')
+export async function getGroups(
+  type?: 'channel' | 'user'
+): Promise<ApiResponse<string[]>> {
+  const res = await api.get('/api/group/', {
+    params: type ? { type } : undefined,
+  })
   return res.data
 }
 

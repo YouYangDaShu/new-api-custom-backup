@@ -30,18 +30,10 @@ func successRateUnavailable(requestCount, successCount int64) bool {
 	return requestCount > 0 && successCount == 0
 }
 
-// GetRequestSmartRouteGroups returns every currently selectable group for the
-// user. Smart routing must not inherit the per-token Auto group limit, because
-// that would hide models in later groups from /v1/models and routing.
+// GetRequestSmartRouteGroups returns the current token's filtered candidate
+// scope. Smart mode changes only ordering; it never broadens token access.
 func GetRequestSmartRouteGroups(c *gin.Context, userGroup string) []string {
-	available := GetUserUsableGroups(userGroup)
-	groups := make([]string, 0, len(available))
-	for group := range available {
-		if IsUserSelectableGroup(userGroup, group) {
-			groups = append(groups, group)
-		}
-	}
-	return groups
+	return GetRequestAutoGroups(c, userGroup)
 }
 
 func RankGroupsForModel(userGroup, modelName, mode, requestPath string, candidates []string) []string {
@@ -65,7 +57,7 @@ func rankGroupsForModel(userGroup, modelName, mode, requestPath string, filters 
 	seen := make(map[string]struct{}, len(candidates))
 	for _, group := range candidates {
 		group = strings.TrimSpace(group)
-		if group == "" || group == TokenGroupAuto {
+		if group == "" || group == TokenGroupAuto || IsMembershipGroup(group) {
 			continue
 		}
 		if _, ok := seen[group]; ok {

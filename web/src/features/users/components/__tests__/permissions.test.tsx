@@ -47,7 +47,7 @@ function renderPermissions(viewerRole: number, allowed?: boolean) {
   useAuthStore
     .getState()
     .auth.setUser({ id: 1, username: 'operator', role: viewerRole })
-  vi.spyOn(api, 'get').mockImplementation(async (url) => {
+  vi.spyOn(api, 'get').mockImplementation(async (url, config) => {
     if (url === '/api/authz/catalog') {
       return {
         data: {
@@ -71,7 +71,7 @@ function renderPermissions(viewerRole: number, allowed?: boolean) {
         },
       }
     }
-    if (url === '/api/group/') {
+    if (url === '/api/group/' && config?.params?.type === 'user') {
       return { data: { success: true, data: ['default'] } }
     }
     return {

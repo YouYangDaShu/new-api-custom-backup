@@ -24,10 +24,9 @@ import { useState, useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Badge } from '@/components/ui/badge'
-import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
 import { Button } from '@/components/ui/button'
 import { Combobox } from '@/components/ui/combobox'
+import { Label } from '@/components/ui/label'
 import {
   Select,
   SelectContent,
@@ -36,6 +35,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import {
   Tooltip,
   TooltipContent,
@@ -125,16 +125,12 @@ export function CommonLogsFilterBar<TData>(
   const queryClient = useQueryClient()
   const searchParams = route.useSearch()
   const { isAdminView: isAdmin } = useLogsViewScope()
-  const {
-    sensitiveVisible,
-    setSensitiveVisible,
-    autoRefresh,
-    setAutoRefresh,
-  } = useUsageLogsContext()
+  const { sensitiveVisible, setSensitiveVisible, autoRefresh, setAutoRefresh } =
+    useUsageLogsContext()
   const fetchingLogs = useIsFetching({ queryKey: ['logs'] })
   const { data: adminGroups } = useQuery({
-    queryKey: ['groups'],
-    queryFn: getGroups,
+    queryKey: ['groups', 'channel'],
+    queryFn: () => getGroups('channel'),
     enabled: isAdmin,
   })
   const { data: userGroups } = useQuery({

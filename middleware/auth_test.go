@@ -11,8 +11,12 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/golang-jwt/jwt/v5"
@@ -34,12 +38,14 @@ func setupDashboardAuthMiddlewareTest(t *testing.T) {
 	model.DB = db
 	model.LOG_DB = db
 	common.SetMainDatabaseType(common.DatabaseTypeSQLite)
+	model.InitSQLDialectColumns()
 	common.RedisEnabled = false
 	common.SessionSecret = "middleware-auth-test-secret"
 	t.Cleanup(func() {
 		model.DB = previousDB
 		model.LOG_DB = previousLogDB
 		common.SetMainDatabaseType(previousType)
+		model.InitSQLDialectColumns()
 		common.RedisEnabled = previousRedis
 		common.SessionSecret = previousSecret
 	})
@@ -85,6 +91,50 @@ func createMiddlewarePATUser(t *testing.T, username, token string) *model.User {
 	}
 	require.NoError(t, model.DB.Create(user).Error)
 	return user
+}
+
+func TestTokenAuthNormalizesLegacyEmptyGroupForMembershipUser(t *testing.T) {
+	setupDashboardAuthMiddlewareTest(t)
+	previousRatios := ratio_setting.GroupRatio2JSONString()
+	previousMemberships := ratio_setting.MembershipGroups2JSONString()
+	previousUsableGroups := setting.UserUsableGroups2JSONString()
+	previousAutoGroups := setting.AutoGroups2JsonString()
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"vip":0.8,"grok":1.25}`))
+	require.NoError(t, types.LoadFromJsonString(ratio_setting.GetGroupRatioSetting().MembershipGroups, `{"vip":true}`))
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"grok":"Grok"}`))
+	require.NoError(t, setting.UpdateAutoGroupsByJsonString(`["grok"]`))
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(previousRatios))
+		require.NoError(t, types.LoadFromJsonString(ratio_setting.GetGroupRatioSetting().MembershipGroups, previousMemberships))
+		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(previousUsableGroups))
+		require.NoError(t, setting.UpdateAutoGroupsByJsonString(previousAutoGroups))
+	})
+	require.NoError(t, model.DB.AutoMigrate(&model.Token{}))
+	user := &model.User{
+		Username: "legacy-empty-group-user", Password: "password-placeholder", Role: common.RoleCommonUser,
+		Status: common.UserStatusEnabled, Group: "vip", AuthVersion: 1, AffCode: "legacy-empty-group-aff",
+	}
+	require.NoError(t, model.DB.Create(user).Error)
+	token := &model.Token{
+		UserId: user.Id, Name: "legacy-empty-group", Key: "legacyemptygroupkey", Status: common.TokenStatusEnabled,
+		ExpiredTime: -1, UnlimitedQuota: true, Group: "",
+	}
+	require.NoError(t, model.DB.Create(token).Error)
+
+	router := gin.New()
+	router.GET("/v1/models", TokenAuth(), func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"token_group": common.GetContextKeyString(c, constant.ContextKeyTokenGroup),
+			"using_group": common.GetContextKeyString(c, constant.ContextKeyUsingGroup),
+		})
+	})
+	request := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	request.Header.Set("Authorization", "Bearer sk-"+token.Key)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	assert.Equal(t, http.StatusOK, response.Code)
+	assert.JSONEq(t, `{"token_group":"auto","using_group":"auto"}`, response.Body.String())
 }
 
 func TestUserAuthAllowsOpaqueDottedPAT(t *testing.T) {

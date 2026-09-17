@@ -77,11 +77,28 @@ func buildMaskedTokenResponses(tokens []*model.Token) []*tokenResponse {
 	return maskedTokens
 }
 
+func validateTokenRoutingGroup(userGroup, tokenGroup string) error {
+	tokenGroup = service.NormalizeTokenGroup(tokenGroup)
+	if service.IsManualTokenGroup(tokenGroup) {
+		return service.ValidateManualTokenGroupForUser(tokenGroup, userGroup)
+	}
+	if tokenGroup == service.TokenGroupAuto || service.IsSmartTokenGroup(tokenGroup) {
+		return nil
+	}
+	if service.IsMembershipGroup(tokenGroup) {
+		return fmt.Errorf("会员等级分组 %s 不能作为令牌线路分组", tokenGroup)
+	}
+	return nil
+}
+
 func getTokenRequestUserGroup(c *gin.Context) (string, error) {
 	if userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup); userGroup != "" {
 		return userGroup, nil
 	}
 	if userGroup := c.GetString("group"); userGroup != "" {
+		return userGroup, nil
+	}
+	if userGroup := c.GetString("user_group"); userGroup != "" {
 		return userGroup, nil
 	}
 	return model.GetUserGroup(c.GetInt("id"), false)
@@ -316,16 +333,14 @@ func AddToken(c *gin.Context) {
 		return
 	}
 	token.Group = service.NormalizeTokenGroup(token.Group)
-	if service.IsManualTokenGroup(token.Group) {
-		userGroup, groupErr := getTokenRequestUserGroup(c)
-		if groupErr != nil {
-			common.ApiError(c, groupErr)
-			return
-		}
-		if groupErr = service.ValidateManualTokenGroupForUser(token.Group, userGroup); groupErr != nil {
-			c.JSON(http.StatusOK, gin.H{"success": false, "message": groupErr.Error()})
-			return
-		}
+	userGroup, groupErr := getTokenRequestUserGroup(c)
+	if groupErr != nil {
+		common.ApiError(c, groupErr)
+		return
+	}
+	if groupErr = validateTokenRoutingGroup(userGroup, token.Group); groupErr != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": groupErr.Error()})
+		return
 	}
 	if token.Group == service.TokenGroupAuto || service.IsSmartTokenGroup(token.Group) {
 		if !setTokenAutoGroups(c, &token, request.AutoGroups.Groups) {
@@ -450,16 +465,14 @@ func UpdateToken(c *gin.Context) {
 		cleanToken.ModelLimits = token.ModelLimits
 		cleanToken.AllowIps = token.AllowIps
 		cleanToken.Group = service.NormalizeTokenGroup(token.Group)
-		if service.IsManualTokenGroup(cleanToken.Group) {
-			userGroup, groupErr := getTokenRequestUserGroup(c)
-			if groupErr != nil {
-				common.ApiError(c, groupErr)
-				return
-			}
-			if groupErr = service.ValidateManualTokenGroupForUser(cleanToken.Group, userGroup); groupErr != nil {
-				c.JSON(http.StatusOK, gin.H{"success": false, "message": groupErr.Error()})
-				return
-			}
+		userGroup, groupErr := getTokenRequestUserGroup(c)
+		if groupErr != nil {
+			common.ApiError(c, groupErr)
+			return
+		}
+		if groupErr = validateTokenRoutingGroup(userGroup, cleanToken.Group); groupErr != nil {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": groupErr.Error()})
+			return
 		}
 		cleanToken.CrossGroupRetry = token.CrossGroupRetry
 		if !service.IsMultiGroupToken(cleanToken.Group) {

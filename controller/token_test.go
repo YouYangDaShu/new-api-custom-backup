@@ -18,6 +18,9 @@ import (
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -208,6 +211,7 @@ func newAuthenticatedContext(t *testing.T, method string, target string, body an
 		ctx.Request.Header.Set("Content-Type", "application/json")
 	}
 	ctx.Set("id", userID)
+	ctx.Set("user_group", "default")
 	return ctx, recorder
 }
 
@@ -515,6 +519,26 @@ func TestGetTokenMasksKeyInResponse(t *testing.T) {
 	}
 }
 
+func TestValidateTokenRoutingGroupRejectsMembershipFixedGroup(t *testing.T) {
+	originalRatios := ratio_setting.GroupRatio2JSONString()
+	originalMembershipGroups := ratio_setting.MembershipGroups2JSONString()
+	originalUsableGroups := setting.UserUsableGroups2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(originalRatios))
+		require.NoError(t, types.LoadFromJsonString(ratio_setting.GetGroupRatioSetting().MembershipGroups, originalMembershipGroups))
+		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(originalUsableGroups))
+	})
+
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"vip":0.9,"grok":1}`))
+	require.NoError(t, types.LoadFromJsonString(ratio_setting.GetGroupRatioSetting().MembershipGroups, `{"default":true,"vip":true}`))
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"grok":"Grok"}`))
+
+	assert.ErrorContains(t, validateTokenRoutingGroup("default", "vip"), "不能作为令牌线路分组")
+	assert.NoError(t, validateTokenRoutingGroup("default", "grok"))
+	assert.NoError(t, validateTokenRoutingGroup("default", "legacy-private-route"))
+	assert.NoError(t, validateTokenRoutingGroup("default", service.TokenGroupAuto))
+}
+
 func TestUpdateTokenMasksKeyInResponse(t *testing.T) {
 	db := setupTokenControllerTestDB(t)
 	token := seedToken(t, db, 1, "editable-token", "yzab1234cdef5678")
@@ -527,7 +551,7 @@ func TestUpdateTokenMasksKeyInResponse(t *testing.T) {
 		"unlimited_quota":      true,
 		"model_limits_enabled": false,
 		"model_limits":         "",
-		"group":                "default",
+		"group":                "grok",
 		"cross_group_retry":    false,
 	}
 
@@ -653,7 +677,10 @@ func verifyAPITokenAudit(t *testing.T) {
 	require.NoError(t, err)
 	router := gin.New()
 	router.Use(middleware.RequestId(), middleware.AccessTokenAudit())
-	tokenRoutes := router.Group("/api/token", middleware.UserAuth(), middleware.TokenOperationAudit())
+	tokenRoutes := router.Group("/api/token", middleware.UserAuth(), func(c *gin.Context) {
+		c.Set("user_group", "default")
+		c.Next()
+	}, middleware.TokenOperationAudit())
 	tokenRoutes.POST("/", AddToken)
 	tokenRoutes.PUT("/", UpdateToken)
 	tokenRoutes.DELETE("/:id", DeleteToken)
@@ -683,7 +710,7 @@ func verifyAPITokenAudit(t *testing.T) {
 		{name: "malformed body", method: "POST", path: "/", body: `{"key":"raw-body-secret"`, action: "token.create", params: `{}`},
 		{name: "validation error exceeds audit buffer", method: "POST", path: "/", body: `{"remain_quota":` + strings.Repeat("9", 64*1024) + `}`, action: "token.create", params: `{}`},
 		{name: "create storage failure", method: "POST", path: "/", body: `{"name":"attempt","unlimited_quota":true}`, action: "token.create", params: `{"name":"attempt"}`, failWrite: true},
-		{name: "normalized update", method: "PUT", path: "/", body: `{"id":$id,"name":"renamed","expired_time":-1,"remain_quota":200,"unlimited_quota":true,"group":"default","cross_group_retry":true,"allow_ips":""}`, action: "token.update", success: true, params: `{"id":$id,"name":"renamed","changed_fields":["name","remain_quota","group","cross_group_retry","auto_groups"]}`},
+		{name: "normalized update", method: "PUT", path: "/", body: `{"id":$id,"name":"renamed","expired_time":-1,"remain_quota":200,"unlimited_quota":true,"group":"grok","cross_group_retry":true,"allow_ips":""}`, action: "token.update", success: true, params: `{"id":$id,"name":"renamed","changed_fields":["name","remain_quota","group","cross_group_retry","auto_groups"]}`},
 		{name: "configuration values stay private", method: "PUT", path: "/", body: `{"id":$id,"name":"owned","expired_time":42,"remain_quota":100,"unlimited_quota":false,"model_limits_enabled":true,"model_limits":"private-model-configuration","allow_ips":"203.0.113.57","group":"auto","cross_group_retry":true}`, action: "token.update", success: true, params: `{"id":$id,"name":"owned","changed_fields":["expired_time","unlimited_quota","model_limits_enabled","model_limits","allow_ips"]}`},
 		{name: "unchanged update", method: "PUT", path: "/", body: `{"id":$id,"name":"owned","expired_time":-1,"remain_quota":100,"unlimited_quota":true,"group":"auto","cross_group_retry":true,"allow_ips":""}`, action: "token.update", success: true, params: `{"id":$id,"name":"owned","changed_fields":[]}`},
 		{name: "successful response exceeds audit buffer", method: "PUT", path: "/", body: `{"id":$id,"name":"owned","expired_time":-1,"remain_quota":100,"unlimited_quota":true,"group":"auto","cross_group_retry":true,"allow_ips":"","model_limits":"` + strings.Repeat("m", 64*1024-128) + `"}`, action: "token.update", success: true, params: `{"id":$id,"name":"owned","changed_fields":["model_limits"]}`},

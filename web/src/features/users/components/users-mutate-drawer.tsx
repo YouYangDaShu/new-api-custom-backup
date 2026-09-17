@@ -16,7 +16,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Combobox } from '@/components/ui/combobox'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery } from '@tanstack/react-query'
 import { Pencil } from 'lucide-react'
@@ -34,6 +33,7 @@ import {
 } from '@/components/drawer-layout'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Combobox } from '@/components/ui/combobox'
 import {
   Form,
   FormControl,
@@ -45,7 +45,14 @@ import {
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import {
   Sheet,
   SheetClose,
@@ -56,6 +63,7 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { Textarea } from '@/components/ui/textarea'
+import { updateUserConcurrency } from '@/features/concurrency/api'
 import {
   ADMIN_PERMISSION_ACTIONS,
   ADMIN_PERMISSION_RESOURCES,
@@ -68,7 +76,6 @@ import { formatQuota, parseQuotaFromDollars } from '@/lib/format'
 import { accountPasswordSchema } from '@/lib/password-policy'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
-import { updateUserConcurrency } from '@/features/concurrency/api'
 
 import {
   createUser,
@@ -109,8 +116,8 @@ export function UsersMutateDrawer({
 
   // Fetch groups
   const { data: groupsData } = useQuery({
-    queryKey: ['groups'],
-    queryFn: getGroups,
+    queryKey: ['groups', 'user'],
+    queryFn: () => getGroups('user'),
     staleTime: 5 * 60 * 1000,
   })
 
@@ -178,16 +185,13 @@ export function UsersMutateDrawer({
 
       if (result.success) {
         if (isUpdate && currentRow) {
-          const concurrencyResult = await updateUserConcurrency(
-            currentRow.id,
-            {
-              source: data.concurrency_source ?? 'default',
-              limit:
-                data.concurrency_source === 'custom'
-                  ? data.concurrency_limit ?? 0
-                  : 0,
-            }
-          )
+          const concurrencyResult = await updateUserConcurrency(currentRow.id, {
+            source: data.concurrency_source ?? 'default',
+            limit:
+              data.concurrency_source === 'custom'
+                ? (data.concurrency_limit ?? 0)
+                : 0,
+          })
           if (!concurrencyResult.success) {
             toast.error(
               concurrencyResult.message || t('Failed to update concurrency')
@@ -293,7 +297,8 @@ export function UsersMutateDrawer({
                             { value: '10', label: t('Admin') },
                           ]}
                           onValueChange={(value) =>
-                            value !== null && field.onChange(Number.parseInt(value))
+                            value !== null &&
+                            field.onChange(Number.parseInt(value))
                           }
                           value={String(field.value)}
                         >
@@ -374,16 +379,18 @@ export function UsersMutateDrawer({
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>{t('Group')}</FormLabel>
-                        <FormControl><Combobox
-options={groups.map((group) => ({
-                            value: group,
-                            label: group,
-                          }))}
-onValueChange={field.onChange}
-value={field.value}
-className='w-full'
-placeholder={t('Select a group')}
-/></FormControl>
+                        <FormControl>
+                          <Combobox
+                            options={groups.map((group) => ({
+                              value: group,
+                              label: group,
+                            }))}
+                            onValueChange={field.onChange}
+                            value={field.value}
+                            className='w-full'
+                            placeholder={t('Select a group')}
+                          />
+                        </FormControl>
                         <FormMessage />
                       </FormItem>
                     )}
@@ -456,7 +463,10 @@ placeholder={t('Select a group')}
                         <FormLabel>{t('Request concurrency')}</FormLabel>
                         <Select
                           items={[
-                            { value: 'default', label: t('Follow system default') },
+                            {
+                              value: 'default',
+                              label: t('Follow system default'),
+                            },
                             { value: 'custom', label: t('Custom limit') },
                           ]}
                           value={field.value}
@@ -481,7 +491,9 @@ placeholder={t('Select a group')}
                           </SelectContent>
                         </Select>
                         <FormDescription>
-                          {t('Administrators are exempt. A custom limit of 0 means unlimited.')}
+                          {t(
+                            'Administrators are exempt. A custom limit of 0 means unlimited.'
+                          )}
                         </FormDescription>
                         <FormMessage />
                       </FormItem>
@@ -494,7 +506,9 @@ placeholder={t('Select a group')}
                       name='concurrency_limit'
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>{t('Custom concurrent requests')}</FormLabel>
+                          <FormLabel>
+                            {t('Custom concurrent requests')}
+                          </FormLabel>
                           <FormControl>
                             <Input
                               type='number'

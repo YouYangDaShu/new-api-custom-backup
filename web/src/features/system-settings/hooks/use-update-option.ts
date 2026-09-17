@@ -20,8 +20,8 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import i18next from 'i18next'
 import { toast } from 'sonner'
 
-import { updateSystemOption } from '../api'
-import type { UpdateOptionRequest } from '../types'
+import { updateGroupRatioOptions, updateSystemOption } from '../api'
+import type { UpdateOptionRequest, UpdateOptionsBulkRequest } from '../types'
 
 // Configuration keys that require status refresh
 const STATUS_RELATED_KEYS = new Set([
@@ -63,6 +63,29 @@ export function useUpdateOption() {
       } else {
         toast.error(data.message || i18next.t('Failed to update setting'))
       }
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || i18next.t('Failed to update setting'))
+    },
+  })
+}
+
+export function useUpdateGroupRatioOptions() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (request: UpdateOptionsBulkRequest) => {
+      const response = await updateGroupRatioOptions(request)
+      if (!response.success) {
+        throw new Error(
+          response.message || i18next.t('Failed to update setting')
+        )
+      }
+      return response
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['system-options'] })
+      toast.success(i18next.t('Setting updated successfully'))
     },
     onError: (error: Error) => {
       toast.error(error.message || i18next.t('Failed to update setting'))

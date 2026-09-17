@@ -10,6 +10,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/pkg/cachex"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/samber/hot"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -437,6 +438,17 @@ func getUserGroupByIdTx(tx *gorm.DB, userId int) (string, error) {
 	return group, nil
 }
 
+func validateSubscriptionMembershipGroup(group, field string) error {
+	group = strings.TrimSpace(group)
+	if group == "" {
+		return nil
+	}
+	if !ratio_setting.ContainsGroupRatio(group) || !ratio_setting.IsMembershipGroup(group) {
+		return fmt.Errorf("invalid subscription %s membership group: %s", field, group)
+	}
+	return nil
+}
+
 func downgradeUserGroupForSubscriptionTx(tx *gorm.DB, sub *UserSubscription, now int64) (string, error) {
 	if tx == nil || sub == nil {
 		return "", errors.New("invalid downgrade args")
@@ -473,6 +485,9 @@ func downgradeUserGroupForSubscriptionTx(tx *gorm.DB, sub *UserSubscription, now
 	}
 	if target == "" || target == currentGroup {
 		return "", nil
+	}
+	if err := validateSubscriptionMembershipGroup(target, "downgrade"); err != nil {
+		return "", err
 	}
 	if err := tx.Model(&User{}).Where("id = ?", sub.UserId).
 		Update("group", target).Error; err != nil {
@@ -515,6 +530,13 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 		lastReset = now.Unix()
 	}
 	upgradeGroup := strings.TrimSpace(plan.UpgradeGroup)
+	downgradeGroup := strings.TrimSpace(plan.DowngradeGroup)
+	if err := validateSubscriptionMembershipGroup(upgradeGroup, "upgrade"); err != nil {
+		return nil, err
+	}
+	if err := validateSubscriptionMembershipGroup(downgradeGroup, "downgrade"); err != nil {
+		return nil, err
+	}
 	prevGroup := ""
 	if upgradeGroup != "" {
 		currentGroup, err := getUserGroupByIdTx(tx, userId)
@@ -546,7 +568,7 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 		NextResetTime:       nextReset,
 		UpgradeGroup:        upgradeGroup,
 		PrevUserGroup:       prevGroup,
-		DowngradeGroup:      strings.TrimSpace(plan.DowngradeGroup),
+		DowngradeGroup:      downgradeGroup,
 		AllowWalletOverflow: allowWalletOverflow,
 		CreatedAt:           common.GetTimestamp(),
 		UpdatedAt:           common.GetTimestamp(),
@@ -1216,6 +1238,9 @@ func ExpireDueSubscriptions(limit int) (int, error) {
 			}
 			if target == "" || target == currentGroup {
 				return nil
+			}
+			if err := validateSubscriptionMembershipGroup(target, "expiry"); err != nil {
+				return err
 			}
 			if err := tx.Model(&User{}).Where("id = ?", userId).
 				Update("group", target).Error; err != nil {

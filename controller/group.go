@@ -2,6 +2,7 @@ package controller
 
 import (
 	"net/http"
+	"sort"
 
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
@@ -13,9 +14,26 @@ import (
 
 func GetGroups(c *gin.Context) {
 	groupNames := make([]string, 0)
+	membershipGroups := make(map[string]struct{})
+	for groupName := range ratio_setting.GetMembershipGroupsCopy() {
+		membershipGroups[groupName] = struct{}{}
+	}
+	groupType := c.Query("type")
 	for groupName := range ratio_setting.GetGroupRatioCopy() {
+		_, isMembershipGroup := membershipGroups[groupName]
+		switch groupType {
+		case "channel":
+			if isMembershipGroup {
+				continue
+			}
+		case "user":
+			if !isMembershipGroup {
+				continue
+			}
+		}
 		groupNames = append(groupNames, groupName)
 	}
+	sort.Strings(groupNames)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
@@ -28,8 +46,11 @@ func GetUserGroups(c *gin.Context) {
 	userGroup := ""
 	userId := c.GetInt("id")
 	userGroup, _ = model.GetUserGroup(userId, false)
-	userUsableGroups := service.GetUserUsableGroups(userGroup)
+	userUsableGroups := service.GetUserTokenSelectableGroups(userGroup)
 	for groupName, _ := range ratio_setting.GetGroupRatioCopy() {
+		if service.IsMembershipGroup(groupName) {
+			continue
+		}
 		// UserUsableGroups contains the groups that the user can use
 		if desc, ok := userUsableGroups[groupName]; ok {
 			usableGroups[groupName] = map[string]any{

@@ -391,6 +391,10 @@ func InitResources() error {
 		if err := model.MigrateRetiredFrontendOptions(); err != nil {
 			common.SysError("failed to migrate retired frontend options: " + err.Error())
 		}
+		if err := model.MigrateMembershipGroupsOption(); err != nil {
+			common.SysError("failed to migrate membership group option: " + err.Error())
+			return err
+		}
 	}
 	model.InitOptionMap()
 

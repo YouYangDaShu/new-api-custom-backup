@@ -157,6 +157,7 @@ func makeTask(userId, channelId, quota, tokenId int, billingSource string, subsc
 			BillingContext: &model.TaskBillingContext{
 				ModelPrice:      0.02,
 				GroupRatio:      1.0,
+				GroupRatioSet:   true,
 				OriginModelName: "test-model",
 			},
 		},
@@ -1681,6 +1682,31 @@ func TestSettle_TieredSnapshotWriteBackUsesSettledFactsAndMatchedTier(t *testing
 	assert.Equal(t, float64(5), facts["seconds"])
 	assert.NotContains(t, other, "resolution")
 	assert.NotContains(t, other, "seconds")
+}
+
+func TestRecalculateTaskQuotaByTokensHonorsZeroGroupRatioSnapshot(t *testing.T) {
+	truncate(t)
+	previousModelRatios := ratio_setting.ModelRatio2JSONString()
+	previousGroupRatios := ratio_setting.GroupRatio2JSONString()
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"test-model":1}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":2}`))
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(previousModelRatios))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(previousGroupRatios))
+	})
+
+	const userID, channelID, tokenID = 37, 37, 37
+	seedUser(t, userID, 10_000)
+	seedChannel(t, channelID)
+	seedToken(t, tokenID, userID, "sk-zero-group-ratio-snapshot", 10_000)
+	task := makeTask(userID, channelID, 500, tokenID, BillingSourceWallet, 0)
+	task.PrivateData.BillingContext.GroupRatio = 0
+	task.PrivateData.BillingContext.GroupRatioSet = true
+
+	settled := RecalculateTaskQuotaByTokens(context.Background(), task, 100)
+	require.True(t, settled)
+	assert.Zero(t, task.Quota)
+	assert.Equal(t, 10_500, getUserQuota(t, userID))
 }
 
 func TestSettle_TokenRecalcFallsBackToCompletionTokens(t *testing.T) {
