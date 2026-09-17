@@ -135,6 +135,8 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.GET("/self/groups", controller.GetUserGroups)
 				selfRoute.GET("/self", controller.GetSelf)
 				selfRoute.GET("/self/concurrency", controller.GetSelfConcurrency)
+				selfRoute.GET("/announcements/unread", controller.GetUnreadAnnouncements)
+				selfRoute.POST("/announcements/read", middleware.UserCriticalRateLimit("announcement-read"), controller.MarkAnnouncementsRead)
 				selfRoute.GET("/models", controller.GetUserModels)
 				selfRoute.PUT("/self", middleware.CriticalRateLimit(), middleware.DisableCache(), controller.UpdateSelf)
 				selfRoute.DELETE("/self", middleware.DisableCache(), controller.DeleteSelf)

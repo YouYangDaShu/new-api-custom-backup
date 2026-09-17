@@ -56,6 +56,43 @@ export async function getUserModels(): Promise<{
   return res.data
 }
 
+export type UnreadAnnouncementItem = {
+  key: string
+  type?: string
+  title?: string
+  content: string
+  extra?: string
+  publishDate?: string
+  source?: 'announcement' | 'notice' | string
+}
+
+export async function getUnreadAnnouncements(): Promise<{
+  success: boolean
+  message?: string
+  data?: { items: UnreadAnnouncementItem[]; total: number }
+}> {
+  const res = await api.get('/api/user/announcements/unread')
+  if (!res.data?.success) {
+    throw new Error(res.data?.message || 'Failed to load announcements')
+  }
+  return res.data
+}
+
+export async function markAnnouncementsRead(body: {
+  keys?: string[]
+  all?: boolean
+}): Promise<{
+  success: boolean
+  message?: string
+  data?: { marked: number }
+}> {
+  const res = await api.post('/api/user/announcements/read', body)
+  if (!res.data?.success) {
+    throw new Error(res.data?.message || 'Failed to mark announcements as read')
+  }
+  return res.data
+}
+
 export async function getUserGroups(): Promise<{
   success: boolean
   message?: string

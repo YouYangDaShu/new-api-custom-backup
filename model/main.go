@@ -380,6 +380,7 @@ func migrateDB() error {
 		&UserLotteryProgress{},
 		&LotteryConsumptionEvent{},
 		&LotteryDraw{},
+		&UserAnnouncementRead{},
 		&ChannelMonitor{},
 		&ChannelMonitorCheck{},
 		&CasbinRule{},

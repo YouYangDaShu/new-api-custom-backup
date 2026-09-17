@@ -6273,6 +6273,10 @@
     "Zero retention": "Aucune rétention",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "System announcement": "Annonce système",
+    "Mark all as read": "Tout marquer comme lu",
+    "Later": "Plus tard",
+    "Later closes this popup for now. Mark all as read so these will not show again after re-login.": "« Plus tard » ferme cette fenêtre pour cette session. Marquez tout comme lu pour ne plus afficher ces annonces après une nouvelle connexion."
   }
 }

@@ -6273,6 +6273,10 @@
     "Zero retention": "零數據保留",
     "Zhipu": "智譜",
     "Zhipu V4": "智譜 V4",
-    "Zoom": "縮放"
+    "Zoom": "縮放",
+    "System announcement": "系統公告",
+    "Mark all as read": "全部已讀",
+    "Later": "稍後",
+    "Later closes this popup for now. Mark all as read so these will not show again after re-login.": "「稍後」只會關閉本次登入提醒；選擇「全部已讀」後，重新登入也不會再顯示這些公告。"
   }
 }

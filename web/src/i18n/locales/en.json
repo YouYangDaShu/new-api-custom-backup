@@ -6273,6 +6273,10 @@
     "Zero retention": "Zero retention",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "System announcement": "System announcement",
+    "Mark all as read": "Mark all as read",
+    "Later": "Later",
+    "Later closes this popup for now. Mark all as read so these will not show again after re-login.": "Later closes this popup for this login session. Mark all as read so these announcements do not appear after you log in again."
   }
 }

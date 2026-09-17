@@ -6273,6 +6273,10 @@
     "Zero retention": "Không lưu dữ liệu",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "System announcement": "Thông báo hệ thống",
+    "Mark all as read": "Đánh dấu tất cả đã đọc",
+    "Later": "Để sau",
+    "Later closes this popup for now. Mark all as read so these will not show again after re-login.": "“Để sau” chỉ đóng cửa sổ trong phiên đăng nhập này. Đánh dấu tất cả đã đọc để các thông báo này không hiện lại sau khi đăng nhập."
   }
 }
