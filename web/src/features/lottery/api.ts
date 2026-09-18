@@ -37,6 +37,31 @@ export interface LotteryDraw {
   created_at: number
 }
 
+export type LotteryLeaderboardPeriod = 'all' | 'day' | 'week' | 'month'
+
+export interface LotteryLeaderboardRow {
+  rank: number
+  display_name: string
+  value: number
+  pity_step?: number
+  created_at?: number
+}
+
+export interface LotteryLeaderboardBoard {
+  rows: LotteryLeaderboardRow[]
+  current_user?: LotteryLeaderboardRow
+}
+
+export interface LotteryLeaderboardData {
+  period: LotteryLeaderboardPeriod
+  timezone: string
+  count_start: number
+  count_end: number
+  lucky: LotteryLeaderboardBoard
+  draw_count: LotteryLeaderboardBoard
+  hard_pity: LotteryLeaderboardBoard
+}
+
 export interface LotteryAdminConfig {
   enabled: boolean
   threshold_display_amount: number
@@ -70,6 +95,16 @@ export async function drawLottery(
   const res = await api.post('/api/lottery/draw', { count })
   if (!res.data?.success) {
     throw new Error(res.data?.message || 'Lottery draw failed')
+  }
+  return res.data
+}
+
+export async function getLotteryLeaderboards(
+  period: LotteryLeaderboardPeriod = 'all'
+): Promise<{ success: boolean; data: LotteryLeaderboardData }> {
+  const res = await api.get('/api/lottery/leaderboards', { params: { period } })
+  if (!res.data?.success) {
+    throw new Error(res.data?.message || 'Failed to load lottery leaderboards')
   }
   return res.data
 }

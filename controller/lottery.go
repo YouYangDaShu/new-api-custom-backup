@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -170,6 +171,22 @@ func DrawLottery(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": result})
+}
+
+// GetLotteryLeaderboards returns the public lottery boards for the signed-in
+// user. The model layer owns filtering, ordering, and privacy masking.
+func GetLotteryLeaderboards(c *gin.Context) {
+	period := c.DefaultQuery("period", "all")
+	if period != "all" && period != "day" && period != "week" && period != "month" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "invalid lottery leaderboard period"})
+		return
+	}
+	data, err := model.GetLotteryLeaderboards(c.GetInt("id"), time.Now(), period)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": data})
 }
 
 func AdminGetLottery(c *gin.Context) {

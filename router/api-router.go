@@ -69,6 +69,7 @@ func SetApiRouter(router *gin.Engine) {
 		lotteryRoute.Use(middleware.UserAuth())
 		{
 			lotteryRoute.GET("/", controller.GetLottery)
+			lotteryRoute.GET("/leaderboards", controller.GetLotteryLeaderboards)
 			lotteryRoute.POST("/draw", controller.DrawLottery)
 		}
 		lotteryAdminRoute := apiRouter.Group("/lottery/admin")

@@ -17,6 +17,7 @@ import { formatLocalCurrencyAmount } from '@/lib/currency'
 import { formatTimestampToDate } from '@/lib/format'
 
 import { drawLottery, getLottery, type LotteryDraw } from './api'
+import { LotteryLeaderboards } from './leaderboards'
 
 function formatPrizeAmount(amount: number | undefined) {
   return typeof amount === 'number' && Number.isFinite(amount)
@@ -178,7 +179,10 @@ export function Lottery() {
                   onClick={() => draw.mutate(1)}
                 >
                   {draw.isPending ? (
-                    <Loader2 className='size-4 animate-spin' aria-hidden='true' />
+                    <Loader2
+                      className='size-4 animate-spin'
+                      aria-hidden='true'
+                    />
                   ) : (
                     <Sparkles className='size-4' aria-hidden='true' />
                   )}
@@ -361,6 +365,7 @@ export function Lottery() {
             </div>
           ) : null}
         </section>
+        <LotteryLeaderboards />
       </div>
     )
   }

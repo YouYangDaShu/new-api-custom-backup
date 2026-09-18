@@ -5,13 +5,73 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestGetLotteryLeaderboardsRejectsInvalidPeriod(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Set("id", 78)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/lottery/leaderboards?period=quarter", nil)
+
+	GetLotteryLeaderboards(c)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "invalid lottery leaderboard period")
+}
+
+func TestLotteryLeaderboardRouteRequiresUserAuth(t *testing.T) {
+	router := gin.New()
+	lotteryRoute := router.Group("/api/lottery")
+	lotteryRoute.Use(middleware.UserAuth())
+	lotteryRoute.GET("/leaderboards", GetLotteryLeaderboards)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/lottery/leaderboards?period=all", nil)
+	router.ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusUnauthorized, recorder.Code)
+}
+
+func TestGetLotteryLeaderboardsResponseMasksAccountFields(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.LotteryDraw{}))
+	ids := []int{879101, 879102}
+	db.Unscoped().Where("id IN ?", ids).Delete(&model.User{})
+	db.Where("user_id IN ?", ids).Delete(&model.LotteryDraw{})
+	t.Cleanup(func() {
+		db.Where("user_id IN ?", ids).Delete(&model.LotteryDraw{})
+		db.Unscoped().Where("id IN ?", ids).Delete(&model.User{})
+	})
+	require.NoError(t, db.Create(&[]model.User{
+		{Id: ids[0], Username: "879123456", Email: "secret-one@example.com", AffCode: "lb-controller-1", Status: common.UserStatusEnabled},
+		{Id: ids[1], Username: "private-user", Email: "secret-two@example.com", AffCode: "lb-controller-2", Status: common.UserStatusEnabled},
+	}).Error)
+	require.NoError(t, db.Create(&[]model.LotteryDraw{
+		{UserID: ids[0], PrizeLevel: 1, PityStep: 1, IsGuaranteed: false, CreatedAt: time.Now().Unix()},
+	}).Error)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Set("id", ids[0])
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/lottery/leaderboards?period=all", nil)
+	GetLotteryLeaderboards(c)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	body := recorder.Body.String()
+	for _, forbidden := range []string{"user_id", "username", "email", "secret-one@example.com", "879123456", "role", "status"} {
+		assert.NotContains(t, body, forbidden)
+	}
+	assert.Contains(t, body, "879***456")
+}
 
 func TestGetLotteryIncludesRecentDraw(t *testing.T) {
 	db := setupModelListControllerTestDB(t)
