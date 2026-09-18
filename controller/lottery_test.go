@@ -73,7 +73,90 @@ func TestGetLotteryIncludesRecentDraw(t *testing.T) {
 	require.NotContains(t, response.Data.History.Items[0], "weight")
 }
 
-func TestDrawLotteryPublicResponseOmitsUserIDAndWeight(t *testing.T) {
+func TestDrawLotteryRejectsInvalidJSON(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Set("id", 78)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/lottery/draw", bytes.NewBufferString("{"))
+
+	DrawLottery(c)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	var response struct {
+		Success bool `json:"success"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	require.False(t, response.Success)
+}
+
+func TestDrawLotteryRejectsExplicitZeroCount(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Set("id", 78)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/lottery/draw", bytes.NewBufferString(`{"count":0}`))
+
+	DrawLottery(c)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	var response struct {
+		Success bool `json:"success"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	require.False(t, response.Success)
+}
+
+func TestDrawLotteryRejectsExplicitNullCount(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Set("id", 78)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/lottery/draw", bytes.NewBufferString(`{"count":null}`))
+
+	DrawLottery(c)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	var response struct {
+		Success bool `json:"success"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	require.False(t, response.Success)
+}
+
+func TestDrawLotteryRejectsNonObjectRequestBodies(t *testing.T) {
+	for _, body := range []string{`[]`, `1`, `"count"`, `true`} {
+		t.Run(body, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Set("id", 78)
+			c.Request = httptest.NewRequest(http.MethodPost, "/api/lottery/draw", bytes.NewBufferString(body))
+
+			DrawLottery(c)
+
+			require.Equal(t, http.StatusBadRequest, recorder.Code)
+		})
+	}
+}
+
+func TestDrawLotteryRejectsUnknownDuplicateAndTrailingJSON(t *testing.T) {
+	for _, body := range []string{
+		`{"unexpected":true}`,
+		`{"count":1,"unexpected":true}`,
+		`{"count":1,"count":10}`,
+		`{"count":10}{"count":1}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Set("id", 78)
+			c.Request = httptest.NewRequest(http.MethodPost, "/api/lottery/draw", bytes.NewBufferString(body))
+
+			DrawLottery(c)
+
+			require.Equal(t, http.StatusBadRequest, recorder.Code)
+		})
+	}
+}
+
+func TestDrawLotteryTenDrawResponsePreservesOrderAndHidesPityFields(t *testing.T) {
 	db := setupModelListControllerTestDB(t)
 	require.NoError(t, db.AutoMigrate(&model.Option{}, &model.User{}, &model.UserLotteryProgress{}, &model.LotteryDraw{}))
 	oldQPU := common.QuotaPerUnit
@@ -87,26 +170,48 @@ func TestDrawLotteryPublicResponseOmitsUserIDAndWeight(t *testing.T) {
 	common.QuotaPerUnit = 1
 	operation_setting.GetGeneralSetting().QuotaDisplayType = operation_setting.QuotaDisplayTypeCNY
 	operation_setting.USDExchangeRate = 1
-	require.NoError(t, db.Create(&model.User{Id: 78, Username: "winner", AffCode: "lottery-public"}).Error)
-	require.NoError(t, db.Create(&model.UserLotteryProgress{UserID: 78, AvailableDraws: 1}).Error)
+	userID := 79
+	require.NoError(t, db.Create(&model.User{Id: userID, Username: "ten-draw", AffCode: "lottery-ten"}).Error)
+	require.NoError(t, db.Create(&model.UserLotteryProgress{UserID: userID, AvailableDraws: 10}).Error)
 	require.NoError(t, model.SaveLotteryConfig(model.LotteryConfig{
-		Enabled: true, Threshold: 10,
-		Prizes:        []model.LotteryPrize{{ID: "cash", Name: "Cash", Weight: 1, AmountQuota: 2}},
-		SchemaVersion: 2, Unit: "raw_quota",
+		Enabled:   true,
+		Threshold: 10,
+		Prizes: []model.LotteryPrize{
+			{ID: "first", Name: "First", PrizeLevel: 1, Weight: 1, AmountQuota: 2, Enabled: true},
+			{ID: "second", Name: "Second", PrizeLevel: 2, Weight: 1, Enabled: true},
+		},
+		PityEnabled:          true,
+		PityTargetPrizeLevel: 1,
+		PityBaseRate:         0,
+		PityBaseEnd:          1,
+		PityStage1Start:      2,
+		PityStage1End:        2,
+		PityStage1Rates:      []float64{0},
+		PityStage2Start:      3,
+		PityStage2End:        3,
+		PityStage2Rates:      []float64{0},
+		PityHardThreshold:    4,
+		SchemaVersion:        3,
+		Unit:                 "raw_quota",
 	}))
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	c.Set("id", 78)
-	c.Request = httptest.NewRequest(http.MethodPost, "/api/lottery/draw", bytes.NewReader(nil))
+	c.Set("id", userID)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/lottery/draw", bytes.NewBufferString(`{"count":10}`))
+
 	DrawLottery(c)
 
 	require.Equal(t, http.StatusOK, recorder.Code)
 	var response struct {
-		Data map[string]any `json:"data"`
+		Data []map[string]any `json:"data"`
 	}
 	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
-	require.NotContains(t, response.Data, "user_id")
-	require.NotContains(t, response.Data, "weight")
-	require.Equal(t, "cash", response.Data["prize_id"])
+	require.Len(t, response.Data, 10)
+	for index, draw := range response.Data {
+		require.Equal(t, float64(index+1), draw["id"])
+		require.NotContains(t, draw, "pity_step")
+		require.NotContains(t, draw, "is_guaranteed")
+		require.NotContains(t, draw, "user_id")
+	}
 }

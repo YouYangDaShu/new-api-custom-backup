@@ -3,8 +3,11 @@ import { api } from '@/lib/api'
 export interface LotteryPrize {
   id: string
   name: string
-  weight?: number
+  prize_level: number
+  weight: number
   amount: number
+  enabled: boolean
+  sort_order: number
 }
 export interface LotteryUserPrize {
   id: string
@@ -34,6 +37,23 @@ export interface LotteryDraw {
   created_at: number
 }
 
+export interface LotteryAdminConfig {
+  enabled: boolean
+  threshold_display_amount: number
+  prizes: LotteryPrize[]
+  pity_enabled: boolean
+  pity_target_prize_level: number
+  pity_base_rate: number
+  pity_base_end: number
+  pity_stage_1_start: number
+  pity_stage_1_end: number
+  pity_stage_1_rates: number[]
+  pity_stage_2_start: number
+  pity_stage_2_end: number
+  pity_stage_2_rates: number[]
+  pity_hard_threshold: number
+}
+
 export async function getLottery(page = 1): Promise<{
   success: boolean
   data: LotteryProgress
@@ -44,20 +64,18 @@ export async function getLottery(page = 1): Promise<{
   return res.data
 }
 
-export async function drawLottery(): Promise<{
-  success: boolean
-  data: LotteryDraw
-}> {
-  const res = await api.post('/api/lottery/draw')
+export async function drawLottery(
+  count = 1
+): Promise<{ success: boolean; data: LotteryDraw | LotteryDraw[] }> {
+  const res = await api.post('/api/lottery/draw', { count })
+  if (!res.data?.success) {
+    throw new Error(res.data?.message || 'Lottery draw failed')
+  }
   return res.data
 }
 
 export interface LotteryAdminData {
-  config: {
-    enabled: boolean
-    threshold_display_amount: number
-    prizes: LotteryPrize[]
-  }
+  config: LotteryAdminConfig
   users: Array<{
     user_id: number
     username: string
@@ -91,8 +109,11 @@ export async function getLotteryAdmin(
 }
 export async function updateLotteryAdmin(
   config: LotteryAdminData['config']
-): Promise<{ success: boolean }> {
+): Promise<{ success: boolean; data?: LotteryAdminConfig }> {
   const res = await api.put('/api/lottery/admin/', config)
+  if (!res.data?.success) {
+    throw new Error(res.data?.message || 'Failed to save lottery settings')
+  }
   return res.data
 }
 export async function resetLotteryAdmin(

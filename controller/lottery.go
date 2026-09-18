@@ -1,6 +1,9 @@
 package controller
 
 import (
+	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
 
@@ -28,11 +31,13 @@ type lotteryAdminDraw struct {
 }
 
 type lotteryRecentDraw struct {
-	ID          uint    `json:"id"`
-	PrizeID     string  `json:"prize_id"`
-	PrizeName   string  `json:"prize_name"`
-	PrizeAmount float64 `json:"prize_amount"`
-	CreatedAt   int64   `json:"created_at"`
+	ID           uint    `json:"id"`
+	PrizeID      string  `json:"prize_id"`
+	PrizeName    string  `json:"prize_name"`
+	PrizeAmount  float64 `json:"prize_amount"`
+	CreatedAt    int64   `json:"created_at"`
+	PityStep     int     `json:"pity_step,omitempty"`
+	IsGuaranteed bool    `json:"is_guaranteed,omitempty"`
 }
 
 type lotteryHistoryResponse struct {
@@ -59,6 +64,9 @@ func GetLottery(c *gin.Context) {
 	// Expose only user-safe prize fields; weights must stay admin-only.
 	prizes := make([]gin.H, 0, len(cfg.Prizes))
 	for _, prize := range cfg.Prizes {
+		if !prize.Enabled {
+			continue
+		}
 		amount, conversionErr := model.LotteryQuotaToDisplay(prize.AmountQuota)
 		if conversionErr != nil {
 			amount = 0
@@ -92,16 +100,76 @@ func GetLottery(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"enabled": cfg.Enabled, "threshold": threshold, "accumulated": accumulated, "available_draws": progress.AvailableDraws, "prizes": prizes, "recent_draw": recentDraw, "history": lotteryHistoryResponse{Items: history, Page: page, PageSize: pageSize, Total: total, TotalPages: totalPages}}})
 }
 
+func decodeLotteryDrawCount(reader io.Reader) (int, error) {
+	if reader == nil {
+		return 1, nil
+	}
+	decoder := json.NewDecoder(reader)
+	token, err := decoder.Token()
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return 1, nil
+		}
+		return 0, errors.New("invalid lottery draw request")
+	}
+	opening, ok := token.(json.Delim)
+	if !ok || opening != '{' {
+		return 0, errors.New("invalid lottery draw request")
+	}
+	count := 1
+	seenCount := false
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		key, ok := keyToken.(string)
+		if err != nil || !ok || key != "count" || seenCount {
+			return 0, errors.New("invalid lottery draw request")
+		}
+		seenCount = true
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil || string(value) == "null" {
+			if string(value) == "null" {
+				return 0, errors.New("lottery draw count must be 1 or 10")
+			}
+			return 0, errors.New("invalid lottery draw request")
+		}
+		if err := json.Unmarshal(value, &count); err != nil {
+			return 0, errors.New("invalid lottery draw request")
+		}
+	}
+	closing, err := decoder.Token()
+	if err != nil {
+		return 0, errors.New("invalid lottery draw request")
+	}
+	if closing != json.Delim('}') {
+		return 0, errors.New("invalid lottery draw request")
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return 0, errors.New("invalid lottery draw request")
+	}
+	return count, nil
+}
+
 func DrawLottery(c *gin.Context) {
-	draw, err := model.DrawLottery(c.GetInt("id"))
+	count, err := decodeLotteryDrawCount(c.Request.Body)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": lotteryRecentDraw{
-		ID: draw.ID, PrizeID: draw.PrizeID, PrizeName: draw.PrizeName,
-		PrizeAmount: draw.PrizeAmount, CreatedAt: draw.CreatedAt,
-	}})
+	draws, err := model.DrawLotteryCount(c.GetInt("id"), count)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	result := make([]lotteryRecentDraw, 0, len(draws))
+	for _, draw := range draws {
+		result = append(result, lotteryRecentDraw{ID: draw.ID, PrizeID: draw.PrizeID, PrizeName: draw.PrizeName, PrizeAmount: draw.PrizeAmount, CreatedAt: draw.CreatedAt})
+	}
+	if count == 1 {
+		c.JSON(http.StatusOK, gin.H{"success": true, "data": result[0]})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": result})
 }
 
 func AdminGetLottery(c *gin.Context) {
@@ -227,6 +295,17 @@ func AdminUpdateLottery(c *gin.Context) {
 		ThresholdDisplayAmount *float64             `json:"threshold_display_amount"`
 		Threshold              *int                 `json:"threshold"`
 		Prizes                 []model.LotteryPrize `json:"prizes"`
+		PityEnabled            bool                 `json:"pity_enabled"`
+		PityTargetPrizeLevel   int                  `json:"pity_target_prize_level"`
+		PityBaseRate           float64              `json:"pity_base_rate"`
+		PityBaseEnd            int                  `json:"pity_base_end"`
+		PityStage1Start        int                  `json:"pity_stage_1_start"`
+		PityStage1End          int                  `json:"pity_stage_1_end"`
+		PityStage1Rates        []float64            `json:"pity_stage_1_rates"`
+		PityStage2Start        int                  `json:"pity_stage_2_start"`
+		PityStage2End          int                  `json:"pity_stage_2_end"`
+		PityStage2Rates        []float64            `json:"pity_stage_2_rates"`
+		PityHardThreshold      int                  `json:"pity_hard_threshold"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "invalid lottery config"})
@@ -246,7 +325,13 @@ func AdminUpdateLottery(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
 		return
 	}
-	cfg := model.LotteryConfig{Enabled: request.Enabled, Threshold: threshold, Prizes: request.Prizes, SchemaVersion: 2, Unit: "raw_quota"}
+	cfg := model.LotteryConfig{Enabled: request.Enabled, Threshold: threshold, Prizes: request.Prizes,
+		PityEnabled: request.PityEnabled, PityTargetPrizeLevel: request.PityTargetPrizeLevel,
+		PityBaseRate: request.PityBaseRate, PityBaseEnd: request.PityBaseEnd,
+		PityStage1Start: request.PityStage1Start, PityStage1End: request.PityStage1End,
+		PityStage1Rates: request.PityStage1Rates, PityStage2Start: request.PityStage2Start,
+		PityStage2End: request.PityStage2End, PityStage2Rates: request.PityStage2Rates,
+		PityHardThreshold: request.PityHardThreshold, SchemaVersion: 3, Unit: "raw_quota"}
 	for i := range cfg.Prizes {
 		quota, conversionErr := model.LotteryDisplayToQuota(cfg.Prizes[i].Amount)
 		if cfg.Prizes[i].Amount == 0 {
@@ -257,6 +342,10 @@ func AdminUpdateLottery(c *gin.Context) {
 			return
 		}
 		cfg.Prizes[i].AmountQuota = quota
+	}
+	if err := model.ValidateLotteryConfigAnchor(cfg); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
+		return
 	}
 	if err := model.SaveLotteryConfig(cfg); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})

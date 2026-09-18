@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
-import { createDraftPrize } from '../draft-prize'
+import { canRemoveDraftPrize, createDraftPrize } from '../draft-prize'
 
 describe('lottery draft prize ids', () => {
+  it('keeps the permanent first-prize identity available for pity', () => {
+    expect(canRemoveDraftPrize(1, 2)).toBe(false)
+    expect(canRemoveDraftPrize(2, 2)).toBe(true)
+    expect(canRemoveDraftPrize(2, 1)).toBe(false)
+  })
+
   it('numbers fresh tiers sequentially', () => {
     expect(createDraftPrize([]).id).toBe('tier-1')
     expect(createDraftPrize([{ id: 'tier-1' }]).id).toBe('tier-2')

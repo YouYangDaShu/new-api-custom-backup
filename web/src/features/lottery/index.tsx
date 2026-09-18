@@ -16,7 +16,7 @@ import { Button } from '@/components/ui/button'
 import { formatLocalCurrencyAmount } from '@/lib/currency'
 import { formatTimestampToDate } from '@/lib/format'
 
-import { drawLottery, getLottery } from './api'
+import { drawLottery, getLottery, type LotteryDraw } from './api'
 
 function formatPrizeAmount(amount: number | undefined) {
   return typeof amount === 'number' && Number.isFinite(amount)
@@ -33,7 +33,7 @@ export function Lottery() {
     queryFn: () => getLottery(historyPage),
   })
   const draw = useMutation({
-    mutationFn: drawLottery,
+    mutationFn: (count: number) => drawLottery(count),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['lottery'] }),
   })
   const data = query.data?.data
@@ -43,10 +43,20 @@ export function Lottery() {
     data && data.threshold > 0
       ? Math.min(Math.max((data.accumulated / data.threshold) * 100, 0), 100)
       : 0
-  const result = draw.data?.data ?? data?.recent_draw
-  const prizeAmount = formatPrizeAmount(result?.prize_amount)
+  const rawResult = draw.data?.data
+  let results: LotteryDraw[] = []
+  if (Array.isArray(rawResult)) {
+    results = rawResult
+  } else if (rawResult) {
+    results = [rawResult]
+  } else if (data?.recent_draw) {
+    results = [data.recent_draw]
+  }
   const canDraw = Boolean(
     data?.enabled && data.available_draws > 0 && !draw.isPending
+  )
+  const canDrawTen = Boolean(
+    data?.enabled && data.available_draws >= 10 && !draw.isPending
   )
 
   let content
@@ -160,21 +170,30 @@ export function Lottery() {
               <p className='mt-5 text-4xl font-semibold tabular-nums'>
                 {data.available_draws}
               </p>
-            </div>
 
-            <div className='mt-7'>
-              <Button
-                className='h-11 w-full gap-2 bg-blue-600 text-white shadow-sm hover:bg-blue-500'
-                disabled={!canDraw}
-                onClick={() => draw.mutate()}
-              >
-                {draw.isPending ? (
-                  <Loader2 className='size-4 animate-spin' aria-hidden='true' />
-                ) : (
+              <div className='mt-7 grid gap-2 sm:grid-cols-2'>
+                <Button
+                  className='h-11 gap-2 bg-blue-600 text-white shadow-sm hover:bg-blue-500'
+                  disabled={!canDraw}
+                  onClick={() => draw.mutate(1)}
+                >
+                  {draw.isPending ? (
+                    <Loader2 className='size-4 animate-spin' aria-hidden='true' />
+                  ) : (
+                    <Sparkles className='size-4' aria-hidden='true' />
+                  )}
+                  {draw.isPending ? t('Processing') : t('Draw once')}
+                </Button>
+                <Button
+                  className='h-11 gap-2'
+                  variant='outline'
+                  disabled={!canDrawTen}
+                  onClick={() => draw.mutate(10)}
+                >
                   <Sparkles className='size-4' aria-hidden='true' />
-                )}
-                {draw.isPending ? t('Processing') : t('Draw now')}
-              </Button>
+                  {t('Draw ten times')}
+                </Button>
+              </div>
               {!data.enabled ? (
                 <p className='text-muted-foreground mt-3 text-center text-xs'>
                   {t('The lottery is currently closed')}
@@ -258,19 +277,30 @@ export function Lottery() {
               </p>
             </div>
           </div>
-          {result ? (
-            <div className='mt-5 flex flex-wrap items-end justify-between gap-4 rounded-xl border border-amber-500/25 bg-amber-500/5 px-4 py-4'>
-              <div>
-                <p className='text-muted-foreground text-xs'>{t('Result')}</p>
-                <p className='mt-1 text-xl font-semibold'>
-                  {result.prize_name}
-                </p>
-              </div>
-              {prizeAmount ? (
-                <p className='text-2xl font-semibold text-amber-500 tabular-nums'>
-                  +{prizeAmount}
-                </p>
-              ) : null}
+          {results.length ? (
+            <div className='mt-5 grid gap-2 sm:grid-cols-2'>
+              {results.map((item, index) => (
+                <div
+                  className='flex items-center justify-between gap-4 rounded-xl border border-amber-500/25 bg-amber-500/5 px-4 py-3'
+                  key={item.id}
+                >
+                  <div className='min-w-0'>
+                    {results.length > 1 ? (
+                      <p className='text-muted-foreground text-xs'>
+                        {t('Draw number')} {index + 1}
+                      </p>
+                    ) : null}
+                    <p className='truncate text-lg font-semibold'>
+                      {item.prize_name}
+                    </p>
+                  </div>
+                  {formatPrizeAmount(item.prize_amount) ? (
+                    <p className='shrink-0 text-xl font-semibold text-amber-500 tabular-nums'>
+                      +{formatPrizeAmount(item.prize_amount)}
+                    </p>
+                  ) : null}
+                </div>
+              ))}
             </div>
           ) : (
             <p className='text-muted-foreground mt-5 rounded-xl border border-dashed px-4 py-5 text-center text-sm'>

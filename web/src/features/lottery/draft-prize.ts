@@ -19,7 +19,18 @@ export interface DraftPrize {
   id: string
   name: string
   amount: string
-  probability: string
+  weight: string
+  prizeLevel: number
+  enabled: boolean
+  sortOrder: number
+}
+
+// prize_level=1 is the permanent first-prize identity used by pity and
+// leaderboards. Removing it would make an existing configuration impossible
+// to restore from the admin UI because new tiers intentionally never reuse a
+// deleted level.
+export function canRemoveDraftPrize(prizeLevel: number, prizeCount: number): boolean {
+  return prizeCount > 1 && prizeLevel !== 1
 }
 
 /**
@@ -28,17 +39,35 @@ export interface DraftPrize {
  * make the next `tier-${length + 1}` id repeat an id still in the list.
  */
 export function createDraftPrize(
-  existing: ReadonlyArray<{ id: string }>
+  existing: ReadonlyArray<{ id: string; prizeLevel?: number }>
 ): DraftPrize {
   const usedIds = new Set(existing.map((prize) => prize.id))
+  const usedLevels = new Set<number>()
+  for (const prize of existing) {
+    const level = prize.prizeLevel
+    if (typeof level === 'number' && Number.isInteger(level) && level > 0) {
+      usedLevels.add(level)
+      continue
+    }
+    const match = /^tier-(\d+)$/.exec(prize.id)
+    if (match) usedLevels.add(Number(match[1]))
+  }
   let index = existing.length + 1
   while (usedIds.has(`tier-${index}`)) {
     index += 1
   }
+  const maxLevel = Math.max(0, ...usedLevels)
+  let prizeLevel = maxLevel + 1
+  while (usedLevels.has(prizeLevel)) {
+    prizeLevel += 1
+  }
   return {
     id: `tier-${index}`,
-    name: `Tier ${index}`,
+    name: `Tier ${prizeLevel}`,
     amount: '',
-    probability: '',
+    weight: '1',
+    prizeLevel,
+    enabled: true,
+    sortOrder: existing.length,
   }
 }
