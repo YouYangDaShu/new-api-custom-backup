@@ -169,6 +169,54 @@ export function parseLogOther(other: string): LogOtherData | null {
   }
 }
 
+export function getLogCacheMetrics(
+  promptTokens: number,
+  cacheTokens: number | undefined
+): {
+  cacheTokens: number
+  uncachedInputTokens: number
+  cacheRate: number
+  hasCacheData: boolean
+} {
+  const normalizedPrompt =
+    Number.isFinite(promptTokens) && promptTokens > 0 ? promptTokens : 0
+  const hasCacheData =
+    typeof cacheTokens === 'number' &&
+    Number.isFinite(cacheTokens) &&
+    cacheTokens >= 0
+  const normalizedCache = hasCacheData ? cacheTokens : 0
+
+  return {
+    cacheTokens: normalizedCache,
+    uncachedInputTokens: Math.max(normalizedPrompt - normalizedCache, 0),
+    cacheRate:
+      normalizedPrompt > 0
+        ? Math.min((normalizedCache / normalizedPrompt) * 100, 100)
+        : 0,
+    hasCacheData,
+  }
+}
+
+export function getLogCacheWriteTokens(other: LogOtherData | null): number {
+  if (!other) return 0
+
+  const finitePositive = (value: number | undefined) =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0
+  const splitTotal =
+    finitePositive(other.cache_creation_tokens_5m) +
+    finitePositive(other.cache_creation_tokens_1h)
+
+  if (splitTotal > 0) {
+    return Number.isFinite(splitTotal) ? splitTotal : 0
+  }
+  return finitePositive(other.cache_creation_tokens)
+}
+
+export function formatLogCacheRate(cacheRate: number): string {
+  if (!Number.isFinite(cacheRate) || cacheRate <= 0) return '0%'
+  return `${Number(Math.min(cacheRate, 100).toFixed(1))}%`
+}
+
 export function getReasoningEffortVariant(
   effort: string | undefined
 ): StatusBadgeProps['variant'] {

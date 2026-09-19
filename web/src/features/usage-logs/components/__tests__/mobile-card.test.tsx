@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
+  flexRender,
   getCoreRowModel,
   useReactTable,
   type VisibilityState,
@@ -60,6 +61,7 @@ function Fixture(props: {
   visibility?: VisibilityState
   logs?: UsageLog[]
   loading?: boolean
+  desktopTokens?: boolean
 }) {
   const columns = useCommonLogsColumns(props.admin ?? true, false)
   const context = useUsageLogsContext()
@@ -69,6 +71,10 @@ function Fixture(props: {
     getCoreRowModel: getCoreRowModel(),
     state: { columnVisibility: props.visibility ?? {} },
   })
+  const tokenCell = table
+    .getRowModel()
+    .rows[0]?.getAllCells()
+    .find((cell) => cell.column.id === 'prompt_tokens')
   return (
     <>
       <button type='button' onClick={() => context.setSensitiveVisible(false)}>
@@ -79,6 +85,9 @@ function Fixture(props: {
         logCategory='common'
         isLoading={props.loading}
       />
+      {props.desktopTokens && tokenCell
+        ? flexRender(tokenCell.column.columnDef.cell, tokenCell.getContext())
+        : null}
     </>
   )
 }
@@ -162,12 +171,126 @@ it('respects hidden columns and omits admin fields in the self view', () => {
   expect(screen.queryByText('enterprise-production')).not.toBeInTheDocument()
 })
 
-it('keeps input, output and cache quantities readable without empty metric cells', () => {
+it('shows uncached input, output, cached tokens and cache rate on mobile', () => {
   renderLogs()
-  expect(screen.getByText('Input')).toBeVisible()
-  expect(screen.getByText('Output')).toBeVisible()
-  expect(screen.getByText(/300/)).toBeVisible()
-  expect(screen.getByText('Cache ↑ 200')).toBeVisible()
+  expect(screen.getByTitle('Input')).toHaveTextContent('900')
+  expect(screen.getByTitle('Output')).toHaveTextContent('800')
+  expect(screen.getByTitle('Cached input')).toHaveTextContent('300')
+  expect(screen.getByTitle('Cached input')).toHaveTextContent('25%')
+  expect(screen.getByText('Cache Write 200')).toBeVisible()
+})
+
+it('shows the same cache metrics in the desktop token cell', () => {
+  renderLogs({ desktopTokens: true })
+  const cached = screen.getAllByTitle('Cached input')
+  expect(cached).toHaveLength(2)
+  expect(cached[1]).toHaveTextContent('300')
+  expect(cached[1]).toHaveTextContent('25%')
+  expect(screen.getAllByTitle('Input')[1]).toHaveTextContent('900')
+  expect(screen.getAllByTitle('Output')[1]).toHaveTextContent('800')
+})
+
+it('shows the exact cached token count without compact rounding in both views', () => {
+  renderLogs({
+    desktopTokens: true,
+    logs: [
+      {
+        ...log,
+        prompt_tokens: 1234567,
+        other: JSON.stringify({ cache_tokens: 1234567 }),
+      },
+    ],
+  })
+  const cached = screen.getAllByLabelText('Cached input: 1,234,567, 100%')
+  expect(cached).toHaveLength(2)
+  for (const metric of cached) {
+    expect(metric).toHaveTextContent('1,234,567')
+    expect(metric).not.toHaveTextContent('1.23M')
+  }
+})
+
+it('does not invent cache metrics when cache_tokens is absent', () => {
+  renderLogs({
+    desktopTokens: true,
+    logs: [
+      {
+        ...log,
+        other: JSON.stringify({ model_ratio: 1 }),
+      },
+    ],
+  })
+  expect(screen.getAllByTitle('Input')).toHaveLength(2)
+  expect(screen.getAllByTitle('Input')[0]).toHaveTextContent('1,200')
+  expect(screen.queryByTitle('Cached input')).not.toBeInTheDocument()
+})
+
+it('keeps cache-only and explicit zero cache metrics aligned across both views', () => {
+  const { unmount } = renderLogs({
+    desktopTokens: true,
+    logs: [
+      {
+        ...log,
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        other: JSON.stringify({ cache_tokens: 150 }),
+      },
+    ],
+  })
+  expect(screen.getAllByLabelText('Input: 0')).toHaveLength(2)
+  expect(screen.getAllByLabelText('Output: 0')).toHaveLength(2)
+  expect(screen.getAllByLabelText('Cached input: 150, 0%')).toHaveLength(2)
+
+  unmount()
+  renderLogs({
+    desktopTokens: true,
+    logs: [
+      {
+        ...log,
+        other: JSON.stringify({ cache_tokens: 0 }),
+      },
+    ],
+  })
+  expect(screen.getAllByLabelText('Cached input: 0, 0%')).toHaveLength(2)
+})
+
+it('keeps uncached input green when the long-context warning is active', () => {
+  renderLogs({
+    desktopTokens: true,
+    logs: [
+      {
+        ...log,
+        other: JSON.stringify({
+          cache_tokens: 300,
+          billing_mode: 'tiered_expr',
+          expr_b64: Buffer.from(
+            'len <= 100 ? tier("short", p) : tier("long", p)'
+          ).toString('base64'),
+        }),
+      },
+    ],
+  })
+  const inputs = screen.getAllByLabelText('Input: 900')
+  expect(inputs).toHaveLength(2)
+  for (const input of inputs) {
+    expect(input).toHaveClass('text-emerald-600')
+    expect(input).not.toHaveClass('text-red-600')
+  }
+})
+
+it('hides non-finite cache-write values in both views', () => {
+  renderLogs({
+    desktopTokens: true,
+    logs: [
+      {
+        ...log,
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        other: '{"cache_creation_tokens_5m":1e400}',
+      },
+    ],
+  })
+  expect(screen.queryByText(/Cache Write/)).not.toBeInTheDocument()
+  expect(screen.queryByText('∞')).not.toBeInTheDocument()
 })
 
 it('shows the established empty state when no logs exist', () => {

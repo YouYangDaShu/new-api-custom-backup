@@ -17,7 +17,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { flexRender, type Cell } from '@tanstack/react-table'
-import { AlertTriangle, ChevronRight, KeyRound } from 'lucide-react'
+import {
+  AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  ChevronRight,
+  Database,
+  KeyRound,
+} from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -30,13 +37,15 @@ import { Button } from '@/components/ui/button'
 import { getUserAvatarFallback, getUserAvatarStyle } from '@/lib/avatar'
 import dayjs from '@/lib/dayjs'
 import { formatLogQuota, formatTimestampToDate } from '@/lib/format'
-import { cn } from '@/lib/utils'
 
 import type { UsageLog } from '../data/schema'
 import { getTieredInputTokenThreshold } from '../lib/context-warning'
 import {
   decodeBillingExprB64,
+  formatLogCacheRate,
   formatModelName,
+  getLogCacheMetrics,
+  getLogCacheWriteTokens,
   parseLogOther,
 } from '../lib/format'
 import {
@@ -134,18 +143,17 @@ export function CommonLogMobileCard<TData>(props: {
   const costCell = props.cells.get('quota')
   const contentCell = props.cells.get('content')
   const channelCell = props.cells.get('channel')
-  const cacheRead = other?.cache_tokens || 0
-  const cacheWrite =
-    (other?.cache_creation_tokens_5m || 0) +
-      (other?.cache_creation_tokens_1h || 0) ||
-    other?.cache_creation_tokens ||
-    0
+  const cacheMetrics = getLogCacheMetrics(
+    log.prompt_tokens,
+    other?.cache_tokens
+  )
+  const cacheWrite = getLogCacheWriteTokens(other)
   const showTokens =
     displayable &&
     props.cells.has('prompt_tokens') &&
     (log.prompt_tokens > 0 ||
       log.completion_tokens > 0 ||
-      cacheRead > 0 ||
+      cacheMetrics.hasCacheData ||
       cacheWrite > 0)
   const inputTokenThreshold =
     other?.billing_mode === 'tiered_expr'
@@ -300,45 +308,50 @@ export function CommonLogMobileCard<TData>(props: {
         </div>
       )}
       {showTokens && (
-        <div className='text-muted-foreground flex flex-wrap gap-x-3 gap-y-1 text-xs [overflow-wrap:anywhere]'>
+        <div className='flex flex-wrap items-center gap-x-3 gap-y-1 text-xs [overflow-wrap:anywhere]'>
           {isContextWarning && (
-            <span className='text-amber-700 dark:text-amber-300' title={t('Long context warning')}>
+            <span
+              className='text-amber-700 dark:text-amber-300'
+              title={t('Long context warning')}
+            >
               <AlertTriangle
                 className='size-3.5 shrink-0'
                 aria-label={t('Long context warning')}
               />
             </span>
           )}
-          <span>
-            {t('Input')}{' '}
-            <span
-              className={cn(
-                'tabular-nums',
-                isContextWarning && 'text-red-600 dark:text-red-400'
-              )}
-            >
-              {log.prompt_tokens.toLocaleString()}
+          <span
+            className='inline-flex items-center gap-0.5 text-emerald-600 dark:text-emerald-400'
+            title={t('Input')}
+            aria-label={`${t('Input')}: ${cacheMetrics.uncachedInputTokens.toLocaleString()}`}
+          >
+            <ArrowDown className='size-3.5' aria-hidden='true' />
+            <span className='tabular-nums'>
+              {cacheMetrics.uncachedInputTokens.toLocaleString()}
             </span>
           </span>
-          <span>
-            {t('Output')}{' '}
-            <span
-              className={cn(
-                'tabular-nums',
-                isContextWarning && 'text-red-600 dark:text-red-400'
-              )}
-            >
-              {log.completion_tokens.toLocaleString()}
-            </span>
+          <span
+            className='inline-flex items-center gap-0.5 text-violet-600 tabular-nums dark:text-violet-400'
+            title={t('Output')}
+            aria-label={`${t('Output')}: ${log.completion_tokens.toLocaleString()}`}
+          >
+            <ArrowUp className='size-3.5' aria-hidden='true' />
+            {log.completion_tokens.toLocaleString()}
           </span>
-          {cacheRead > 0 && (
-            <span>
-              {t('Cache')} ↓ {cacheRead.toLocaleString()}
+          {cacheMetrics.hasCacheData && (
+            <span
+              className='inline-flex items-center gap-1 text-blue-600 tabular-nums dark:text-blue-400'
+              title={t('Cached input')}
+              aria-label={`${t('Cached input')}: ${cacheMetrics.cacheTokens.toLocaleString()}, ${formatLogCacheRate(cacheMetrics.cacheRate)}`}
+            >
+              <Database className='size-3.5' aria-hidden='true' />
+              {cacheMetrics.cacheTokens.toLocaleString()}
+              <span>{formatLogCacheRate(cacheMetrics.cacheRate)}</span>
             </span>
           )}
           {cacheWrite > 0 && (
-            <span>
-              {t('Cache')} ↑ {cacheWrite.toLocaleString()}
+            <span className='text-muted-foreground'>
+              {t('Cache Write')} {cacheWrite.toLocaleString()}
             </span>
           )}
         </div>

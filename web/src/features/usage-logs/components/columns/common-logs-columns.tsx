@@ -17,7 +17,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import type { ColumnDef } from '@tanstack/react-table'
-import { AlertTriangle, GitBranch, Sparkles, KeyRound } from 'lucide-react'
+import {
+  AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  Database,
+  GitBranch,
+  Sparkles,
+  KeyRound,
+} from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -55,7 +63,10 @@ import type { UsageLog } from '../../data/schema'
 import { getTieredInputTokenThreshold } from '../../lib/context-warning'
 import {
   formatModelName,
+  formatLogCacheRate,
   decodeBillingExprB64,
+  getLogCacheMetrics,
+  getLogCacheWriteTokens,
   getTieredBillingSummary,
   hasAnyCacheTokens,
   parseLogOther,
@@ -703,17 +714,19 @@ export function useCommonLogsColumns(
 
         const promptTokens = log.prompt_tokens || 0
         const completionTokens = log.completion_tokens || 0
-        if (promptTokens === 0 && completionTokens === 0) {
+        const cacheMetrics = getLogCacheMetrics(
+          promptTokens,
+          other?.cache_tokens
+        )
+        const cacheWriteTokens = getLogCacheWriteTokens(other)
+        if (
+          promptTokens === 0 &&
+          completionTokens === 0 &&
+          !cacheMetrics.hasCacheData &&
+          cacheWriteTokens <= 0
+        ) {
           return <span className='text-muted-foreground text-xs'>-</span>
         }
-
-        const cacheReadTokens = other?.cache_tokens || 0
-        const cacheWrite5m = other?.cache_creation_tokens_5m || 0
-        const cacheWrite1h = other?.cache_creation_tokens_1h || 0
-        const hasSplitCache = cacheWrite5m > 0 || cacheWrite1h > 0
-        const cacheWriteTokens = hasSplitCache
-          ? cacheWrite5m + cacheWrite1h
-          : other?.cache_creation_tokens || 0
         const inputTokenThreshold =
           other?.billing_mode === 'tiered_expr'
             ? getTieredInputTokenThreshold(decodeBillingExprB64(other.expr_b64))
@@ -724,11 +737,10 @@ export function useCommonLogsColumns(
         return (
           <div className='flex flex-col gap-0.5'>
             <span
-              className={cn(
-                'flex items-center gap-1 font-mono text-xs font-medium tabular-nums',
-                isContextWarning && 'text-red-600 dark:text-red-400'
-              )}
-              title={isContextWarning ? t('Context threshold exceeded') : undefined}
+              className='flex items-center gap-1 font-mono text-xs font-medium tabular-nums'
+              title={
+                isContextWarning ? t('Context threshold exceeded') : undefined
+              }
             >
               {isContextWarning && (
                 <AlertTriangle
@@ -736,23 +748,39 @@ export function useCommonLogsColumns(
                   aria-hidden='true'
                 />
               )}
-              <span className={isContextWarning ? 'text-red-600 dark:text-red-400' : undefined}>
-                {promptTokens.toLocaleString()}
-              </span>{' '}/{' '}
-              <span className={isContextWarning ? 'text-red-600 dark:text-red-400' : undefined}>
+              <span
+                className='inline-flex items-center gap-0.5 text-emerald-600 dark:text-emerald-400'
+                title={t('Input')}
+                aria-label={`${t('Input')}: ${cacheMetrics.uncachedInputTokens.toLocaleString()}`}
+              >
+                <ArrowDown className='size-3.5' aria-hidden='true' />
+                {cacheMetrics.uncachedInputTokens.toLocaleString()}
+              </span>
+              <span
+                className='inline-flex items-center gap-0.5 text-violet-600 dark:text-violet-400'
+                title={t('Output')}
+                aria-label={`${t('Output')}: ${completionTokens.toLocaleString()}`}
+              >
+                <ArrowUp className='size-3.5' aria-hidden='true' />
                 {completionTokens.toLocaleString()}
               </span>
             </span>
-            {(cacheReadTokens > 0 || cacheWriteTokens > 0) && (
+            {(cacheMetrics.hasCacheData || cacheWriteTokens > 0) && (
               <div className='flex items-center gap-1 text-[11px]'>
-                {cacheReadTokens > 0 && (
-                  <span className='text-muted-foreground/60'>
-                    {t('Cache')}↓ {cacheReadTokens.toLocaleString()}
+                {cacheMetrics.hasCacheData && (
+                  <span
+                    className='inline-flex items-center gap-1 font-mono text-blue-600 tabular-nums dark:text-blue-400'
+                    title={t('Cached input')}
+                    aria-label={`${t('Cached input')}: ${cacheMetrics.cacheTokens.toLocaleString()}, ${formatLogCacheRate(cacheMetrics.cacheRate)}`}
+                  >
+                    <Database className='size-3' aria-hidden='true' />
+                    {cacheMetrics.cacheTokens.toLocaleString()}
+                    <span>{formatLogCacheRate(cacheMetrics.cacheRate)}</span>
                   </span>
                 )}
                 {cacheWriteTokens > 0 && (
                   <span className='text-muted-foreground/60'>
-                    ↑ {cacheWriteTokens.toLocaleString()}
+                    {t('Cache Write')} {cacheWriteTokens.toLocaleString()}
                   </span>
                 )}
               </div>
