@@ -22,6 +22,7 @@ For commercial licensing, please contact support@quantumnous.com
 import {
   getAllLogs,
   getUserLogs,
+  getModelTestLogs,
   getAllMidjourneyLogs,
   getUserMidjourneyLogs,
   getAllTaskLogs,
@@ -160,8 +161,16 @@ export function buildApiParams(config: {
   searchParams: Record<string, unknown>
   columnFilters?: Array<{ id: string; value: unknown }>
   isAdmin: boolean
+  scope?: 'model_test'
 }): GetLogsParams {
-  const { page, pageSize, searchParams, columnFilters = [], isAdmin } = config
+  const {
+    page,
+    pageSize,
+    searchParams,
+    columnFilters = [],
+    isAdmin,
+    scope,
+  } = config
 
   // Helper to process type parameter (single value from array)
   const processType = (value: unknown): number | undefined => {
@@ -200,6 +209,7 @@ export function buildApiParams(config: {
       ? { upstream_request_id: String(searchParams.upstreamRequestId) }
       : {}),
     ...buildTimeRangeParams(searchParams, false),
+    ...(scope ? { scope } : {}),
   }
 
   // Override with column filters if present
@@ -243,8 +253,15 @@ export function buildApiParams(config: {
 export async function fetchLogsByCategory(
   config: FetchLogsConfig
 ): Promise<GetLogsResponse> {
-  const { logCategory, isAdmin, page, pageSize, searchParams, columnFilters } =
-    config
+  const {
+    logCategory,
+    isAdmin,
+    page,
+    pageSize,
+    searchParams,
+    columnFilters,
+    scope,
+  } = config
 
   if (logCategory === 'common') {
     const params = buildApiParams({
@@ -253,7 +270,9 @@ export async function fetchLogsByCategory(
       searchParams,
       columnFilters,
       isAdmin,
+      scope,
     })
+    if (scope === 'model_test') return await getModelTestLogs(params)
     return isAdmin ? await getAllLogs(params) : await getUserLogs(params)
   }
 

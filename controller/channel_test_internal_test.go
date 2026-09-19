@@ -3,11 +3,14 @@ package controller
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -15,12 +18,15 @@ import (
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	relaytypes "github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func TestValidateChannelProxy(t *testing.T) {
@@ -288,6 +294,168 @@ func TestBuildTestLogOtherInjectsTieredInfo(t *testing.T) {
 	require.NotEmpty(t, fields["expr_b64"])
 }
 
+func TestRecordChannelTestErrorPersistsModelTestFailure(t *testing.T) {
+	other := model.NewLogOther()
+	require.True(t, other.SetPublic("status_code", http.StatusInternalServerError))
+	require.True(t, other.SetPublic("request_status", "failed"))
+	require.True(t, other.SetPublic("duration_ms", (1500*time.Millisecond).Milliseconds()))
+	require.Equal(t, http.StatusInternalServerError, other.Snapshot()["status_code"])
+	require.Equal(t, "failed", other.Snapshot()["request_status"])
+	require.Equal(t, int64(1500), other.Snapshot()["duration_ms"])
+}
+
+func TestChannelTestSuccessStatusIsRecordedForStatistics(t *testing.T) {
+	other := model.NewLogOther()
+	require.True(t, other.SetPublic("status_code", http.StatusOK))
+	require.Equal(t, http.StatusOK, other.Snapshot()["status_code"])
+}
+
+func TestTestChannelFailureWritesModelTestLogAndCountsFailure(t *testing.T) {
+	previousDB, previousLogDB := model.DB, model.LOG_DB
+	previousMainDBType, previousLogDBType := common.MainDatabaseType(), common.LogDatabaseType()
+	previousRedisEnabled := common.RedisEnabled
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Log{}))
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	model.DB, model.LOG_DB = db, db
+	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	common.RedisEnabled = false
+	t.Cleanup(func() {
+		model.DB, model.LOG_DB = previousDB, previousLogDB
+		common.SetDatabaseTypes(previousMainDBType, previousLogDBType)
+		common.RedisEnabled = previousRedisEnabled
+		_ = sqlDB.Close()
+	})
+
+	result := testChannel(context.Background(), &model.Channel{Id: 42, Type: constant.ChannelTypeMidjourney}, 7, "test-model", "", false)
+	require.Error(t, result.localErr)
+
+	var log model.Log
+	require.NoError(t, db.Where("token_name = ?", "模型测试").First(&log).Error)
+	assert.Equal(t, model.LogTypeError, log.Type)
+	assert.Equal(t, 42, log.ChannelId)
+	assert.Equal(t, "test-model", log.ModelName)
+	assert.Contains(t, log.Content, "status_code=500")
+
+	var other map[string]any
+	require.NoError(t, json.Unmarshal([]byte(log.Other), &other))
+	assert.EqualValues(t, http.StatusInternalServerError, other["status_code"])
+	assert.Equal(t, "failed", other["request_status"])
+
+	stat, err := model.GetModelTestTodayStat(time.Now())
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, stat.RequestCount)
+	assert.Zero(t, stat.SuccessRate)
+}
+
+func TestChannelTestResultFailureIncludesLocalError(t *testing.T) {
+	localFailure := channelTestResultFailed(testResult{localErr: errors.New("request failed")})
+	structuredFailure := channelTestResultFailed(testResult{newAPIError: relaytypes.NewOpenAIError(errors.New("upstream failed"), relaytypes.ErrorCodeBadResponse, http.StatusBadGateway)})
+	success := channelTestResultFailed(testResult{})
+
+	assert.True(t, localFailure)
+	assert.True(t, structuredFailure)
+	assert.False(t, success)
+}
+
+func TestTestChannelFailureDoesNotPersistUpstreamResponseBody(t *testing.T) {
+	result := testResult{
+		localErr:    fmt.Errorf("upstream returned HTTP status 500"),
+		newAPIError: relaytypes.NewOpenAIError(fmt.Errorf("upstream returned HTTP status 500"), relaytypes.ErrorCodeBadResponseStatusCode, http.StatusInternalServerError),
+	}
+	assert.NotContains(t, result.newAPIError.Error(), "Bearer")
+	assert.NotContains(t, result.newAPIError.Error(), "api_key")
+}
+
+func TestRecordChannelTestErrorPersistsOnlySafeErrorClassification(t *testing.T) {
+	previousDB, previousLogDB := model.DB, model.LOG_DB
+	previousMainDBType, previousLogDBType := common.MainDatabaseType(), common.LogDatabaseType()
+	previousRedisEnabled := common.RedisEnabled
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Log{}))
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	model.DB, model.LOG_DB = db, db
+	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	common.RedisEnabled = false
+	t.Cleanup(func() {
+		model.DB, model.LOG_DB = previousDB, previousLogDB
+		common.SetDatabaseTypes(previousMainDBType, previousLogDBType)
+		common.RedisEnabled = previousRedisEnabled
+		_ = sqlDB.Close()
+	})
+
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions?api_key=test-sensitive-value", nil)
+	sensitiveErr := errors.New("Authorization: Bearer test-sensitive-value; api_key=test-sensitive-value")
+	result := testResult{
+		context:     ctx,
+		localErr:    sensitiveErr,
+		newAPIError: relaytypes.NewOpenAIError(sensitiveErr, relaytypes.ErrorCodeDoRequestFailed, http.StatusBadGateway),
+	}
+
+	recordChannelTestError(context.Background(), &model.Channel{Id: 42}, 7, "test-model", false, time.Second, result)
+
+	var log model.Log
+	require.NoError(t, db.Where("token_name = ?", "模型测试").First(&log).Error)
+	assert.Equal(t, "status_code=502, error_code=do_request_failed", log.Content)
+	assert.NotContains(t, log.Content, "test-sensitive-value")
+	assert.NotContains(t, log.Other, "test-sensitive-value")
+	assert.NotContains(t, log.Other, "api_key")
+	assert.NotContains(t, log.Other, "Authorization")
+}
+
+func TestDetectErrorFromTestResponseBodyDoesNotReturnUpstreamMessage(t *testing.T) {
+	secrets := []string{
+		"Bearer test-sensitive-value",
+		"Authorization: test-sensitive-value",
+		"api_key=test-sensitive-value",
+		"https://example.test/callback?token=test-sensitive-value",
+	}
+	for _, secret := range secrets {
+		t.Run(secret[:min(12, len(secret))], func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{
+				"error": map[string]any{"message": secret},
+			})
+			require.NoError(t, err)
+
+			detectedErr := detectErrorFromTestResponseBody(body)
+			require.EqualError(t, detectedErr, "upstream returned error payload")
+			assert.NotContains(t, detectedErr.Error(), "test-sensitive-value")
+		})
+	}
+}
+
+func TestDetectErrorFromStreamTestResponseBodyDoesNotReturnUpstreamMessage(t *testing.T) {
+	payload := `data: {"error":{"message":"Bearer test-sensitive-value"}}\n\n`
+
+	detectedErr := detectErrorFromTestResponseBody([]byte(payload))
+
+	require.EqualError(t, detectedErr, "upstream returned error payload")
+	assert.NotContains(t, detectedErr.Error(), "test-sensitive-value")
+}
+
+func TestChannelTestPublicErrorMessageDoesNotReturnUnderlyingError(t *testing.T) {
+	sensitiveErr := errors.New("Authorization: Bearer test-sensitive-value; api_key=test-sensitive-value")
+
+	withCode := channelTestPublicErrorMessage(testResult{
+		localErr:    sensitiveErr,
+		newAPIError: relaytypes.NewOpenAIError(sensitiveErr, relaytypes.ErrorCodeBadResponseBody, http.StatusBadGateway),
+	})
+	localOnly := channelTestPublicErrorMessage(testResult{localErr: sensitiveErr})
+
+	assert.Equal(t, "channel test failed: bad_response_body", withCode)
+	assert.Equal(t, "channel test failed", localOnly)
+	assert.NotContains(t, withCode, "test-sensitive-value")
+	assert.NotContains(t, localOnly, "test-sensitive-value")
+}
+
 func TestResolveChannelTestUserIDUsesRequestUser(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -465,4 +633,130 @@ func TestTestAllChannelsRejectsExistingActiveTask(t *testing.T) {
 	require.Equal(t, http.StatusConflict, recorder.Code)
 	require.Contains(t, recorder.Body.String(), existing.TaskID)
 	require.Contains(t, recorder.Body.String(), "已有通道测试任务正在运行或等待中")
+}
+
+func TestSuccessfulChannelTestStatusAcceptsEvery2xxResponse(t *testing.T) {
+	for _, statusCode := range []int{199, 200, 201, 204, 299, 300} {
+		expected := statusCode >= 200 && statusCode < 300
+		assert.Equal(t, expected, isSuccessfulChannelTestStatus(statusCode), "status %d", statusCode)
+	}
+}
+
+func TestTestChannelCreatedResponseWritesOneSuccessLog(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.Log{}))
+	withSelfUseModeEnabled(t)
+
+	previousLogConsumeEnabled := common.LogConsumeEnabled
+	previousBatchUpdateEnabled := common.BatchUpdateEnabled
+	common.LogConsumeEnabled = true
+	common.BatchUpdateEnabled = false
+	t.Cleanup(func() {
+		common.LogConsumeEnabled = previousLogConsumeEnabled
+		common.BatchUpdateEnabled = previousBatchUpdateEnabled
+	})
+
+	user := &model.User{
+		Id:       7001,
+		Username: "channel-test-created",
+		Password: "test-password",
+		Role:     common.RoleRootUser,
+		Status:   common.UserStatusEnabled,
+		Group:    "default",
+		Quota:    1_000_000,
+	}
+	require.NoError(t, db.Create(user).Error)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","object":"chat.completion","created":1,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := &model.Channel{
+		Id:      7101,
+		Type:    constant.ChannelTypeOpenAI,
+		Key:     "test-key",
+		Status:  common.ChannelStatusEnabled,
+		Name:    "created response",
+		BaseURL: common.GetPointer(upstream.URL),
+		Models:  "gpt-4o-mini",
+		Group:   "default",
+	}
+
+	result := testChannel(context.Background(), channel, user.Id, "gpt-4o-mini", "", false)
+
+	require.NoError(t, result.localErr)
+	require.Nil(t, result.newAPIError)
+	assert.Equal(t, http.StatusCreated, result.statusCode)
+
+	var logs []model.Log
+	require.NoError(t, db.Where("token_name = ?", "模型测试").Find(&logs).Error)
+	require.Len(t, logs, 1)
+	assert.Equal(t, model.LogTypeConsume, logs[0].Type)
+	var other map[string]any
+	require.NoError(t, json.Unmarshal([]byte(logs[0].Other), &other))
+	assert.EqualValues(t, http.StatusCreated, other["status_code"])
+}
+
+func TestTestChannelPanicWritesOneFailureLog(t *testing.T) {
+	previousDB, previousLogDB := model.DB, model.LOG_DB
+	previousMainDBType, previousLogDBType := common.MainDatabaseType(), common.LogDatabaseType()
+	previousRedisEnabled := common.RedisEnabled
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Log{}))
+	model.DB, model.LOG_DB = db, db
+	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	common.RedisEnabled = false
+	t.Cleanup(func() {
+		model.DB, model.LOG_DB = previousDB, previousLogDB
+		common.SetDatabaseTypes(previousMainDBType, previousLogDBType)
+		common.RedisEnabled = previousRedisEnabled
+	})
+
+	result := testChannel(context.Background(), nil, 7, "panic-model", "", false)
+
+	require.Error(t, result.localErr)
+	require.NotNil(t, result.newAPIError)
+	assert.Equal(t, relaytypes.ErrorCodeBadResponse, result.newAPIError.GetErrorCode())
+	var logs []model.Log
+	require.NoError(t, db.Where("token_name = ?", "模型测试").Find(&logs).Error)
+	require.Len(t, logs, 1)
+	assert.Equal(t, model.LogTypeError, logs[0].Type)
+	assert.NotContains(t, logs[0].Content, "panic-model")
+}
+
+func TestCancelledChannelTestDoesNotWriteFailureLog(t *testing.T) {
+	previousDB, previousLogDB := model.DB, model.LOG_DB
+	previousMainDBType, previousLogDBType := common.MainDatabaseType(), common.LogDatabaseType()
+	previousRedisEnabled := common.RedisEnabled
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Log{}))
+	model.DB, model.LOG_DB = db, db
+	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	common.RedisEnabled = false
+	t.Cleanup(func() {
+		model.DB, model.LOG_DB = previousDB, previousLogDB
+		common.SetDatabaseTypes(previousMainDBType, previousLogDBType)
+		common.RedisEnabled = previousRedisEnabled
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := testChannel(ctx, &model.Channel{Id: 42, Type: constant.ChannelTypeMidjourney}, 7, "cancelled-model", "", false)
+
+	require.Error(t, result.localErr)
+	var count int64
+	require.NoError(t, db.Model(&model.Log{}).Where("token_name = ?", "模型测试").Count(&count).Error)
+	assert.Zero(t, count)
+}
+
+func TestChannelTestTaskAllowsDisableOnlyForAutomaticRuns(t *testing.T) {
+	assert.False(t, channelTestTaskAllowsDisable(operation_setting.ChannelTestModeScheduledAll, true), "manual test-all must not disable channels")
+	assert.False(t, channelTestTaskAllowsDisable(operation_setting.ChannelTestModePassiveRecovery, false), "passive recovery must not disable channels")
+	assert.True(t, channelTestTaskAllowsDisable(operation_setting.ChannelTestModeScheduledAll, false), "scheduled automatic checks may disable channels")
+	assert.True(t, channelTestTaskAllowsDisable(operation_setting.ChannelTestModeAutoBanOnly, false), "auto-ban checks may disable channels")
 }

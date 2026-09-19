@@ -168,6 +168,7 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	var usage = &dto.Usage{}
 	var imageCount int
 	var hasBillableUsageMetadata bool
+	var sawTerminalCandidate bool
 	var streamErr error
 	var accumulatedUsageMetadata *dto.GeminiUsageMetadata
 	responseText := strings.Builder{}
@@ -186,6 +187,11 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 
 		markGeminiGoogleSearchCall(c, &geminiResponse)
 		countGeminiBillableFunctionCalls(info, &geminiResponse)
+		for _, candidate := range geminiResponse.Candidates {
+			if candidate.FinishReason != nil && strings.TrimSpace(*candidate.FinishReason) != "" {
+				sawTerminalCandidate = true
+			}
+		}
 
 		// 统计图片数量
 		for _, candidate := range geminiResponse.Candidates {
@@ -235,6 +241,14 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 
 	if streamErr != nil {
 		return usage, types.NewOpenAIError(streamErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+	}
+	if info.IsChannelTest && !sawTerminalCandidate {
+		streamErr = errors.New("Gemini stream ended before terminal candidate")
+		return usage, types.NewOpenAIError(streamErr, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+	}
+	if info.IsChannelTest && info.StreamStatus != nil && (!info.StreamStatus.IsNormalEnd() || info.StreamStatus.HasErrors()) {
+		streamErr = errors.New("Gemini stream ended abnormally")
+		return usage, types.NewOpenAIError(streamErr, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
 	}
 	if info.StreamStatus != nil && !info.StreamStatus.IsNormalEnd() {
 		logger.LogWarn(c, fmt.Sprintf("Gemini stream ended unexpectedly: %s", info.StreamStatus.Summary()))
@@ -364,7 +378,11 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 	service.CloseResponseBodyGracefully(resp)
-	logger.LogDebug(c, "Gemini response body: %s", responseBody)
+	if info.IsChannelTest {
+		logger.LogDebug(c, "Gemini response body bytes: %d", len(responseBody))
+	} else {
+		logger.LogDebug(c, "Gemini response body: %s", responseBody)
+	}
 	var geminiResponse dto.GeminiChatResponse
 	err = common.Unmarshal(responseBody, &geminiResponse)
 	if err != nil {

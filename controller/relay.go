@@ -432,7 +432,27 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	return operation_setting.ShouldRetryByStatusCode(code)
 }
 
+func safeChannelErrorSummary(err *types.NewAPIError) string {
+	if err == nil {
+		return "status_code=500, error_code=channel_test_failed"
+	}
+	statusCode := err.StatusCode
+	if statusCode < 100 || statusCode > 599 {
+		statusCode = http.StatusInternalServerError
+	}
+	errorCode := err.GetErrorCode()
+	if errorCode == "" {
+		errorCode = types.ErrorCodeBadResponse
+	}
+	return fmt.Sprintf("status_code=%d, error_code=%s", statusCode, errorCode)
+}
+
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError, relayInfo *relaycommon.RelayInfo) {
+	if c.GetBool(common.ChannelTestSafeLogKey) || c.GetBool("channel_test_log_recorded") {
+		summary := safeChannelErrorSummary(err)
+		logger.LogError(c, fmt.Sprintf("channel test error (channel #%d): %s", channelError.ChannelId, summary))
+		return
+	}
 	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(err.Error())))
 	// 不要使用context获取渠道信息，异步处理时可能会出现渠道信息不一致的情况
 	// do not use context to get channel info, there may be inconsistent channel info when processing asynchronously
@@ -443,6 +463,9 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 	}
 
 	if constant.ErrorLogEnabled && types.IsRecordErrorLog(err) {
+		if c.GetBool("channel_test_log_recorded") {
+			return
+		}
 		if c.GetBool("request_log_started") {
 			return
 		}

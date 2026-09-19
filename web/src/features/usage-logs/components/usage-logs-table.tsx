@@ -86,6 +86,7 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
   const {
     isAdminView: isAdmin,
     isRootView: isRoot,
+    isModelTestView,
     viewAccess,
   } = useLogsViewScope()
   const isMobile = useMediaQuery('(max-width: 640px)')
@@ -149,6 +150,7 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
         pageSize: pagination.pageSize,
         searchParams,
         columnFilters,
+        scope: isModelTestView ? 'model_test' : undefined,
       })
 
       if (!result?.success) {

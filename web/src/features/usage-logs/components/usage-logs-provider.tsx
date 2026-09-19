@@ -30,8 +30,8 @@ import { useAuthStore } from '@/stores/auth-store'
 
 import type { ChannelAffinityInfo } from '../types'
 
-export type LogsViewScope = 'all' | 'self'
-export type LogsViewAccess = 'self' | 'admin' | 'root'
+export type LogsViewScope = 'all' | 'self' | 'model_test'
+export type LogsViewAccess = 'self' | 'admin' | 'root' | 'model_test'
 
 const AUTO_REFRESH_STORAGE_KEY = 'usage-logs:auto-refresh'
 
@@ -39,6 +39,7 @@ export function resolveLogsViewAccess(
   role: number,
   viewScope: LogsViewScope
 ): LogsViewAccess {
+  if (viewScope === 'model_test' && role >= ROLE.ADMIN) return 'model_test'
   if (viewScope !== 'all' || role < ROLE.ADMIN) return 'self'
   return role === ROLE.SUPER_ADMIN ? 'root' : 'admin'
 }
@@ -144,6 +145,7 @@ export function useLogsViewScope() {
   const viewAccess = resolveLogsViewAccess(role, viewScope)
   const isAdminView = viewAccess !== 'self'
   const isRootView = viewAccess === 'root'
+  const isModelTestView = viewAccess === 'model_test'
 
   return {
     canManageScope,
@@ -151,6 +153,7 @@ export function useLogsViewScope() {
     setViewScope,
     isAdminView,
     isRootView,
+    isModelTestView,
     viewAccess,
   }
 }

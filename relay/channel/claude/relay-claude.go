@@ -88,7 +88,11 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	var claudeResponse dto.ClaudeResponse
 	err := common.UnmarshalJsonStr(data, &claudeResponse)
 	if err != nil {
-		common.SysLog("error unmarshalling stream response: " + err.Error())
+		if info.IsChannelTest {
+			logger.LogError(c, "channel test Claude stream response error suppressed")
+		} else {
+			common.SysLog("error unmarshalling stream response: " + err.Error())
+		}
 		return types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
 	if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
@@ -263,23 +267,39 @@ func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, clau
 			response := helper.GenerateFinalUsageResponse(claudeInfo.ResponseId, claudeInfo.Created, info.UpstreamModelName, openAIUsage)
 			err := helper.ObjectData(c, response)
 			if err != nil {
-				common.SysLog("send final response failed: " + err.Error())
+				if info.IsChannelTest {
+					logger.LogError(c, "channel test final response send error suppressed")
+				} else {
+					common.SysLog("send final response failed: " + err.Error())
+				}
 			}
 		}
 		helper.Done(c)
 	} else if info.RelayFormat == types.RelayFormatGemini {
 		state, err := claudeToGeminiStreamState(info)
 		if err != nil {
-			common.SysLog("error creating Gemini stream state: " + err.Error())
+			if info.IsChannelTest {
+				logger.LogError(c, "channel test Gemini stream state error suppressed")
+			} else {
+				common.SysLog("error creating Gemini stream state: " + err.Error())
+			}
 			return
 		}
 		results, err := service.FinalizeStreamResponse(c, info, state)
 		if err != nil {
-			common.SysLog("error finalizing Gemini stream response: " + err.Error())
+			if info.IsChannelTest {
+				logger.LogError(c, "channel test final Gemini stream finalization error suppressed")
+			} else {
+				common.SysLog("error finalizing Gemini stream response: " + err.Error())
+			}
 			return
 		}
 		if sendErr := sendGeminiStreamResults(c, results); sendErr != nil {
-			common.SysLog("send final Gemini stream response failed: " + sendErr.Error())
+			if info.IsChannelTest {
+				logger.LogError(c, "channel test final Gemini stream send error suppressed")
+			} else {
+				common.SysLog("send final Gemini stream response failed: " + sendErr.Error())
+			}
 		}
 	}
 }
@@ -406,7 +426,11 @@ func ClaudeHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayI
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
-	logger.LogDebug(c, "responseBody: %s", responseBody)
+	if info.IsChannelTest {
+		logger.LogDebug(c, "response body bytes: %d", len(responseBody))
+	} else {
+		logger.LogDebug(c, "responseBody: %s", responseBody)
+	}
 	handleErr := HandleClaudeResponseData(c, info, claudeInfo, resp, responseBody)
 	if handleErr != nil {
 		return nil, handleErr

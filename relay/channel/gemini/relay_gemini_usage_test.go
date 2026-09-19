@@ -639,3 +639,91 @@ func TestGeminiStreamHandlerEmptyUsageMetadataBuildsEstimatedBillingUsage(t *tes
 	require.Equal(t, usage.CompletionTokens, usage.BillingUsage.GeminiUsageMetadata.CandidatesTokenCount)
 	require.True(t, common.GetContextKeyBool(c, constant.ContextKeyLocalCountTokens))
 }
+
+func TestGeminiStreamHandlerChannelTestRejectsEOFWithoutTerminalCandidate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	oldStreamingTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 300
+	t.Cleanup(func() {
+		constant.StreamingTimeout = oldStreamingTimeout
+	})
+
+	info := &relaycommon.RelayInfo{
+		IsChannelTest:   true,
+		OriginModelName: "gemini-test",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "gemini-test",
+		},
+	}
+	chunk := dto.GeminiChatResponse{
+		Candidates: []dto.GeminiChatCandidate{{
+			Content: dto.GeminiChatContent{
+				Role:  "model",
+				Parts: []dto.GeminiPart{{Text: "partial"}},
+			},
+		}},
+	}
+	chunkData, err := common.Marshal(chunk)
+	require.NoError(t, err)
+	resp := &http.Response{Body: io.NopCloser(bytes.NewReader([]byte("data: " + string(chunkData) + "\n")))}
+
+	usage, apiErr := geminiStreamHandler(c, info, resp, func(_ string, _ *dto.GeminiChatResponse) bool {
+		return true
+	})
+
+	require.NotNil(t, usage)
+	require.NotNil(t, apiErr)
+	require.NotNil(t, info.StreamStatus)
+	require.Equal(t, relaycommon.StreamEndReasonEOF, info.StreamStatus.EndReason)
+}
+
+func TestGeminiStreamHandlerChannelTestAcceptsTerminalCandidate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	oldStreamingTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 300
+	t.Cleanup(func() {
+		constant.StreamingTimeout = oldStreamingTimeout
+	})
+
+	info := &relaycommon.RelayInfo{
+		IsChannelTest:   true,
+		OriginModelName: "gemini-test",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "gemini-test",
+		},
+	}
+	stop := "STOP"
+	chunk := dto.GeminiChatResponse{
+		Candidates: []dto.GeminiChatCandidate{{
+			FinishReason: &stop,
+			Content: dto.GeminiChatContent{
+				Role:  "model",
+				Parts: []dto.GeminiPart{{Text: "complete"}},
+			},
+		}},
+		UsageMetadata: dto.GeminiUsageMetadata{
+			PromptTokenCount:     1,
+			CandidatesTokenCount: 1,
+			TotalTokenCount:      2,
+		},
+	}
+	chunkData, err := common.Marshal(chunk)
+	require.NoError(t, err)
+	resp := &http.Response{Body: io.NopCloser(bytes.NewReader([]byte("data: " + string(chunkData) + "\n")))}
+
+	usage, apiErr := geminiStreamHandler(c, info, resp, func(_ string, _ *dto.GeminiChatResponse) bool {
+		return true
+	})
+
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	require.Equal(t, 2, usage.TotalTokens)
+	require.NotNil(t, info.StreamStatus)
+	require.Equal(t, relaycommon.StreamEndReasonEOF, info.StreamStatus.EndReason)
+}

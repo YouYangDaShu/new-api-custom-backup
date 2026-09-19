@@ -205,7 +205,11 @@ func HandleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStream
 	case types.RelayFormatClaude:
 		var streamResponse dto.ChatCompletionsStreamResponse
 		if err := common.Unmarshal(common.StringToByteSlice(lastStreamData), &streamResponse); err != nil {
-			common.SysLog("error unmarshalling stream response: " + err.Error())
+			if info.IsChannelTest {
+				logger.LogError(c, "channel test final stream response error suppressed")
+			} else {
+				common.SysLog("error unmarshalling stream response: " + err.Error())
+			}
 			return
 		}
 
@@ -213,7 +217,11 @@ func HandleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStream
 
 		result, err := service.ConvertStreamResponse(c, info, types.RelayFormatClaude, &streamResponse)
 		if err != nil {
-			common.SysLog("error converting Claude stream response: " + err.Error())
+			if info.IsChannelTest {
+				logger.LogError(c, "channel test Claude stream conversion error suppressed")
+			} else {
+				common.SysLog("error converting Claude stream response: " + err.Error())
+			}
 			return
 		}
 		claudeResponses, ok := result.Value.([]*dto.ClaudeResponse)
@@ -229,34 +237,58 @@ func HandleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStream
 	case types.RelayFormatGemini:
 		var streamResponse dto.ChatCompletionsStreamResponse
 		if err := common.Unmarshal(common.StringToByteSlice(lastStreamData), &streamResponse); err != nil {
-			common.SysLog("error unmarshalling stream response: " + err.Error())
+			if info.IsChannelTest {
+				logger.LogError(c, "channel test final stream response error suppressed")
+			} else {
+				common.SysLog("error unmarshalling stream response: " + err.Error())
+			}
 			return
 		}
 
 		state, err := chatToGeminiStreamState(info, &streamResponse)
 		if err != nil {
-			common.SysLog("error creating Gemini stream state: " + err.Error())
+			if info.IsChannelTest {
+				logger.LogError(c, "channel test Gemini stream state error suppressed")
+			} else {
+				common.SysLog("error creating Gemini stream state: " + err.Error())
+			}
 			return
 		}
 		state.SetUsage(usage)
 
 		results, err := service.ConvertStreamResponseChunk(c, info, state, &streamResponse)
 		if err != nil {
-			common.SysLog("error converting final Gemini stream response: " + err.Error())
+			if info.IsChannelTest {
+				logger.LogError(c, "channel test final Gemini stream conversion error suppressed")
+			} else {
+				common.SysLog("error converting final Gemini stream response: " + err.Error())
+			}
 			return
 		}
 		if err := sendGeminiStreamResults(c, results); err != nil {
-			common.SysLog("error sending final Gemini stream response: " + err.Error())
+			if info.IsChannelTest {
+				logger.LogError(c, "channel test final Gemini stream send error suppressed")
+			} else {
+				common.SysLog("error sending final Gemini stream response: " + err.Error())
+			}
 			return
 		}
 
 		results, err = service.FinalizeStreamResponse(c, info, state)
 		if err != nil {
-			common.SysLog("error finalizing Gemini stream response: " + err.Error())
+			if info.IsChannelTest {
+				logger.LogError(c, "channel test final Gemini stream finalization error suppressed")
+			} else {
+				common.SysLog("error finalizing Gemini stream response: " + err.Error())
+			}
 			return
 		}
 		if err := sendGeminiStreamResults(c, results); err != nil {
-			common.SysLog("error sending finalized Gemini stream response: " + err.Error())
+			if info.IsChannelTest {
+				logger.LogError(c, "channel test finalized Gemini stream send error suppressed")
+			} else {
+				common.SysLog("error sending finalized Gemini stream response: " + err.Error())
+			}
 		}
 	}
 }

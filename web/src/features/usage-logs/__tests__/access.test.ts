@@ -17,11 +17,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
+
 import { describe, test } from 'vitest'
 
 import { ROLE } from '@/lib/roles'
 
 import { resolveLogsViewAccess } from '../components/usage-logs-provider'
+import { buildApiParams } from '../lib/utils'
 
 describe('usage log access tier', () => {
   test('keeps users and elevated self views on the self tier', () => {
@@ -33,5 +35,28 @@ describe('usage log access tier', () => {
   test('distinguishes admin and root while viewing all logs', () => {
     assert.equal(resolveLogsViewAccess(ROLE.ADMIN, 'all'), 'admin')
     assert.equal(resolveLogsViewAccess(ROLE.SUPER_ADMIN, 'all'), 'root')
+  })
+
+  test('allows model-test scope only for elevated users', () => {
+    assert.equal(resolveLogsViewAccess(ROLE.ADMIN, 'model_test'), 'model_test')
+    assert.equal(
+      resolveLogsViewAccess(ROLE.SUPER_ADMIN, 'model_test'),
+      'model_test'
+    )
+    assert.equal(resolveLogsViewAccess(ROLE.USER, 'model_test'), 'self')
+  })
+
+  test('serializes the model-test scope into common-log requests', () => {
+    assert.equal(
+      buildApiParams({
+        page: 1,
+        pageSize: 20,
+        searchParams: {},
+        columnFilters: [],
+        isAdmin: true,
+        scope: 'model_test',
+      }).scope,
+      'model_test'
+    )
   })
 })

@@ -1,6 +1,7 @@
 package ollama
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -96,4 +97,90 @@ func TestOllamaChatHandlerNonStreamToolCalls(t *testing.T) {
 			assert.Equal(t, float64(0), args["days"])
 		})
 	}
+}
+
+func TestOllamaStreamHandlerChannelTestRejectsEOFWithoutDone(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body: io.NopCloser(strings.NewReader(
+			`{"model":"llama3.1","message":{"role":"assistant","content":"partial"},"done":false}` + "\n",
+		)),
+	}
+	info := &relaycommon.RelayInfo{
+		IsChannelTest: true,
+		ChannelMeta:   &relaycommon.ChannelMeta{UpstreamModelName: "llama3.1"},
+	}
+
+	usage, apiErr := ollamaStreamHandler(c, info, resp)
+
+	require.NotNil(t, usage)
+	require.NotNil(t, apiErr)
+}
+
+func TestOllamaStreamHandlerChannelTestAcceptsDone(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body: io.NopCloser(strings.NewReader(
+			`{"model":"llama3.1","done":true,"done_reason":"stop","prompt_eval_count":1,"eval_count":1}` + "\n",
+		)),
+	}
+	info := &relaycommon.RelayInfo{
+		IsChannelTest: true,
+		ChannelMeta:   &relaycommon.ChannelMeta{UpstreamModelName: "llama3.1"},
+	}
+
+	usage, apiErr := ollamaStreamHandler(c, info, resp)
+
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+	require.Equal(t, 2, usage.TotalTokens)
+}
+
+func TestOllamaStreamHandlerChannelTestSuppressesMalformedLine(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var output bytes.Buffer
+	common.LogWriterMu.Lock()
+	previousWriter := gin.DefaultErrorWriter
+	gin.DefaultErrorWriter = &output
+	common.LogWriterMu.Unlock()
+	t.Cleanup(func() {
+		common.LogWriterMu.Lock()
+		gin.DefaultErrorWriter = previousWriter
+		common.LogWriterMu.Unlock()
+	})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	c.Set(common.ChannelTestSafeLogKey, true)
+	sentinel := "Authorization=Bearer-sensitive-value&api_key=sensitive-value"
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader("{" + sentinel + "\n")),
+	}
+	info := &relaycommon.RelayInfo{
+		IsChannelTest: true,
+		ChannelMeta:   &relaycommon.ChannelMeta{UpstreamModelName: "llama3.1"},
+	}
+
+	_, apiErr := ollamaStreamHandler(c, info, resp)
+
+	require.NotNil(t, apiErr)
+	require.Contains(t, output.String(), "channel test diagnostic suppressed")
+	require.NotContains(t, output.String(), sentinel)
+	require.NotContains(t, output.String(), "Bearer-sensitive-value")
+	require.NotContains(t, output.String(), "api_key")
 }

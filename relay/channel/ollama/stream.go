@@ -108,6 +108,7 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	var responseId = common.GetUUID()
 	var created = time.Now().Unix()
 	var toolCallIndex int
+	sawDone := false
 	start := helper.GenerateStartEmptyResponse(responseId, created, model, nil)
 	if data, err := common.Marshal(start); err == nil {
 		_ = helper.StringData(c, string(data))
@@ -121,7 +122,11 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		}
 		var chunk ollamaChatStreamChunk
 		if err := common.Unmarshal([]byte(line), &chunk); err != nil {
-			logger.LogError(c, "ollama stream json decode error: "+err.Error()+" line="+line)
+			if info.IsChannelTest {
+				logger.LogError(c, fmt.Sprintf("ollama stream json decode error: %s line_bytes=%d", err.Error(), len(line)))
+			} else {
+				logger.LogError(c, "ollama stream json decode error: "+err.Error()+" line="+line)
+			}
 			return usage, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 		}
 		if chunk.Model != "" {
@@ -174,6 +179,7 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		}
 		// done frame
 		// finalize once and break loop
+		sawDone = true
 		usage.PromptTokens = chunk.PromptEvalCount
 		usage.CompletionTokens = chunk.EvalCount
 		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
@@ -202,6 +208,13 @@ func ollamaStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	}
 	if err := scanner.Err(); err != nil && err != io.EOF {
 		logger.LogError(c, "ollama stream scan error: "+err.Error())
+		if info.IsChannelTest {
+			return usage, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+		}
+	}
+	if info.IsChannelTest && !sawDone {
+		err := fmt.Errorf("Ollama stream ended before done frame")
+		return usage, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
 	}
 	return usage, nil
 }
@@ -215,7 +228,11 @@ func ollamaChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 	service.CloseResponseBodyGracefully(resp)
 	raw := string(body)
 	if common.DebugEnabled {
-		println("ollama non-stream raw resp:", raw)
+		if info.IsChannelTest {
+			logger.LogDebug(c, "ollama non-stream response bytes: %d", len(body))
+		} else {
+			logger.LogDebug(c, "ollama non-stream raw response: %s", raw)
+		}
 	}
 
 	lines := strings.Split(raw, "\n")

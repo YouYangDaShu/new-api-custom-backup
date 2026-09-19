@@ -271,6 +271,8 @@ export interface LogStatistics {
   cache_read_tpm?: number
   cache_create_tpm?: number
   completion_tpm?: number
+  average_use_time?: number
+  success_rate?: number
 }
 
 // ============================================================================
@@ -403,6 +405,7 @@ export interface GetLogsParams {
   group?: string
   request_id?: string
   upstream_request_id?: string
+  scope?: 'model_test'
 }
 
 export interface GetLogsResponse {
@@ -427,6 +430,7 @@ export interface GetLogStatsParams {
   group?: string
   request_id?: string
   upstream_request_id?: string
+  scope?: 'model_test'
 }
 
 export interface GetLogStatsResponse {
@@ -475,6 +479,7 @@ export interface FetchLogsConfig {
   pageSize: number
   searchParams: Record<string, unknown>
   columnFilters: Array<{ id: string; value: unknown }>
+  scope?: 'model_test'
 }
 
 // ============================================================================

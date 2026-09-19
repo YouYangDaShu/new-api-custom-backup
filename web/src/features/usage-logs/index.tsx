@@ -110,11 +110,17 @@ function UsageLogsContent() {
 
   const handleViewScopeChange = useCallback(
     (scope: string) => {
-      if (scope === 'all' || scope === 'self') {
+      if (scope === 'all' || scope === 'self' || scope === 'model_test') {
         setViewScope(scope as LogsViewScope)
+        if (scope === 'model_test' && activeCategory !== 'common') {
+          void navigate({
+            to: '/usage-logs/$section',
+            params: { section: 'common' },
+          })
+        }
       }
     },
-    [setViewScope]
+    [activeCategory, navigate, setViewScope]
   )
 
   const pageMeta =
@@ -134,6 +140,9 @@ function UsageLogsContent() {
               <TabsList>
                 <TabsTrigger value='all'>{t('All')}</TabsTrigger>
                 <TabsTrigger value='self'>{t('Only Mine')}</TabsTrigger>
+                <TabsTrigger value='model_test'>
+                  🧪 {t('Model Tests')}
+                </TabsTrigger>
               </TabsList>
             </Tabs>
           )}

@@ -25,7 +25,11 @@ func GeminiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
-	logger.LogDebug(c, "Gemini responses response body: %s", responseBody)
+	if info.IsChannelTest {
+		logger.LogDebug(c, "Gemini responses response body bytes: %d", len(responseBody))
+	} else {
+		logger.LogDebug(c, "Gemini responses response body: %s", responseBody)
+	}
 
 	var geminiResponse dto.GeminiChatResponse
 	if err := common.Unmarshal(responseBody, &geminiResponse); err != nil {

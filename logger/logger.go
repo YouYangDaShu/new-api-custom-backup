@@ -100,6 +100,9 @@ func LogDebug(ctx context.Context, msg string, args ...any) {
 func logHelper(ctx context.Context, level string, msg string) {
 	var id any = "SYSTEM"
 	if ctx != nil {
+		if safeChannelTestLog, ok := ctx.Value(common.ChannelTestSafeLogKey).(bool); ok && safeChannelTestLog {
+			msg = "channel test diagnostic suppressed"
+		}
 		if requestID := ctx.Value(common.RequestIdKey); requestID != nil {
 			id = requestID
 		}

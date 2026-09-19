@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -124,7 +125,11 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		if lastStreamData != "" {
 			if err := HandleStreamFormat(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
-				common.SysLog("error handling stream format: " + err.Error())
+				if info.IsChannelTest {
+					logger.LogError(c, "channel test stream format error suppressed")
+				} else {
+					common.SysLog("error handling stream format: " + err.Error())
+				}
 				sr.Error(err)
 			}
 		}
@@ -141,12 +146,24 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 			}
 		}
 	})
+	if info.IsChannelTest && (info.StreamStatus == nil || info.StreamStatus.EndReason != relaycommon.StreamEndReasonDone) {
+		streamErr := errors.New("upstream stream ended before [DONE]")
+		return nil, types.NewOpenAIError(streamErr, types.ErrorCodeBadResponse, http.StatusBadGateway)
+	}
+	if info.StreamStatus != nil && (!info.StreamStatus.IsNormalEnd() || info.StreamStatus.HasErrors()) {
+		streamErr := errors.New("upstream stream ended abnormally")
+		return nil, types.NewOpenAIError(streamErr, types.ErrorCodeBadResponse, http.StatusBadGateway)
+	}
 
 	// 处理最后的响应
 	shouldSendLastResp := true
 	if err := handleLastResponse(lastStreamData, &responseId, &createAt, &systemFingerprint, &model, &usage,
 		&containStreamUsage, info, &shouldSendLastResp); err != nil {
-		logger.LogError(c, fmt.Sprintf("error handling last response: %s, lastStreamData: [%s]", err.Error(), lastStreamData))
+		if info.IsChannelTest {
+			logger.LogError(c, fmt.Sprintf("error handling last response: %s, last_stream_bytes=%d", err.Error(), len(lastStreamData)))
+		} else {
+			logger.LogError(c, fmt.Sprintf("error handling last response: %s, lastStreamData: [%s]", err.Error(), lastStreamData))
+		}
 	}
 
 	// 部分兼容网关把完整的累计usage附在倒数第二个事件上，随后发送一个空的最后事件。
@@ -246,7 +263,11 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
 	}
-	logger.LogDebug(c, "upstream response body: %s", responseBody)
+	if info.IsChannelTest {
+		logger.LogDebug(c, "upstream response body bytes: %d", len(responseBody))
+	} else {
+		logger.LogDebug(c, "upstream response body: %s", responseBody)
+	}
 	// Unmarshal to simpleResponse
 	if info.ChannelType == constant.ChannelTypeOpenRouter && info.ChannelOtherSettings.IsOpenRouterEnterprise() {
 		// 尝试解析为 openrouter enterprise
@@ -258,7 +279,11 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		if enterpriseResponse.Success {
 			responseBody = enterpriseResponse.Data
 		} else {
-			logger.LogError(c, fmt.Sprintf("openrouter enterprise response success=false, data: %s", enterpriseResponse.Data))
+			if info.IsChannelTest {
+				logger.LogError(c, fmt.Sprintf("openrouter enterprise response success=false, data_bytes=%d", len(enterpriseResponse.Data)))
+			} else {
+				logger.LogError(c, fmt.Sprintf("openrouter enterprise response success=false, data: %s", enterpriseResponse.Data))
+			}
 			return nil, types.NewOpenAIError(fmt.Errorf("openrouter response success=false"), types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 		}
 	}

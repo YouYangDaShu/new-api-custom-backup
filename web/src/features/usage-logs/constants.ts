@@ -44,6 +44,8 @@ export const DEFAULT_LOG_STATS: LogStatistics = {
   cache_read_tpm: 0,
   cache_create_tpm: 0,
   completion_tpm: 0,
+  average_use_time: 0,
+  success_rate: 0,
 }
 
 /**

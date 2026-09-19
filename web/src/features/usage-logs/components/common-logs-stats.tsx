@@ -26,10 +26,11 @@ import {
   formatLogQuota,
   formatNumber,
   formatPercent,
+  formatUseTime,
 } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
-import { getLogStats, getUserLogStats } from '../api'
+import { getLogStats, getModelTestLogStats, getUserLogStats } from '../api'
 import { DEFAULT_LOG_STATS } from '../constants'
 import { buildApiParams } from '../lib/utils'
 import { useLogsViewScope, useUsageLogsContext } from './usage-logs-provider'
@@ -60,13 +61,28 @@ function StatBadge(props: {
 
 export function CommonLogsStats() {
   const { t } = useTranslation()
-  const { isAdminView: isAdmin } = useLogsViewScope()
+  const { isAdminView: isAdmin, isModelTestView } = useLogsViewScope()
   const searchParams = route.useSearch()
   const { sensitiveVisible, autoRefresh } = useUsageLogsContext()
 
   const { data: stats, isLoading } = useQuery({
-    queryKey: ['usage-logs-stats', isAdmin, searchParams],
+    queryKey: ['usage-logs-stats', isAdmin, isModelTestView, searchParams],
     queryFn: async () => {
+      if (isModelTestView) {
+        const params = buildApiParams({
+          page: 1,
+          pageSize: 1,
+          searchParams,
+          columnFilters: [],
+          isAdmin: true,
+          scope: 'model_test',
+        })
+        const result = await getModelTestLogStats(params)
+        return result.success
+          ? { ...DEFAULT_LOG_STATS, ...result.data }
+          : DEFAULT_LOG_STATS
+      }
+
       const params = buildApiParams({
         page: 1,
         pageSize: 1,
@@ -100,6 +116,33 @@ export function CommonLogsStats() {
   }
 
   const stat = stats || DEFAULT_LOG_STATS
+
+  if (isModelTestView) {
+    return (
+      <div className='flex flex-wrap items-center gap-2'>
+        <StatBadge
+          label={t('Tests Today')}
+          value={formatNumber(stat.request_count)}
+          accent='bg-sky-500/70'
+        />
+        <StatBadge
+          label={t('Test Usage')}
+          value={sensitiveVisible ? formatLogQuota(stat.quota) : '••••'}
+          accent='bg-amber-500/65'
+        />
+        <StatBadge
+          label={t('Average Response Time')}
+          value={formatUseTime(stat.average_use_time ?? 0)}
+          accent='bg-emerald-500/65'
+        />
+        <StatBadge
+          label={t('Success Rate')}
+          value={formatPercent(stat.success_rate ?? 0)}
+          accent='bg-violet-500/65'
+        />
+      </div>
+    )
+  }
 
   return (
     <div className='flex flex-wrap items-center gap-2'>

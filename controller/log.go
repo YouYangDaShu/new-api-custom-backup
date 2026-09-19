@@ -3,6 +3,7 @@ package controller
 import (
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -10,7 +11,33 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func parseLogScope(c *gin.Context, allowModelTest bool) (model.LogScope, bool) {
+	switch c.Query("scope") {
+	case "", "all", "self":
+		return model.LogScopeBusiness, true
+	case string(model.LogScopeModelTest):
+		if allowModelTest && c.GetInt("role") >= common.RoleAdminUser {
+			return model.LogScopeModelTest, true
+		}
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"message": "模型测试日志仅管理员可访问",
+		})
+		return "", false
+	default:
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "无效的日志范围",
+		})
+		return "", false
+	}
+}
+
 func GetAllLogs(c *gin.Context) {
+	scope, ok := parseLogScope(c, true)
+	if !ok {
+		return
+	}
 	pageInfo := common.GetPageQuery(c)
 	logType, _ := strconv.Atoi(c.Query("type"))
 	startTimestamp, _ := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
@@ -22,7 +49,7 @@ func GetAllLogs(c *gin.Context) {
 	group := c.Query("group")
 	requestId := c.Query("request_id")
 	upstreamRequestId := c.Query("upstream_request_id")
-	logs, total, err := model.GetAllLogs(logType, startTimestamp, endTimestamp, modelName, username, tokenName, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), channel, group, requestId, upstreamRequestId)
+	logs, total, err := model.GetAllLogs(logType, startTimestamp, endTimestamp, modelName, username, tokenName, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), channel, group, requestId, upstreamRequestId, scope)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -39,6 +66,10 @@ func GetAllLogs(c *gin.Context) {
 }
 
 func GetUserLogs(c *gin.Context) {
+	scope, ok := parseLogScope(c, false)
+	if !ok {
+		return
+	}
 	pageInfo := common.GetPageQuery(c)
 	userId := c.GetInt("id")
 	logType, _ := strconv.Atoi(c.Query("type"))
@@ -49,7 +80,7 @@ func GetUserLogs(c *gin.Context) {
 	group := c.Query("group")
 	requestId := c.Query("request_id")
 	upstreamRequestId := c.Query("upstream_request_id")
-	logs, total, err := model.GetUserLogs(userId, logType, startTimestamp, endTimestamp, modelName, tokenName, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), group, requestId, upstreamRequestId)
+	logs, total, err := model.GetUserLogs(userId, logType, startTimestamp, endTimestamp, modelName, tokenName, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), group, requestId, upstreamRequestId, scope)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -101,6 +132,10 @@ func GetLogByKey(c *gin.Context) {
 }
 
 func GetLogsStat(c *gin.Context) {
+	scope, ok := parseLogScope(c, false)
+	if !ok {
+		return
+	}
 	logType, _ := strconv.Atoi(c.Query("type"))
 	startTimestamp, _ := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
 	endTimestamp, _ := strconv.ParseInt(c.Query("end_timestamp"), 10, 64)
@@ -109,7 +144,7 @@ func GetLogsStat(c *gin.Context) {
 	modelName := c.Query("model_name")
 	channel, _ := strconv.Atoi(c.Query("channel"))
 	group := c.Query("group")
-	stat, err := model.SumUsedQuota(logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group)
+	stat, err := model.SumUsedQuota(logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group, scope)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -124,6 +159,10 @@ func GetLogsStat(c *gin.Context) {
 }
 
 func GetLogsSelfStat(c *gin.Context) {
+	scope, ok := parseLogScope(c, false)
+	if !ok {
+		return
+	}
 	username := c.GetString("username")
 	logType, _ := strconv.Atoi(c.Query("type"))
 	startTimestamp, _ := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
@@ -132,7 +171,7 @@ func GetLogsSelfStat(c *gin.Context) {
 	modelName := c.Query("model_name")
 	channel, _ := strconv.Atoi(c.Query("channel"))
 	group := c.Query("group")
-	quotaNum, err := model.SumUsedQuota(logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group)
+	quotaNum, err := model.SumUsedQuota(logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group, scope)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -144,6 +183,29 @@ func GetLogsSelfStat(c *gin.Context) {
 		"data":    logStatPayload(quotaNum),
 	})
 	return
+}
+
+func GetModelTestLogsStat(c *gin.Context) {
+	logType, _ := strconv.Atoi(c.Query("type"))
+	startTimestamp, _ := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
+	endTimestamp, _ := strconv.ParseInt(c.Query("end_timestamp"), 10, 64)
+	modelName := c.Query("model_name")
+	username := c.Query("username")
+	tokenName := c.Query("token_name")
+	channel, _ := strconv.Atoi(c.Query("channel"))
+	group := c.Query("group")
+	requestId := c.Query("request_id")
+	upstreamRequestId := c.Query("upstream_request_id")
+	stat, err := model.GetModelTestStat(time.Now(), logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group, requestId, upstreamRequestId)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    logStatPayload(stat),
+	})
 }
 
 func logStatPayload(stat model.Stat) gin.H {
@@ -161,5 +223,7 @@ func logStatPayload(stat model.Stat) gin.H {
 		"cache_read_tpm":      stat.CacheReadTpm,
 		"cache_create_tpm":    stat.CacheCreateTpm,
 		"completion_tpm":      stat.CompletionTpm,
+		"average_use_time":    stat.AverageUseTime,
+		"success_rate":        stat.SuccessRate,
 	}
 }

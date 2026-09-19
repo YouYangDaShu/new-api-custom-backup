@@ -97,3 +97,15 @@ func TestProcessChannelErrorUsesSnapshotWithoutLeakingChannelMetadata(t *testing
 		assert.NotContains(t, userOther, key)
 	}
 }
+
+func TestSafeChannelErrorSummaryDoesNotReturnUnderlyingError(t *testing.T) {
+	sensitiveErr := errors.New("Authorization: Bearer test-sensitive-value; api_key=test-sensitive-value")
+	apiErr := types.NewOpenAIError(sensitiveErr, types.ErrorCodeBadResponseStatusCode, http.StatusBadGateway)
+
+	summary := safeChannelErrorSummary(apiErr)
+
+	assert.Equal(t, "status_code=502, error_code=bad_response_status_code", summary)
+	assert.NotContains(t, summary, "test-sensitive-value")
+	assert.NotContains(t, summary, "Authorization")
+	assert.NotContains(t, summary, "api_key")
+}

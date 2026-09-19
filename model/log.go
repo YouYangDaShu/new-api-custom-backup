@@ -95,6 +95,34 @@ const (
 	LogTypeProcessing = 8
 )
 
+type LogScope string
+
+const (
+	LogScopeBusiness  LogScope = "business"
+	LogScopeModelTest LogScope = "model_test"
+	modelTestLogMark           = "模型测试"
+)
+
+func isModelTestLog(tokenName, content string) bool {
+	return tokenName == modelTestLogMark || content == modelTestLogMark
+}
+
+func applyLogScope(tx *gorm.DB, scope LogScope, prefix string) *gorm.DB {
+	tokenNameColumn := prefix + "token_name"
+	contentColumn := prefix + "content"
+	if scope == LogScopeModelTest {
+		return tx.Where("("+tokenNameColumn+" = ? OR "+contentColumn+" = ?)", modelTestLogMark, modelTestLogMark)
+	}
+	return tx.Where("("+logCoalesceTextExpr(tokenNameColumn)+" <> ? AND "+logCoalesceTextExpr(contentColumn)+" <> ?)", modelTestLogMark, modelTestLogMark)
+}
+
+func logCoalesceTextExpr(column string) string {
+	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
+		return "ifNull(" + column + ", '')"
+	}
+	return "COALESCE(" + column + ", '')"
+}
+
 func ensureLogRequestId(log *Log) {
 	if log != nil && log.RequestId == "" {
 		log.RequestId = common.NewRequestId()
@@ -546,7 +574,7 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		UpstreamRequestId: upstreamRequestId,
 		Other:             otherStr,
 	}
-	if !common.LogConsumeEnabled {
+	if !common.LogConsumeEnabled && !isModelTestLog(params.TokenName, params.Content) {
 		FinalizeRequestLog(c, log)
 		accumulateLotteryConsumption(c, userId, params.Quota, requestId)
 		return
@@ -658,12 +686,22 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 	}
 }
 
-func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, startIdx int, num int, channel int, group string, requestId string, upstreamRequestId string) (logs []*Log, total int64, err error) {
+func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, startIdx int, num int, channel int, group string, requestId string, upstreamRequestId string, scopes ...LogScope) (logs []*Log, total int64, err error) {
 	var tx *gorm.DB
 	if logType == LogTypeUnknown {
 		tx = LOG_DB
 	} else {
 		tx = LOG_DB.Where("logs.type = ?", logType)
+	}
+	scope := LogScopeBusiness
+	if len(scopes) > 0 {
+		scope = scopes[0]
+	}
+	tx = applyLogScope(tx, scope, "logs.")
+
+	if scope == LogScopeModelTest && startTimestamp == 0 && endTimestamp == 0 {
+		startTimestamp, endTimestamp = ShanghaiDayRange(time.Now())
+		endTimestamp--
 	}
 
 	if tx, err = applyExplicitLogTextFilter(tx, "logs.model_name", modelName); err != nil {
@@ -754,13 +792,18 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 
 const logSearchCountLimit = 10000
 
-func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int64, modelName string, tokenName string, startIdx int, num int, group string, requestId string, upstreamRequestId string) (logs []*Log, total int64, err error) {
+func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int64, modelName string, tokenName string, startIdx int, num int, group string, requestId string, upstreamRequestId string, scopes ...LogScope) (logs []*Log, total int64, err error) {
 	var tx *gorm.DB
 	if logType == LogTypeUnknown {
 		tx = LOG_DB.Where("logs.user_id = ?", userId)
 	} else {
 		tx = LOG_DB.Where("logs.user_id = ? and logs.type = ?", userId, logType)
 	}
+	scope := LogScopeBusiness
+	if len(scopes) > 0 {
+		scope = scopes[0]
+	}
+	tx = applyLogScope(tx, scope, "logs.")
 
 	if tx, err = applyExplicitLogTextFilter(tx, "logs.model_name", modelName); err != nil {
 		return nil, 0, err
@@ -816,10 +859,13 @@ type Stat struct {
 	CacheReadTpm      int64   `json:"cache_read_tpm"`
 	CacheCreateTpm    int64   `json:"cache_create_tpm"`
 	CompletionTpm     int64   `json:"completion_tpm"`
+	AverageUseTime    float64 `json:"average_use_time"`
+	SuccessRate       float64 `json:"success_rate"`
 }
 
-func applyLogStatFilters(tx *gorm.DB, username, tokenName, modelName string, channel int, group string, startTimestamp, endTimestamp int64) (*gorm.DB, error) {
+func applyLogCommonStatFilters(tx *gorm.DB, username, tokenName, modelName string, channel int, group string, startTimestamp, endTimestamp int64, scope LogScope) (*gorm.DB, error) {
 	var err error
+	tx = applyLogScope(tx, scope, "")
 	if tx, err = applyExplicitLogTextFilter(tx, "username", username); err != nil {
 		return tx, err
 	}
@@ -841,12 +887,24 @@ func applyLogStatFilters(tx *gorm.DB, username, tokenName, modelName string, cha
 	if group != "" {
 		tx = tx.Where(logGroupCol+" = ?", group)
 	}
+	return tx, nil
+}
+
+func applyLogStatFilters(tx *gorm.DB, username, tokenName, modelName string, channel int, group string, startTimestamp, endTimestamp int64, scope LogScope) (*gorm.DB, error) {
+	tx, err := applyLogCommonStatFilters(tx, username, tokenName, modelName, channel, group, startTimestamp, endTimestamp, scope)
+	if err != nil {
+		return tx, err
+	}
 	return tx.Where("type = ?", LogTypeConsume), nil
 }
 
-func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string) (stat Stat, err error) {
+func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string, scopes ...LogScope) (stat Stat, err error) {
 	_ = logType // Usage statistics have historically included consume logs only.
 	cacheReadExpr, cacheCreateExpr := logCacheTokenSelectExpr()
+	scope := LogScopeBusiness
+	if len(scopes) > 0 {
+		scope = scopes[0]
+	}
 
 	totalSelect := fmt.Sprintf(`
 COALESCE(SUM(quota), 0) AS quota,
@@ -856,7 +914,7 @@ COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
 COALESCE(SUM(%s), 0) AS cache_read_tokens,
 COALESCE(SUM(%s), 0) AS cache_create_tokens`, cacheReadExpr, cacheCreateExpr)
 	totalQuery := LOG_DB.Table("logs").Select(totalSelect)
-	if totalQuery, err = applyLogStatFilters(totalQuery, username, tokenName, modelName, channel, group, startTimestamp, endTimestamp); err != nil {
+	if totalQuery, err = applyLogStatFilters(totalQuery, username, tokenName, modelName, channel, group, startTimestamp, endTimestamp, scope); err != nil {
 		return stat, err
 	}
 	if err = totalQuery.Scan(&stat).Error; err != nil {
@@ -868,7 +926,7 @@ COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
 COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
 0 AS cache_read_tokens,
 0 AS cache_create_tokens`)
-		if totalQuery, err = applyLogStatFilters(totalQuery, username, tokenName, modelName, channel, group, startTimestamp, endTimestamp); err != nil {
+		if totalQuery, err = applyLogStatFilters(totalQuery, username, tokenName, modelName, channel, group, startTimestamp, endTimestamp, scope); err != nil {
 			return stat, err
 		}
 		if err = totalQuery.Scan(&stat).Error; err != nil {
@@ -896,7 +954,7 @@ COALESCE(SUM(completion_tokens), 0) AS completion_tpm`, cacheReadExpr, cacheCrea
 	}
 	var rate rateStat
 	rateQuery := LOG_DB.Table("logs").Select(rateSelect)
-	rateQuery, err = applyLogStatFilters(rateQuery, username, tokenName, modelName, channel, group, time.Now().Add(-60*time.Second).Unix(), 0)
+	rateQuery, err = applyLogStatFilters(rateQuery, username, tokenName, modelName, channel, group, time.Now().Add(-60*time.Second).Unix(), 0, scope)
 	if err != nil {
 		return stat, err
 	}
@@ -908,7 +966,7 @@ COALESCE(SUM(prompt_tokens), 0) + COALESCE(SUM(completion_tokens), 0) AS tpm,
 0 AS cache_read_tpm,
 0 AS cache_create_tpm,
 COALESCE(SUM(completion_tokens), 0) AS completion_tpm`)
-		rateQuery, err = applyLogStatFilters(rateQuery, username, tokenName, modelName, channel, group, time.Now().Add(-60*time.Second).Unix(), 0)
+		rateQuery, err = applyLogStatFilters(rateQuery, username, tokenName, modelName, channel, group, time.Now().Add(-60*time.Second).Unix(), 0, scope)
 		if err != nil {
 			return stat, err
 		}
@@ -924,6 +982,68 @@ COALESCE(SUM(completion_tokens), 0) AS completion_tpm`)
 	stat.CompletionTpm = rate.CompletionTpm
 
 	return stat, nil
+}
+
+func GetModelTestStat(now time.Time, logType int, startTimestamp, endTimestamp int64, modelName, username, tokenName string, channel int, group, requestId, upstreamRequestId string) (stat Stat, err error) {
+	if startTimestamp == 0 && endTimestamp == 0 {
+		startTimestamp, endTimestamp = ShanghaiDayRange(now)
+		endTimestamp--
+	}
+	type modelTestStat struct {
+		Quota          int64
+		RequestCount   int64
+		AverageUseTime float64
+		SuccessCount   int64
+	}
+	var result modelTestStat
+	statusCodeExpr := logStatusCodeSelectExpr()
+	selectSQL := fmt.Sprintf(`
+COALESCE(SUM(quota), 0) AS quota,
+COUNT(*) AS request_count,
+COALESCE(AVG(use_time), 0) AS average_use_time,
+COALESCE(SUM(CASE WHEN %s BETWEEN 200 AND 299 THEN 1 ELSE 0 END), 0) AS success_count`, statusCodeExpr)
+	query := LOG_DB.Table("logs").Select(selectSQL)
+	if query, err = applyLogCommonStatFilters(query, username, tokenName, modelName, channel, group, startTimestamp, endTimestamp, LogScopeModelTest); err != nil {
+		return stat, err
+	}
+	if requestId != "" {
+		query = query.Where("request_id = ?", requestId)
+	}
+	if upstreamRequestId != "" {
+		query = query.Where("upstream_request_id = ?", upstreamRequestId)
+	}
+	if logType != LogTypeUnknown {
+		query = query.Where("type = ?", logType)
+	}
+	if err = query.Scan(&result).Error; err != nil {
+		return stat, err
+	}
+	stat.Quota = result.Quota
+	stat.RequestCount = result.RequestCount
+	stat.AverageUseTime = result.AverageUseTime
+	if result.RequestCount > 0 {
+		stat.SuccessRate = float64(result.SuccessCount) * 100 / float64(result.RequestCount)
+	}
+	return stat, nil
+}
+
+func GetModelTestTodayStat(now time.Time) (Stat, error) {
+	return GetModelTestStat(now, LogTypeUnknown, 0, 0, "", "", "", 0, "", "", "")
+}
+
+func logStatusCodeSelectExpr() string {
+	switch common.LogDatabaseType() {
+	case common.DatabaseTypeSQLite:
+		return "COALESCE(CAST(json_extract(CASE WHEN json_valid(other) THEN other ELSE '{}' END, '$.status_code') AS INTEGER), 0)"
+	case common.DatabaseTypeMySQL:
+		return "COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(CASE WHEN JSON_VALID(other) THEN other ELSE '{}' END, '$.status_code')) AS SIGNED), 0)"
+	case common.DatabaseTypePostgreSQL:
+		return "COALESCE(NULLIF(substring(other from '\"status_code\"[[:space:]]*:[[:space:]]*([0-9]+)'), '')::integer, 0)"
+	case common.DatabaseTypeClickHouse:
+		return "JSONExtractInt(other, 'status_code')"
+	default:
+		return "0"
+	}
 }
 
 func logCacheTokenSelectExpr() (cacheRead string, cacheCreate string) {

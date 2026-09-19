@@ -86,6 +86,15 @@ export const getUserLogStats = (
   params: Omit<GetLogStatsParams, 'username' | 'channel'> = {}
 ) => fetchLogStats('/api/log', params, false)
 
+export const getModelTestLogs = (params: GetLogsParams = {}) =>
+  fetchLogs('/api/log', { ...params, scope: 'model_test' }, true)
+
+export const getModelTestLogStats = async (params: GetLogStatsParams = {}) => {
+  const queryParams = buildQueryParams(params as Record<string, unknown>)
+  const res = await api.get(`/api/log/model_test/stat?${queryParams}`)
+  return res.data as GetLogStatsResponse
+}
+
 export async function getUserInfo(
   userId: number
 ): Promise<{ success: boolean; message?: string; data?: UserInfo }> {

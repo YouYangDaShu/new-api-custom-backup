@@ -29,16 +29,25 @@ import (
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	hosttypes "github.com/QuantumNous/new-api/types"
 
+	"github.com/bytedance/gopkg/util/gopool"
+	"github.com/gin-gonic/gin"
 	"github.com/samber/lo"
 	"github.com/tidwall/gjson"
-
-	"github.com/gin-gonic/gin"
 )
 
 type testResult struct {
 	context     *gin.Context
 	localErr    error
 	newAPIError *types.NewAPIError
+	statusCode  int
+}
+
+func isSuccessfulChannelTestStatus(statusCode int) bool {
+	return statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices
+}
+
+func channelTestTaskAllowsDisable(mode string, notify bool) bool {
+	return !notify && mode != operation_setting.ChannelTestModePassiveRecovery
 }
 
 func normalizeChannelTestEndpoint(channel *model.Channel, endpointType string) string {
@@ -70,10 +79,33 @@ func resolveChannelTestUserID(c *gin.Context) (int, error) {
 }
 
 func testChannel(ctx context.Context, channel *model.Channel, testUserID int, testModel string, endpointType string, isStream bool) testResult {
+	return testChannelWithResponseTimeLimit(ctx, channel, testUserID, testModel, endpointType, isStream, 0)
+}
+
+func testChannelWithResponseTimeLimit(ctx context.Context, channel *model.Channel, testUserID int, testModel string, endpointType string, isStream bool, responseTimeLimitMs int64) (result testResult) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set(common.ChannelTestSafeLogKey, true)
 	tik := time.Now()
+	defer func() {
+		panicked := false
+		if recovered := recover(); recovered != nil {
+			panicked = true
+			result.context = c
+			result.localErr = errors.New("channel test panic")
+			result.newAPIError = types.NewOpenAIError(result.localErr, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+		}
+		if (result.localErr == nil && result.newAPIError == nil) || (ctx.Err() != nil && !panicked) {
+			return
+		}
+		if result.context == nil {
+			result.context = c
+		}
+		recordChannelTestError(ctx, channel, testUserID, testModel, isStream, time.Since(tik), result)
+	}()
 	var unsupportedTestChannelTypes = []int{
 		constant.ChannelTypeMidjourney,
 		constant.ChannelTypeMidjourneyPlus,
@@ -90,9 +122,6 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 			localErr: fmt.Errorf("%s channel test is not supported", channelTypeName),
 		}
 	}
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-
 	testModel = strings.TrimSpace(testModel)
 	if testModel == "" {
 		if channel.TestModel != nil && *channel.TestModel != "" {
@@ -289,10 +318,7 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 		}
 	}
 
-	//// 创建一个用于日志的 info 副本，移除 ApiKey
-	//logInfo := info
-	//logInfo.ApiKey = ""
-	common.SysLog(fmt.Sprintf("testing channel %d with model %s , info %+v ", channel.Id, testModel, info.ToString()))
+	common.SysLog(fmt.Sprintf("testing channel %d with model %s", channel.Id, testModel))
 
 	priceData, err := helper.ModelPriceHelper(c, info, 0, request.GetTokenCountMeta())
 	if err != nil {
@@ -443,23 +469,23 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	}
 	var httpResp *http.Response
 	if resp != nil {
-		httpResp = resp.(*http.Response)
-		if httpResp.StatusCode != http.StatusOK {
-			err := service.RelayErrorHandler(c.Request.Context(), httpResp, true)
-			common.SysError(fmt.Sprintf(
-				"channel test bad response: channel_id=%d name=%s type=%d model=%s endpoint_type=%s status=%d err=%v",
-				channel.Id,
-				channel.Name,
-				channel.Type,
-				testModel,
-				endpointType,
-				httpResp.StatusCode,
-				err,
-			))
+		var ok bool
+		httpResp, ok = resp.(*http.Response)
+		if !ok || httpResp == nil {
+			invalidRespErr := errors.New("invalid upstream response")
 			return testResult{
 				context:     c,
-				localErr:    err,
-				newAPIError: types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError),
+				localErr:    invalidRespErr,
+				newAPIError: types.NewOpenAIError(invalidRespErr, types.ErrorCodeBadResponse, http.StatusInternalServerError),
+			}
+		}
+		if !isSuccessfulChannelTestStatus(httpResp.StatusCode) {
+			statusCode := httpResp.StatusCode
+			_ = httpResp.Body.Close()
+			return testResult{
+				context:     c,
+				localErr:    fmt.Errorf("upstream returned HTTP status %d", statusCode),
+				newAPIError: types.NewOpenAIError(fmt.Errorf("upstream returned HTTP status %d", statusCode), types.ErrorCodeBadResponseStatusCode, statusCode),
 			}
 		}
 	}
@@ -479,8 +505,8 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 			newAPIError: types.NewOpenAIError(usageErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError),
 		}
 	}
-	result := w.Result()
-	respBody, err := readTestResponseBody(result.Body, isStream)
+	httpResult := w.Result()
+	respBody, err := readTestResponseBody(httpResult.Body, isStream)
 	if err != nil {
 		return testResult{
 			context:     c,
@@ -501,7 +527,20 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	tok := time.Now()
 	milliseconds := tok.Sub(tik).Milliseconds()
 	consumedTime := float64(milliseconds) / 1000.0
+	if responseTimeLimitMs > 0 && milliseconds > responseTimeLimitMs {
+		timeoutErr := fmt.Errorf("响应时间 %.2fs 超过阈值 %.2fs", consumedTime, float64(responseTimeLimitMs)/1000.0)
+		return testResult{
+			context:     c,
+			localErr:    timeoutErr,
+			newAPIError: types.NewOpenAIError(timeoutErr, types.ErrorCodeChannelResponseTimeExceeded, http.StatusRequestTimeout),
+		}
+	}
+	statusCode := http.StatusOK
+	if httpResp != nil {
+		statusCode = httpResp.StatusCode
+	}
 	other := buildTestLogOther(c, info, priceData, usage, tieredResult)
+	other.SetPublic("status_code", statusCode)
 	model.RecordConsumeLog(c, testUserID, model.RecordConsumeLogParams{
 		ChannelId:        channel.Id,
 		PromptTokens:     usage.PromptTokens,
@@ -515,11 +554,12 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 		Group:            info.UsingGroup,
 		Other:            other,
 	})
-	common.SysLog(fmt.Sprintf("testing channel #%d, response: \n%s", channel.Id, string(respBody)))
+	common.SysLog(fmt.Sprintf("testing channel #%d succeeded, response_bytes=%d", channel.Id, len(respBody)))
 	return testResult{
 		context:     c,
 		localErr:    nil,
 		newAPIError: nil,
+		statusCode:  statusCode,
 	}
 }
 
@@ -568,6 +608,52 @@ func buildTestLogOther(c *gin.Context, info *relaycommon.RelayInfo, priceData ho
 	return other
 }
 
+func recordChannelTestError(ctx context.Context, channel *model.Channel, testUserID int, testModel string, isStream bool, elapsed time.Duration, result testResult) {
+	c := result.context
+	if c == nil {
+		return
+	}
+	if c.Request == nil {
+		c.Request = httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/chat/completions", nil)
+	}
+	c.Set("id", testUserID)
+	c.Set("original_model", testModel)
+	c.Set("token_name", "模型测试")
+	c.Set("channel_test_log_recorded", true)
+
+	statusCode := http.StatusInternalServerError
+	if result.statusCode >= 100 && result.statusCode <= 599 {
+		statusCode = result.statusCode
+	}
+	errorCode := "channel_test_failed"
+	errorType := ""
+	other := model.NewLogOther()
+	if result.newAPIError != nil {
+		if result.newAPIError.StatusCode >= 100 && result.newAPIError.StatusCode <= 599 && (result.newAPIError.StatusCode < 200 || result.newAPIError.StatusCode >= 300) {
+			statusCode = result.newAPIError.StatusCode
+		}
+		errorType = string(result.newAPIError.GetErrorType())
+		if code := string(result.newAPIError.GetErrorCode()); code != "" {
+			errorCode = code
+		}
+		other.SetPublic("error_type", errorType)
+		other.SetPublic("error_code", errorCode)
+	}
+	content := fmt.Sprintf("status_code=%d, error_code=%s", statusCode, errorCode)
+	other.SetPublic("status_code", statusCode)
+	other.SetPublic("request_status", "failed")
+	other.SetPublic("duration_ms", elapsed.Milliseconds())
+	if c.Request.URL != nil {
+		other.SetPublic("request_path", c.Request.URL.Path)
+	}
+
+	channelID := 0
+	if channel != nil {
+		channelID = channel.Id
+	}
+	model.RecordErrorLog(c, testUserID, channelID, testModel, "模型测试", content, c.GetInt("token_id"), int(elapsed.Seconds()), isStream, c.GetString("group"), other)
+}
+
 func coerceTestUsage(usageAny any, isStream bool, estimatePromptTokens int) (*dto.Usage, error) {
 	switch u := usageAny.(type) {
 	case *dto.Usage:
@@ -609,8 +695,8 @@ func detectErrorFromTestResponseBody(respBody []byte) error {
 	if len(b) == 0 {
 		return nil
 	}
-	if message := detectErrorMessageFromJSONBytes(b); message != "" {
-		return fmt.Errorf("upstream error: %s", message)
+	if detectErrorMessageFromJSONBytes(b) != "" {
+		return errors.New("upstream returned error payload")
 	}
 
 	for line := range bytes.SplitSeq(b, []byte{'\n'}) {
@@ -625,8 +711,8 @@ func detectErrorFromTestResponseBody(respBody []byte) error {
 		if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
 			continue
 		}
-		if message := detectErrorMessageFromJSONBytes(payload); message != "" {
-			return fmt.Errorf("upstream error: %s", message)
+		if detectErrorMessageFromJSONBytes(payload) != "" {
+			return errors.New("upstream returned error payload")
 		}
 	}
 
@@ -878,7 +964,7 @@ func TestChannel(c *gin.Context) {
 	if result.localErr != nil {
 		resp := gin.H{
 			"success": false,
-			"message": result.localErr.Error(),
+			"message": channelTestPublicErrorMessage(result),
 			"time":    0.0,
 		}
 		if result.newAPIError != nil {
@@ -894,7 +980,7 @@ func TestChannel(c *gin.Context) {
 	if result.newAPIError != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success":    false,
-			"message":    result.newAPIError.Error(),
+			"message":    channelTestPublicErrorMessage(result),
 			"time":       consumedTime,
 			"error_code": result.newAPIError.GetErrorCode(),
 		})
@@ -907,6 +993,15 @@ func TestChannel(c *gin.Context) {
 	})
 }
 
+func channelTestPublicErrorMessage(result testResult) string {
+	if result.newAPIError != nil {
+		if code := result.newAPIError.GetErrorCode(); code != "" {
+			return fmt.Sprintf("channel test failed: %s", code)
+		}
+	}
+	return "channel test failed"
+}
+
 // channelTestSummary records the outcome of one channel test cycle so the
 // system task can persist a per-run result for history.
 type channelTestSummary struct {
@@ -917,11 +1012,19 @@ type channelTestSummary struct {
 	Enabled   int `json:"enabled"`
 }
 
+func channelTestResultFailed(result testResult) bool {
+	return result.localErr != nil || result.newAPIError != nil
+}
+
 func testChannelForHealthCheck(ctx context.Context, channel *model.Channel, testUserID int, allowDisable bool, disableThreshold int64) channelTestSummary {
 	summary := channelTestSummary{}
 	isChannelEnabled := channel.Status == common.ChannelStatusEnabled
 	tik := time.Now()
-	result := testChannel(ctx, channel, testUserID, "", "", shouldUseStreamForAutomaticChannelTest(channel))
+	responseTimeLimitMs := int64(0)
+	if common.AutomaticDisableChannelEnabled {
+		responseTimeLimitMs = disableThreshold
+	}
+	result := testChannelWithResponseTimeLimit(ctx, channel, testUserID, "", "", shouldUseStreamForAutomaticChannelTest(channel), responseTimeLimitMs)
 	milliseconds := time.Since(tik).Milliseconds()
 	if ctx.Err() != nil {
 		return summary
@@ -932,25 +1035,25 @@ func testChannelForHealthCheck(ctx context.Context, channel *model.Channel, test
 	shouldBanChannel := false
 	newAPIError := result.newAPIError
 	if newAPIError != nil {
-		shouldBanChannel = service.ShouldDisableChannel(result.newAPIError)
-	}
-
-	if common.AutomaticDisableChannelEnabled && !shouldBanChannel {
-		if milliseconds > disableThreshold {
-			err := fmt.Errorf("响应时间 %.2fs 超过阈值 %.2fs", float64(milliseconds)/1000.0, float64(disableThreshold)/1000.0)
-			newAPIError = types.NewOpenAIError(err, types.ErrorCodeChannelResponseTimeExceeded, http.StatusRequestTimeout)
+		shouldBanChannel = service.ShouldDisableChannel(newAPIError)
+		if newAPIError.GetErrorCode() == types.ErrorCodeChannelResponseTimeExceeded {
 			shouldBanChannel = true
 		}
 	}
 
-	if newAPIError == nil {
-		summary.Succeeded++
-	} else {
+	failed := channelTestResultFailed(result)
+	if failed {
 		summary.Failed++
+	} else {
+		summary.Succeeded++
 	}
 
 	if allowDisable && isChannelEnabled && shouldBanChannel && channel.GetAutoBan() {
-		processChannelError(result.context, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError, nil)
+		channelError := *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey), channel.GetAutoBan())
+		reason := safeChannelErrorSummary(newAPIError)
+		gopool.Go(func() {
+			service.DisableChannel(channelError, reason)
+		})
 		summary.Disabled++
 	}
 
@@ -1099,7 +1202,8 @@ func runChannelTestTask(ctx context.Context, mode string, notify bool, report fu
 		mode = operation_setting.GetMonitorSetting().ChannelTestMode
 	}
 	selected := selectChannelsForAutomaticTest(channels, mode)
-	allowDisable := mode != operation_setting.ChannelTestModePassiveRecovery
+	// Manual "test all" runs set notify=true and must never disable channels.
+	allowDisable := channelTestTaskAllowsDisable(mode, notify)
 	concurrency := operation_setting.GetMonitorSetting().ChannelTestConcurrency
 	summary := performChannelTests(ctx, selected, testUserID, allowDisable, concurrency, report)
 	if notify && (ctx == nil || ctx.Err() == nil) {
