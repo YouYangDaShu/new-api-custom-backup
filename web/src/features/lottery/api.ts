@@ -77,6 +77,7 @@ export interface LotteryAdminConfig {
   pity_stage_2_end: number
   pity_stage_2_rates: number[]
   pity_hard_threshold: number
+  next_prize_level: number
 }
 
 export async function getLottery(page = 1): Promise<{

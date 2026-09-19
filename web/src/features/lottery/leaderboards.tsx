@@ -42,12 +42,12 @@ function boardTitle(t: (key: string) => string, key: BoardKey) {
 
 function boardDescription(t: (key: string) => string, key: BoardKey) {
   if (key === 'lucky') {
-    return t('Natural first prizes in draws 1 to 10')
+    return t('Natural first prizes in the configured base stage')
   }
   if (key === 'draw_count') {
     return t('Real lottery draws in the selected period')
   }
-  return t('First prizes won at or after the hard pity threshold')
+  return t('First prizes won in the hard stage or at the mandatory draw')
 }
 
 function rowValue(

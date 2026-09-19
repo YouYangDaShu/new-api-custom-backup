@@ -323,6 +323,7 @@ func AdminUpdateLottery(c *gin.Context) {
 		PityStage2End          int                  `json:"pity_stage_2_end"`
 		PityStage2Rates        []float64            `json:"pity_stage_2_rates"`
 		PityHardThreshold      int                  `json:"pity_hard_threshold"`
+		NextPrizeLevel         int                  `json:"next_prize_level"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "invalid lottery config"})
@@ -337,6 +338,10 @@ func AdminUpdateLottery(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "lottery threshold must be positive"})
 		return
 	}
+	stored := model.GetLotteryConfig()
+	if request.NextPrizeLevel == 0 {
+		request.NextPrizeLevel = stored.NextPrizeLevel
+	}
 	threshold, err := model.LotteryDisplayToQuota(*thresholdDisplay)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": err.Error()})
@@ -348,7 +353,8 @@ func AdminUpdateLottery(c *gin.Context) {
 		PityStage1Start: request.PityStage1Start, PityStage1End: request.PityStage1End,
 		PityStage1Rates: request.PityStage1Rates, PityStage2Start: request.PityStage2Start,
 		PityStage2End: request.PityStage2End, PityStage2Rates: request.PityStage2Rates,
-		PityHardThreshold: request.PityHardThreshold, SchemaVersion: 3, Unit: "raw_quota"}
+		PityHardThreshold: request.PityHardThreshold, NextPrizeLevel: request.NextPrizeLevel,
+		SchemaVersion: 4, Unit: "raw_quota"}
 	for i := range cfg.Prizes {
 		quota, conversionErr := model.LotteryDisplayToQuota(cfg.Prizes[i].Amount)
 		if cfg.Prizes[i].Amount == 0 {

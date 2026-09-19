@@ -389,6 +389,9 @@ func validateJSONNoDuplicateKeys(value string) error {
 }
 
 func validateOptionValue(key string, value string) error {
+	if key == lotteryConfigKey {
+		return errors.New("LotteryConfig must be updated through the dedicated lottery settings endpoint")
+	}
 	if key == "GroupRatio" || key == "TopupGroupRatio" || key == "UserUsableGroups" || key == "GroupGroupRatio" || key == "group_ratio_setting.membership_groups" || key == "group_ratio_setting.group_special_usable_group" {
 		if err := validateJSONNoDuplicateKeys(value); err != nil {
 			return err

@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -17,8 +18,14 @@ import (
 )
 
 const lotteryConfigKey = "LotteryConfig"
-const lotteryConfigSchemaVersion = 3
+const lotteryConfigSchemaVersion = 4
 const lotteryConfigUnitRawQuota = "raw_quota"
+
+const (
+	lotteryPityPhaseBase = "base"
+	lotteryPityPhaseSoft = "soft"
+	lotteryPityPhaseHard = "hard"
+)
 
 const (
 	lotteryDefaultBaseEnd       = 10
@@ -34,7 +41,7 @@ type LotteryPrize struct {
 	ID         string  `json:"id"`
 	Name       string  `json:"name"`
 	PrizeLevel int     `json:"prize_level"`
-	Weight     int     `json:"weight"`
+	Weight     float64 `json:"weight"`
 	Amount     float64 `json:"amount,omitempty"`
 	Enabled    bool    `json:"enabled"`
 	SortOrder  int     `json:"sort_order"`
@@ -58,6 +65,8 @@ type LotteryConfig struct {
 	PityStage2End        int            `json:"pity_stage_2_end"`
 	PityStage2Rates      []float64      `json:"pity_stage_2_rates"`
 	PityHardThreshold    int            `json:"pity_hard_threshold"`
+	NextPrizeLevel       int            `json:"next_prize_level"`
+	PrizeLevelLedger     map[string]int `json:"prize_level_ledger,omitempty"`
 	SchemaVersion        int            `json:"schema_version,omitempty"`
 	Unit                 string         `json:"unit,omitempty"`
 }
@@ -79,13 +88,14 @@ type LotteryDisplayConfig struct {
 	PityStage2End          int                   `json:"pity_stage_2_end"`
 	PityStage2Rates        []float64             `json:"pity_stage_2_rates"`
 	PityHardThreshold      int                   `json:"pity_hard_threshold"`
+	NextPrizeLevel         int                   `json:"next_prize_level"`
 }
 
 type LotteryDisplayPrize struct {
 	ID         string  `json:"id"`
 	Name       string  `json:"name"`
 	PrizeLevel int     `json:"prize_level"`
-	Weight     int     `json:"weight"`
+	Weight     float64 `json:"weight"`
 	Amount     float64 `json:"amount"`
 	Enabled    bool    `json:"enabled"`
 	SortOrder  int     `json:"sort_order"`
@@ -118,6 +128,7 @@ type LotteryDraw struct {
 	PrizeAmountQuota int     `gorm:"not null;default:0" json:"-"`
 	PityStep         int     `gorm:"not null;default:0" json:"pity_step"`
 	IsGuaranteed     bool    `gorm:"not null;default:false" json:"is_guaranteed"`
+	PityPhase        string  `gorm:"type:varchar(8);not null;default:'';index" json:"-"`
 	CreatedAt        int64   `gorm:"autoCreateTime" json:"created_at"`
 }
 
@@ -149,7 +160,7 @@ func DefaultLotteryConfig() LotteryConfig {
 		PityStage1End: lotteryDefaultStage1End, PityStage1Rates: []float64{2, 4, 6, 8, 10},
 		PityStage2Start: lotteryDefaultStage2Start, PityStage2End: lotteryDefaultStage2End,
 		PityStage2Rates: []float64{30, 50, 70, 90}, PityHardThreshold: lotteryDefaultHardThreshold,
-		SchemaVersion: lotteryConfigSchemaVersion, Unit: lotteryConfigUnitRawQuota,
+		NextPrizeLevel: 1, SchemaVersion: lotteryConfigSchemaVersion, Unit: lotteryConfigUnitRawQuota,
 	}
 }
 
@@ -160,62 +171,96 @@ func normalizeLotteryConfig(cfg LotteryConfig, legacy bool) LotteryConfig {
 	cfg.Prizes = append([]LotteryPrize(nil), cfg.Prizes...)
 	cfg.PityStage1Rates = append([]float64(nil), cfg.PityStage1Rates...)
 	cfg.PityStage2Rates = append([]float64(nil), cfg.PityStage2Rates...)
+	ledger := make(map[string]int, len(cfg.PrizeLevelLedger)+len(cfg.Prizes))
+	for id, level := range cfg.PrizeLevelLedger {
+		ledger[id] = level
+	}
+	cfg.PrizeLevelLedger = ledger
 
 	defaults := DefaultLotteryConfig()
+	sourceSchema := cfg.SchemaVersion
+	legacyFields := legacy && sourceSchema < 3
+	migrateWeights := legacy && sourceSchema < lotteryConfigSchemaVersion
 	if cfg.PityTargetPrizeLevel == 0 {
 		cfg.PityTargetPrizeLevel = defaults.PityTargetPrizeLevel
 	}
-	if legacy && cfg.PityBaseRate == 0 {
+	if legacyFields && cfg.PityBaseRate == 0 {
 		cfg.PityBaseRate = defaults.PityBaseRate
 	}
-	if legacy && cfg.PityBaseEnd == 0 {
+	if legacyFields && cfg.PityBaseEnd == 0 {
 		cfg.PityBaseEnd = defaults.PityBaseEnd
 	}
-	if legacy && cfg.PityStage1Start == 0 {
+	if legacyFields && cfg.PityStage1Start == 0 {
 		cfg.PityStage1Start = defaults.PityStage1Start
 	}
-	if legacy && cfg.PityStage1End == 0 {
+	if legacyFields && cfg.PityStage1End == 0 {
 		cfg.PityStage1End = defaults.PityStage1End
 	}
-	if legacy && len(cfg.PityStage1Rates) == 0 {
+	if legacyFields && len(cfg.PityStage1Rates) == 0 {
 		cfg.PityStage1Rates = append([]float64(nil), defaults.PityStage1Rates...)
 	}
-	if legacy && cfg.PityStage2Start == 0 {
+	if legacyFields && cfg.PityStage2Start == 0 {
 		cfg.PityStage2Start = defaults.PityStage2Start
 	}
-	if legacy && cfg.PityStage2End == 0 {
+	if legacyFields && cfg.PityStage2End == 0 {
 		cfg.PityStage2End = defaults.PityStage2End
 	}
-	if legacy && len(cfg.PityStage2Rates) == 0 {
+	if legacyFields && len(cfg.PityStage2Rates) == 0 {
 		cfg.PityStage2Rates = append([]float64(nil), defaults.PityStage2Rates...)
 	}
-	if legacy && cfg.PityHardThreshold == 0 {
+	if legacyFields && cfg.PityHardThreshold == 0 {
 		cfg.PityHardThreshold = defaults.PityHardThreshold
 	}
 	for i := range cfg.Prizes {
 		if cfg.Prizes[i].PrizeLevel <= 0 {
-			if legacy {
-				// The legacy admin UI numbered tiers from low to high in array
-				// order (the live config is thanks, Tier 2, Tier 3, Tier 4).
-				// New prize levels use 1 for the highest/first prize, so migrate
-				// that ordering in reverse instead of making "thanks" the pity
-				// target.
+			if legacyFields {
 				cfg.Prizes[i].PrizeLevel = len(cfg.Prizes) - i
 			} else {
 				cfg.Prizes[i].PrizeLevel = i + 1
 			}
 		}
-		// Legacy configs had no enabled field, so their zero value means enabled.
-		// Canonical configs preserve an explicit false value.
-		if legacy && !cfg.Prizes[i].Enabled {
+		// Only schemas before v3 lacked explicit enabled and pity fields.
+		if legacyFields && !cfg.Prizes[i].Enabled {
 			cfg.Prizes[i].Enabled = true
 		}
-		if legacy && cfg.Prizes[i].SortOrder == 0 {
+		if legacyFields && cfg.Prizes[i].SortOrder == 0 {
 			cfg.Prizes[i].SortOrder = i
 		}
 	}
-	if legacy {
+	if legacyFields {
 		cfg.PityEnabled = true
+	}
+	if migrateWeights {
+		enabledWeightTotal := float64(0)
+		for _, prize := range cfg.Prizes {
+			if prize.Enabled {
+				enabledWeightTotal += prize.Weight
+			}
+		}
+		if enabledWeightTotal > 0 {
+			for i := range cfg.Prizes {
+				if cfg.Prizes[i].Enabled {
+					cfg.Prizes[i].Weight = cfg.Prizes[i].Weight / enabledWeightTotal * 100
+				}
+			}
+		}
+	}
+	maxPrizeLevel := 0
+	for _, prize := range cfg.Prizes {
+		if _, ok := cfg.PrizeLevelLedger[prize.ID]; !ok {
+			cfg.PrizeLevelLedger[prize.ID] = prize.PrizeLevel
+		}
+		if prize.PrizeLevel > maxPrizeLevel {
+			maxPrizeLevel = prize.PrizeLevel
+		}
+	}
+	for _, level := range cfg.PrizeLevelLedger {
+		if level > maxPrizeLevel {
+			maxPrizeLevel = level
+		}
+	}
+	if cfg.NextPrizeLevel <= maxPrizeLevel {
+		cfg.NextPrizeLevel = maxPrizeLevel + 1
 	}
 	sort.SliceStable(cfg.Prizes, func(i, j int) bool {
 		if cfg.Prizes[i].SortOrder != cfg.Prizes[j].SortOrder {
@@ -312,7 +357,7 @@ func LotteryConfigForDisplay(cfg LotteryConfig) (LotteryDisplayConfig, error) {
 		PityStage1Rates: append([]float64(nil), cfg.PityStage1Rates...),
 		PityStage2Start: cfg.PityStage2Start, PityStage2End: cfg.PityStage2End,
 		PityStage2Rates:   append([]float64(nil), cfg.PityStage2Rates...),
-		PityHardThreshold: cfg.PityHardThreshold,
+		PityHardThreshold: cfg.PityHardThreshold, NextPrizeLevel: cfg.NextPrizeLevel,
 	}
 	display.ThresholdDisplayAmount = roundedLotteryDisplay(display.ThresholdDisplayAmount)
 	for i, prize := range cfg.Prizes {
@@ -329,6 +374,7 @@ func LotteryConfigForDisplay(cfg LotteryConfig) (LotteryDisplayConfig, error) {
 }
 
 func ValidateLotteryConfig(cfg LotteryConfig) error {
+	cfg = normalizeLotteryConfig(cfg, false)
 	if cfg.Threshold <= 0 || cfg.Threshold > common.MaxQuota {
 		return errors.New("lottery threshold must be positive")
 	}
@@ -359,22 +405,23 @@ func ValidateLotteryConfig(cfg LotteryConfig) error {
 			previous = rate
 		}
 	}
-	total := 0
+	total := float64(0)
 	active := 0
 	hasFirstPrize := false
 	levels := make(map[int]struct{}, len(cfg.Prizes))
 	seen := make(map[string]struct{}, len(cfg.Prizes))
-	legacySchema := cfg.SchemaVersion < lotteryConfigSchemaVersion
+	maxPrizeLevel := 0
+	legacySchema := cfg.SchemaVersion < 3
 	for _, prize := range cfg.Prizes {
 		if strings.TrimSpace(prize.ID) == "" || strings.TrimSpace(prize.Name) == "" || math.IsNaN(prize.Amount) || math.IsInf(prize.Amount, 0) || prize.Amount < 0 || prize.AmountQuota < 0 || prize.AmountQuota > common.MaxQuota {
 			return errors.New("lottery prize id, name and weight are required")
 		}
 		enabled := prize.Enabled
-		if !enabled && cfg.SchemaVersion < lotteryConfigSchemaVersion {
+		if !enabled && cfg.SchemaVersion < 3 {
 			enabled = true
 		}
-		if enabled && prize.Weight <= 0 {
-			return errors.New("lottery prize id, name and weight are required")
+		if enabled && (prize.Weight <= 0 || prize.Weight > 100 || math.IsNaN(prize.Weight) || math.IsInf(prize.Weight, 0)) {
+			return errors.New("lottery prize percentage weight must be between 0 and 100")
 		}
 		if _, ok := seen[prize.ID]; ok {
 			return errors.New("lottery prize ids must be unique")
@@ -391,16 +438,30 @@ func ValidateLotteryConfig(cfg LotteryConfig) error {
 			return errors.New("lottery prize levels must be unique")
 		}
 		levels[level] = struct{}{}
+		if level > maxPrizeLevel {
+			maxPrizeLevel = level
+		}
 		if level == 1 {
 			hasFirstPrize = true
 		}
+		if ledgerLevel, ok := cfg.PrizeLevelLedger[prize.ID]; ok && ledgerLevel != level {
+			return errors.New("lottery persisted prize identity is invalid")
+		}
 		if enabled {
 			active++
-			if prize.Weight > 1000000-total {
-				return errors.New("lottery prize weights are too large")
-			}
 			total += prize.Weight
 		}
+	}
+	for id, level := range cfg.PrizeLevelLedger {
+		if strings.TrimSpace(id) == "" || level <= 0 {
+			return errors.New("lottery persisted prize identity is invalid")
+		}
+		if level > maxPrizeLevel {
+			maxPrizeLevel = level
+		}
+	}
+	if cfg.NextPrizeLevel <= maxPrizeLevel {
+		return errors.New("lottery next prize level must stay above every assigned level")
 	}
 	if active == 0 {
 		return errors.New("lottery must have an enabled prize")
@@ -408,13 +469,16 @@ func ValidateLotteryConfig(cfg LotteryConfig) error {
 	if total <= 0 {
 		return errors.New("lottery enabled prize weights must be positive")
 	}
+	if math.Abs(total-100) > 0.000001 {
+		return errors.New("lottery enabled prize percentage weights must total 100")
+	}
 	if !hasFirstPrize {
 		return errors.New("lottery must retain the first-prize anchor")
 	}
 	if cfg.PityEnabled {
 		for _, prize := range cfg.Prizes {
 			enabled := prize.Enabled
-			if !enabled && cfg.SchemaVersion < lotteryConfigSchemaVersion {
+			if !enabled && cfg.SchemaVersion < 3 {
 				enabled = true
 			}
 			if prize.PrizeLevel == 1 && enabled {
@@ -433,19 +497,61 @@ func ValidateLotteryConfig(cfg LotteryConfig) error {
 // settings use. The safe default is disabled, so a briefly stale cache can
 // delay draws but never unexpectedly enable payouts.
 var lotteryConfigCache atomic.Pointer[LotteryConfig]
+var lotteryConfigWriteMutex sync.Mutex
 
 func refreshLotteryConfigCache(value string) {
+	lotteryConfigWriteMutex.Lock()
+	defer lotteryConfigWriteMutex.Unlock()
+	refreshLotteryConfigCacheLocked(value)
+}
+
+func refreshLotteryConfigCacheLocked(value string) {
+	if DB != nil {
+		var current Option
+		if err := DB.Where("key = ?", lotteryConfigKey).First(&current).Error; err != nil {
+			common.SysError("failed to read the current lottery config; keeping the existing cache")
+			return
+		}
+		// The sync loop may have read this option before a newer local save.
+		// Always publish the value that still owns the database row while holding
+		// the same mutex used by SaveLotteryConfig.
+		value = current.Value
+	}
 	cfg, migrated, err := decodeLotteryConfig(value)
 	if err != nil || ValidateLotteryConfig(cfg) != nil {
 		common.SysError("stored lottery config is invalid, falling back to the disabled default")
 		cfg = DefaultLotteryConfig()
 	}
-	lotteryConfigCache.Store(&cfg)
 	if migrated && DB != nil {
-		if b, marshalErr := common.Marshal(cfg); marshalErr == nil {
-			_ = DB.Save(&Option{Key: lotteryConfigKey, Value: string(b)}).Error
+		b, marshalErr := common.Marshal(cfg)
+		if marshalErr != nil {
+			common.SysError("failed to encode the migrated lottery config; keeping the existing cache")
+			return
+		}
+		// Only persist a migration when the stored value is still exactly the
+		// one we decoded. If a concurrent admin save won, publish that winner
+		// to the cache instead of the stale migrated value.
+		result := DB.Model(&Option{}).
+			Where("key = ? AND value = ?", lotteryConfigKey, value).
+			Update("value", string(b))
+		if result.Error != nil {
+			common.SysError("failed to persist the migrated lottery config; keeping the existing cache")
+			return
+		}
+		if result.RowsAffected == 0 {
+			var current Option
+			if DB.Where("key = ?", lotteryConfigKey).First(&current).Error != nil {
+				return
+			}
+			currentCfg, _, currentErr := decodeLotteryConfig(current.Value)
+			if currentErr != nil || ValidateLotteryConfig(currentCfg) != nil {
+				return
+			}
+			lotteryConfigCache.Store(&currentCfg)
+			return
 		}
 	}
+	lotteryConfigCache.Store(&cfg)
 }
 
 func decodeLotteryConfig(value string) (LotteryConfig, bool, error) {
@@ -497,10 +603,16 @@ func GetLotteryConfig() LotteryConfig {
 		return DefaultLotteryConfig()
 	}
 	refreshLotteryConfigCache(option.Value)
-	return *lotteryConfigCache.Load()
+	if cached := lotteryConfigCache.Load(); cached != nil {
+		return *cached
+	}
+	return DefaultLotteryConfig()
 }
 
 func SaveLotteryConfig(cfg LotteryConfig) error {
+	lotteryConfigWriteMutex.Lock()
+	defer lotteryConfigWriteMutex.Unlock()
+
 	legacy := cfg.SchemaVersion != lotteryConfigSchemaVersion || cfg.Unit != lotteryConfigUnitRawQuota
 	if cfg.Unit != lotteryConfigUnitRawQuota {
 		threshold, ok := lotteryDisplayToQuota(float64(cfg.Threshold))
@@ -530,29 +642,35 @@ func SaveLotteryConfig(cfg LotteryConfig) error {
 	if err := ValidateLotteryConfig(cfg); err != nil {
 		return err
 	}
-	b, err := common.Marshal(cfg)
-	if err != nil {
-		return err
-	}
+	var persisted string
 	if err := DB.Transaction(func(tx *gorm.DB) error {
 		// Re-check against the row being written. The controller performs an
 		// early validation for a useful error response, but this check closes
 		// the race between that read and the actual option update.
-		if err := validateLotteryConfigAnchorDB(tx, cfg); err != nil {
+		anchored, err := prepareLotteryConfigAnchorDB(tx, cfg)
+		if err != nil {
 			return err
 		}
-		return tx.Save(&Option{Key: lotteryConfigKey, Value: string(b)}).Error
+		if err := ValidateLotteryConfig(anchored); err != nil {
+			return err
+		}
+		b, err := common.Marshal(anchored)
+		if err != nil {
+			return err
+		}
+		persisted = string(b)
+		return tx.Save(&Option{Key: lotteryConfigKey, Value: persisted}).Error
 	}); err != nil {
 		return err
 	}
-	refreshLotteryConfigCache(string(b))
+	refreshLotteryConfigCacheLocked(persisted)
 	return nil
 }
 
-// ValidateLotteryConfigAnchor keeps persisted prize identities stable. The
-// initial save is unrestricted. Later updates may edit or reorder a prize,
-// but may not change its ID-to-level pairing. A non-first prize can be removed
-// only while it has no draw history; historical prizes must be disabled.
+// ValidateLotteryConfigAnchor keeps persisted prize identities stable. Later
+// updates may edit or reorder a prize, but may not reuse or change any assigned
+// ID-to-level pairing. A non-first prize can be removed only while it has no
+// draw history; historical prizes must be disabled.
 func ValidateLotteryConfigAnchor(next LotteryConfig) error {
 	if DB == nil {
 		return nil
@@ -561,45 +679,95 @@ func ValidateLotteryConfigAnchor(next LotteryConfig) error {
 }
 
 func validateLotteryConfigAnchorDB(db *gorm.DB, next LotteryConfig) error {
+	_, err := prepareLotteryConfigAnchorDB(db, next)
+	return err
+}
+
+func prepareLotteryConfigAnchorDB(db *gorm.DB, next LotteryConfig) (LotteryConfig, error) {
 	var option Option
 	if err := lockForUpdate(db).Where("key = ?", lotteryConfigKey).First(&option).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil
+			levels := make([]int, 0, len(next.Prizes))
+			next.PrizeLevelLedger = make(map[string]int, len(next.Prizes))
+			for _, prize := range next.Prizes {
+				levels = append(levels, prize.PrizeLevel)
+				next.PrizeLevelLedger[prize.ID] = prize.PrizeLevel
+			}
+			sort.Ints(levels)
+			for i, level := range levels {
+				if level != i+1 {
+					return next, errors.New("lottery initial prize levels must follow creation order")
+				}
+			}
+			if next.NextPrizeLevel != len(levels)+1 {
+				return next, errors.New("lottery initial next prize level is invalid")
+			}
+			return next, nil
 		}
-		return err
+		return next, err
 	}
 	previous, _, err := decodeLotteryConfig(option.Value)
 	if err != nil {
-		return err
+		return next, err
+	}
+	if next.NextPrizeLevel < previous.NextPrizeLevel {
+		return next, errors.New("lottery next prize level cannot move backwards")
+	}
+	previousByID := make(map[string]LotteryPrize, len(previous.Prizes))
+	for _, prize := range previous.Prizes {
+		previousByID[prize.ID] = prize
 	}
 	nextByID := make(map[string]LotteryPrize, len(next.Prizes))
 	nextByLevel := make(map[int]LotteryPrize, len(next.Prizes))
+	newLevels := make([]int, 0)
 	for _, prize := range next.Prizes {
+		if _, existed := previousByID[prize.ID]; !existed {
+			if _, consumed := previous.PrizeLevelLedger[prize.ID]; consumed {
+				return next, errors.New("lottery persisted prize id cannot be reused")
+			}
+			newLevels = append(newLevels, prize.PrizeLevel)
+		}
 		nextByID[prize.ID] = prize
 		nextByLevel[prize.PrizeLevel] = prize
 	}
 	for _, prize := range previous.Prizes {
 		if updated, ok := nextByID[prize.ID]; ok {
 			if updated.PrizeLevel != prize.PrizeLevel {
-				return errors.New("lottery persisted prize level cannot be changed")
+				return next, errors.New("lottery persisted prize level cannot be changed")
 			}
 			continue
 		}
 		if replacement, ok := nextByLevel[prize.PrizeLevel]; ok && replacement.ID != prize.ID {
-			return errors.New("lottery persisted prize level cannot be replaced")
+			return next, errors.New("lottery persisted prize level cannot be replaced")
 		}
 		if prize.PrizeLevel == 1 {
-			return errors.New("lottery first-prize anchor cannot be removed")
+			return next, errors.New("lottery first-prize anchor cannot be removed")
 		}
 		var drawCount int64
 		if err := db.Model(&LotteryDraw{}).Where("prize_id = ?", prize.ID).Count(&drawCount).Error; err != nil {
-			return err
+			return next, err
 		}
 		if drawCount > 0 {
-			return errors.New("lottery prize with draw history cannot be removed; disable it instead")
+			return next, errors.New("lottery prize with draw history cannot be removed; disable it instead")
 		}
 	}
-	return nil
+	sort.Ints(newLevels)
+	for i, level := range newLevels {
+		if level != previous.NextPrizeLevel+i {
+			return next, errors.New("lottery new prize level must follow creation order")
+		}
+	}
+	if next.NextPrizeLevel != previous.NextPrizeLevel+len(newLevels) {
+		return next, errors.New("lottery next prize level must advance once per new prize")
+	}
+	next.PrizeLevelLedger = make(map[string]int, len(previous.PrizeLevelLedger)+len(newLevels))
+	for id, level := range previous.PrizeLevelLedger {
+		next.PrizeLevelLedger[id] = level
+	}
+	for _, prize := range next.Prizes {
+		next.PrizeLevelLedger[prize.ID] = prize.PrizeLevel
+	}
+	return next, nil
 }
 
 func GetLotteryProgress(userID int) (*UserLotteryProgress, error) {
@@ -681,6 +849,19 @@ func lotteryPityRate(cfg LotteryConfig, step int) (float64, bool) {
 	return 0, false
 }
 
+func lotteryPityPhase(cfg LotteryConfig, step int) string {
+	if !cfg.PityEnabled || step <= 0 {
+		return ""
+	}
+	if step >= cfg.PityStage2Start {
+		return lotteryPityPhaseHard
+	}
+	if step <= cfg.PityBaseEnd {
+		return lotteryPityPhaseBase
+	}
+	return lotteryPityPhaseSoft
+}
+
 func lotterySelectPrize(prizes []LotteryPrize, target *LotteryPrize, topRate float64) (LotteryPrize, bool) {
 	if target != nil && topRate > 0 {
 		hasAlternative := false
@@ -718,14 +899,14 @@ func lotterySelectPrize(prizes []LotteryPrize, target *LotteryPrize, topRate flo
 		}
 		return LotteryPrize{}, false
 	}
-	total := 0
+	total := float64(0)
 	for _, prize := range active {
 		total += prize.Weight
 	}
 	if total <= 0 {
 		return LotteryPrize{}, false
 	}
-	remaining := rand.Intn(total)
+	remaining := rand.Float64() * total
 	for _, prize := range active {
 		remaining -= prize.Weight
 		if remaining < 0 {
@@ -792,9 +973,16 @@ func DrawLotteryCount(userID int, count int) ([]LotteryDraw, error) {
 				step = progress.PityCount + 1
 			}
 			rate, guaranteed := lotteryPityRate(cfg, step)
+			phase := lotteryPityPhase(cfg, step)
 			selected, top := lotterySelectPrize(prizes, target, rate)
 			if selected.ID == "" {
 				return errors.New("lottery has no valid prizes")
+			}
+			// The mandatory threshold is an objective pity hit even when the
+			// first prize is the only enabled tier. Earlier hard-stage draws are
+			// only guaranteed when the pity probability actually selected it.
+			if step >= cfg.PityHardThreshold && target != nil && selected.PrizeLevel == target.PrizeLevel {
+				top = true
 			}
 			if cfg.PityEnabled {
 				if selected.PrizeLevel == cfg.PityTargetPrizeLevel {
@@ -816,7 +1004,7 @@ func DrawLotteryCount(userID int, count int) ([]LotteryDraw, error) {
 				}
 				totalQuota += prizeQuota
 			}
-			draws = append(draws, LotteryDraw{UserID: userID, PrizeID: selected.ID, PrizeName: selected.Name, PrizeLevel: selected.PrizeLevel, PrizeAmount: displayAmount, PrizeAmountQuota: prizeQuota, PityStep: step, IsGuaranteed: top && guaranteed, CreatedAt: time.Now().Unix()})
+			draws = append(draws, LotteryDraw{UserID: userID, PrizeID: selected.ID, PrizeName: selected.Name, PrizeLevel: selected.PrizeLevel, PrizeAmount: displayAmount, PrizeAmountQuota: prizeQuota, PityStep: step, IsGuaranteed: top && guaranteed, PityPhase: phase, CreatedAt: time.Now().Unix()})
 		}
 		if err := tx.Model(&progress).Updates(map[string]any{"pity_count": progress.PityCount}).Error; err != nil {
 			return err

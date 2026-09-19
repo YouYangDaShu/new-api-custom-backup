@@ -2,10 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { api } from '@/lib/api'
 
-import {
-  updateLotteryAdmin,
-  type LotteryAdminData,
-} from '../api'
+import { updateLotteryAdmin, type LotteryAdminData } from '../api'
 
 const config: LotteryAdminData['config'] = {
   enabled: true,
@@ -32,6 +29,7 @@ const config: LotteryAdminData['config'] = {
   pity_stage_2_end: 19,
   pity_stage_2_rates: [30, 50, 70, 90],
   pity_hard_threshold: 20,
+  next_prize_level: 2,
 }
 
 afterEach(() => vi.restoreAllMocks())

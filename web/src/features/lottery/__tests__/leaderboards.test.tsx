@@ -65,6 +65,14 @@ describe('LotteryLeaderboards', () => {
     expect(screen.getByText('#12')).toBeVisible()
     expect(screen.getByText('Not ranked yet')).toBeVisible()
     expect(screen.getByText('No leaderboard records yet')).toBeVisible()
+    expect(
+      screen.getByText('Natural first prizes in the configured base stage')
+    ).toBeVisible()
+    expect(
+      screen.getByText(
+        'First prizes won in the hard stage or at the mandatory draw'
+      )
+    ).toBeVisible()
   })
 
   it('reloads the selected draw-count period and shows the error state', async () => {

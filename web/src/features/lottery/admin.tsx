@@ -41,7 +41,11 @@ import {
 import {
   canRemoveDraftPrize,
   createDraftPrize,
+  enabledPrizeWeightsTotal100,
+  removeDraftPrize,
+  updatePityBoundary,
   type DraftPrize,
+  type PityBoundary,
 } from './draft-prize'
 
 type DraftConfig = Omit<LotteryAdminData['config'], 'prizes'> & {
@@ -141,34 +145,9 @@ export function LotteryAdmin() {
     })
   }
 
-  const setPityBoundary = (
-    boundary: 'base' | 'stage1' | 'stage2',
-    value: number
-  ) => {
-    if (boundary === 'base') {
-      setDraft({
-        ...draft,
-        pity_base_end: value,
-        pity_stage_1_start: value + 1,
-        pity_stage_1_rates: [],
-      })
-    } else if (boundary === 'stage1') {
-      setDraft({
-        ...draft,
-        pity_stage_1_end: value,
-        pity_stage_2_start: value + 1,
-        pity_stage_1_rates: [],
-        pity_stage_2_rates: [],
-      })
-    } else {
-      setDraft({
-        ...draft,
-        pity_stage_2_end: value,
-        pity_hard_threshold: value + 1,
-        pity_stage_2_rates: [],
-      })
-    }
-    setValidationError('')
+  const setPityBoundary = (boundary: PityBoundary, value: number) => {
+    setDraft({ ...draft, ...updatePityBoundary(draft, boundary, value) })
+    setValidationError(t('Pity range changed; refill every probability'))
   }
 
   const updatePityRate = (stage: 1 | 2, index: number, value: string) => {
@@ -177,8 +156,12 @@ export function LotteryAdmin() {
       stage === 1
         ? draft.pity_stage_1_end - draft.pity_stage_1_start + 1
         : draft.pity_stage_2_end - draft.pity_stage_2_start + 1
-    const rates = Array.from({ length: Math.max(expected, 0) }, (_, rateIndex) =>
-      rateIndex === index ? Number(value) : draft[key][rateIndex] ?? Number.NaN
+    const rates = Array.from(
+      { length: Math.max(expected, 0) },
+      (_, rateIndex) =>
+        rateIndex === index
+          ? Number(value)
+          : (draft[key][rateIndex] ?? Number.NaN)
     )
     setDraft({ ...draft, [key]: rates })
     setValidationError('')
@@ -201,14 +184,17 @@ export function LotteryAdmin() {
           !Number.isFinite(amount) ||
           amount < 0 ||
           !prize.weight.trim() ||
-          !Number.isInteger(weight) ||
-          (prize.enabled && weight <= 0)
+          !Number.isFinite(weight) ||
+          (prize.enabled && (weight <= 0 || weight > 100))
         )
       }) ||
-      activePrizes.length === 0 ||
-      totalWeight <= 0
+      activePrizes.length === 0
     ) {
       setValidationError(t('Every tier needs a valid reward amount and weight'))
+      return
+    }
+    if (!enabledPrizeWeightsTotal100(prizes)) {
+      setValidationError(t('Enabled prize weights must total 100%'))
       return
     }
     if (draft.pity_enabled) {
@@ -302,12 +288,14 @@ export function LotteryAdmin() {
               <Button
                 variant='outline'
                 size='sm'
-                onClick={() =>
+                onClick={() => {
+                  const prize = createDraftPrize(prizes, draft.next_prize_level)
                   setDraft({
                     ...draft,
-                    prizes: [...prizes, createDraftPrize(prizes)],
+                    next_prize_level: draft.next_prize_level + 1,
+                    prizes: [...prizes, prize],
                   })
-                }
+                }}
               >
                 <Plus aria-hidden='true' />
                 {t('Add tier')}
@@ -322,7 +310,7 @@ export function LotteryAdmin() {
                     {t('Reward amount')}{' '}
                     {currencySymbol ? `(${currencySymbol})` : ''}
                   </TableHead>
-                  <TableHead>{t('Base weight')}</TableHead>
+                  <TableHead>{t('Base weight (%)')}</TableHead>
                   <TableHead>{t('Enabled')}</TableHead>
                   <TableHead className='w-28 text-right'>
                     {t('Actions')}
@@ -359,10 +347,11 @@ export function LotteryAdmin() {
                       </TableCell>
                       <TableCell>
                         <Input
-                          aria-label={`${t('Base weight')} ${prize.prizeLevel}`}
+                          aria-label={`${t('Base weight (%)')} ${prize.prizeLevel}`}
                           type='number'
-                          min={1}
-                          step={1}
+                          min={0}
+                          max={100}
+                          step='any'
                           value={prize.weight}
                           onChange={(event) =>
                             updatePrize(index, 'weight', event.target.value)
@@ -376,7 +365,9 @@ export function LotteryAdmin() {
                             setDraft({
                               ...draft,
                               prizes: prizes.map((item, itemIndex) =>
-                                itemIndex === index ? { ...item, enabled } : item
+                                itemIndex === index
+                                  ? { ...item, enabled }
+                                  : item
                               ),
                             })
                           }
@@ -410,7 +401,10 @@ export function LotteryAdmin() {
                             size='icon-sm'
                             onClick={() => setPendingRemoval(prize)}
                             disabled={
-                              !canRemoveDraftPrize(prize.prizeLevel, prizes.length)
+                              !canRemoveDraftPrize(
+                                prize.prizeLevel,
+                                prizes.length
+                              )
                             }
                             aria-label={t('Remove tier')}
                             title={t('Remove tier')}
@@ -425,14 +419,16 @@ export function LotteryAdmin() {
               </TableBody>
             </Table>
             <div className='text-muted-foreground text-sm'>
-              {t('Enabled base weight total')}: {totalWeight}
+              {t('Enabled base weight total')}: {totalWeight.toFixed(2)}%
             </div>
             <div className='space-y-4 rounded-xl border p-4'>
               <div className='flex items-center justify-between gap-4'>
                 <div>
                   <h2 className='font-medium'>{t('Hidden pity curve')}</h2>
                   <p className='text-muted-foreground mt-1 text-xs'>
-                    {t('This curve only adjusts first-prize odds and is not shown to users')}
+                    {t(
+                      'This curve only adjusts first-prize odds and is not shown to users'
+                    )}
                   </p>
                 </div>
                 <Switch
@@ -510,32 +506,46 @@ export function LotteryAdmin() {
                         ? draft.pity_stage_1_end - draft.pity_stage_1_start + 1
                         : draft.pity_stage_2_end - draft.pity_stage_2_start + 1
                     const label =
-                      stage === 1 ? t('Soft pity probability') : t('Hard pity probability')
+                      stage === 1
+                        ? t('Soft pity probability')
+                        : t('Hard pity probability')
                     return (
                       <div key={stage}>
                         <p className='mb-2 text-sm font-medium'>{label}</p>
                         <div className='grid grid-cols-2 gap-2 sm:grid-cols-5'>
-                          {Array.from({ length: Math.max(length, 0) }, (_, index) => (
-                            <label className='space-y-1 text-xs' key={start + index}>
-                              <span>
-                                {t('Draw number')} {start + index}
-                              </span>
-                              <Input
-                                type='number'
-                                min={0}
-                                max={100}
-                                step='any'
-                                value={rates[index] ?? ''}
-                                onChange={(event) =>
-                                  updatePityRate(stage, index, event.target.value)
-                                }
-                              />
-                            </label>
-                          ))}
+                          {Array.from(
+                            { length: Math.max(length, 0) },
+                            (_, index) => (
+                              <label
+                                className='space-y-1 text-xs'
+                                key={start + index}
+                              >
+                                <span>
+                                  {t('Draw number')} {start + index}
+                                </span>
+                                <Input
+                                  type='number'
+                                  min={0}
+                                  max={100}
+                                  step='any'
+                                  value={rates[index] ?? ''}
+                                  onChange={(event) =>
+                                    updatePityRate(
+                                      stage,
+                                      index,
+                                      event.target.value
+                                    )
+                                  }
+                                />
+                              </label>
+                            )
+                          )}
                         </div>
                         {length < 1 ? (
                           <p className='text-destructive mt-2 text-xs'>
-                            {t('Each pity range must contain at least one draw')}
+                            {t(
+                              'Each pity range must contain at least one draw'
+                            )}
                           </p>
                         ) : null}
                       </div>
@@ -733,9 +743,15 @@ export function LotteryAdmin() {
         confirmText={t('Remove tier')}
         handleConfirm={() => {
           if (!pendingRemoval) return
+          const removed = removeDraftPrize(
+            prizes,
+            pendingRemoval.id,
+            config?.next_prize_level ?? draft.next_prize_level
+          )
           setDraft({
             ...draft,
-            prizes: prizes.filter((prize) => prize.id !== pendingRemoval.id),
+            prizes: removed.prizes,
+            next_prize_level: removed.nextPrizeLevel,
           })
           setPendingRemoval(null)
           setValidationError('')

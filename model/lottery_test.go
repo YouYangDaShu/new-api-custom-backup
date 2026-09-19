@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"net/http/httptest"
@@ -44,13 +45,24 @@ func setLotteryCurrencyForTest(t *testing.T, qpu float64, display string, rate f
 }
 
 func canonicalLotteryConfig(threshold int, prizes []LotteryPrize) LotteryConfig {
+	totalWeight := float64(0)
+	maxPrizeLevel := 0
 	for i := range prizes {
 		if prizes[i].PrizeLevel == 0 {
 			prizes[i].PrizeLevel = i + 1
 		}
+		if prizes[i].PrizeLevel > maxPrizeLevel {
+			maxPrizeLevel = prizes[i].PrizeLevel
+		}
 		prizes[i].Enabled = true
+		totalWeight += prizes[i].Weight
 	}
-	return LotteryConfig{Enabled: true, Threshold: threshold, Prizes: prizes, PityEnabled: false, SchemaVersion: lotteryConfigSchemaVersion, Unit: lotteryConfigUnitRawQuota}
+	if totalWeight > 0 {
+		for i := range prizes {
+			prizes[i].Weight = prizes[i].Weight / totalWeight * 100
+		}
+	}
+	return LotteryConfig{Enabled: true, Threshold: threshold, Prizes: prizes, PityEnabled: false, NextPrizeLevel: maxPrizeLevel + 1, SchemaVersion: lotteryConfigSchemaVersion, Unit: lotteryConfigUnitRawQuota}
 }
 
 func pityLotteryConfig(threshold int) LotteryConfig {
@@ -63,7 +75,7 @@ func pityLotteryConfig(threshold int) LotteryConfig {
 		PityEnabled: true, PityTargetPrizeLevel: 1, PityBaseRate: 0,
 		PityBaseEnd: 1, PityStage1Start: 2, PityStage1End: 2, PityStage1Rates: []float64{0},
 		PityStage2Start: 3, PityStage2End: 3, PityStage2Rates: []float64{0}, PityHardThreshold: 4,
-		SchemaVersion: lotteryConfigSchemaVersion, Unit: lotteryConfigUnitRawQuota,
+		NextPrizeLevel: 3, SchemaVersion: lotteryConfigSchemaVersion, Unit: lotteryConfigUnitRawQuota,
 	}
 }
 
@@ -89,15 +101,16 @@ func TestLotteryPityValidationAndDynamicPrizeIdentity(t *testing.T) {
 		{ID: "second", Name: "Second", PrizeLevel: 2, Weight: 1},
 	})
 	cfg.Prizes[0].Enabled = false
+	cfg.Prizes[1].Weight = 100
 	require.NoError(t, ValidateLotteryConfig(cfg))
 }
 
 func TestLotteryValidationIgnoresDisabledPrizeWeights(t *testing.T) {
-	for _, weight := range []int{1_000_000, 0, -7} {
+	for _, weight := range []float64{1_000_000, 0, -7} {
 		cfg := LotteryConfig{
 			Enabled: true, Threshold: 20, SchemaVersion: lotteryConfigSchemaVersion, Unit: lotteryConfigUnitRawQuota,
 			Prizes: []LotteryPrize{
-				{ID: "first", Name: "First", PrizeLevel: 1, Weight: 1, Enabled: true},
+				{ID: "first", Name: "First", PrizeLevel: 1, Weight: 100, Enabled: true},
 				{ID: "disabled", Name: "Disabled", PrizeLevel: 2, Weight: weight, Enabled: false},
 			},
 		}
@@ -146,11 +159,59 @@ func TestLotteryConfigAnchorUpdateKeepsPersistedIdentity(t *testing.T) {
 
 	require.NoError(t, DB.Create(&LotteryDraw{UserID: 1, PrizeID: "second", PrizeName: "Second", PrizeLevel: 2}).Error)
 	removedHistorical := initial
-	removedHistorical.Prizes = removedHistorical.Prizes[:1]
+	removedHistorical.Prizes = append([]LotteryPrize(nil), initial.Prizes[:1]...)
+	removedHistorical.Prizes[0].Enabled = true
+	removedHistorical.Prizes[0].Weight = 100
 	require.ErrorContains(t, ValidateLotteryConfigAnchor(removedHistorical), "draw history")
 
 	require.NoError(t, DB.Where("prize_id = ?", "second").Delete(&LotteryDraw{}).Error)
 	require.NoError(t, ValidateLotteryConfigAnchor(removedHistorical))
+	require.NoError(t, SaveLotteryConfig(removedHistorical))
+	lotteryConfigCache.Store(nil)
+	persistedAfterRemoval := GetLotteryConfig()
+	require.Equal(t, 3, persistedAfterRemoval.NextPrizeLevel)
+	require.Equal(t, 2, persistedAfterRemoval.PrizeLevelLedger["second"])
+
+	reused := removedHistorical
+	reused.Prizes = append(reused.Prizes, LotteryPrize{ID: "reused", Name: "Reused", PrizeLevel: 2, Weight: 50, Enabled: true})
+	reused.Prizes[0].Weight = 50
+	require.ErrorContains(t, ValidateLotteryConfigAnchor(reused), "creation order")
+
+	reusedID := removedHistorical
+	reusedID.NextPrizeLevel = 4
+	reusedID.Prizes = append(reusedID.Prizes, LotteryPrize{ID: "second", Name: "Reused ID", PrizeLevel: 3, Weight: 50, Enabled: true})
+	reusedID.Prizes[0].Weight = 50
+	require.ErrorContains(t, ValidateLotteryConfigAnchor(reusedID), "id cannot be reused")
+
+	next := removedHistorical
+	next.NextPrizeLevel = 4
+	next.Prizes = append(next.Prizes, LotteryPrize{ID: "third", Name: "Third", PrizeLevel: 3, Weight: 50, Enabled: true})
+	next.Prizes[0].Weight = 50
+	require.NoError(t, ValidateLotteryConfigAnchor(next))
+	require.NoError(t, SaveLotteryConfig(next))
+	lotteryConfigCache.Store(nil)
+	persistedNext := GetLotteryConfig()
+	require.Equal(t, 4, persistedNext.NextPrizeLevel)
+	require.Equal(t, 2, persistedNext.PrizeLevelLedger["second"])
+	require.Equal(t, 3, persistedNext.PrizeLevelLedger["third"])
+
+	jumpedCursor := next
+	jumpedCursor.NextPrizeLevel = 5
+	require.ErrorContains(t, ValidateLotteryConfigAnchor(jumpedCursor), "advance once")
+}
+
+func TestLotteryInitialSaveRequiresSequentialPrizeLevels(t *testing.T) {
+	clearLotteryTestConfig(t)
+	require.NoError(t, DB.AutoMigrate(&Option{}, &LotteryDraw{}))
+	cfg := LotteryConfig{
+		Enabled: true, Threshold: 20, SchemaVersion: lotteryConfigSchemaVersion, Unit: lotteryConfigUnitRawQuota,
+		Prizes: []LotteryPrize{
+			{ID: "first", Name: "First", PrizeLevel: 1, Weight: 50, Enabled: true},
+			{ID: "jump", Name: "Jump", PrizeLevel: 99, Weight: 50, Enabled: true},
+		},
+		NextPrizeLevel: 100,
+	}
+	require.ErrorContains(t, SaveLotteryConfig(cfg), "initial prize levels")
 }
 
 func TestLotteryCanonicalSortOrderZeroIsPreserved(t *testing.T) {
@@ -185,6 +246,7 @@ func TestLotteryTenDrawConsumesAtomicallyAndHitsHardPityInSequence(t *testing.T)
 	require.Len(t, draws, 10)
 	assert.Equal(t, 4, draws[0].PityStep)
 	assert.True(t, draws[0].IsGuaranteed)
+	assert.Equal(t, lotteryPityPhaseHard, draws[0].PityPhase)
 
 	// A naturally selected first prize is valid at every non-guaranteed step,
 	// so assert the persisted transition after each result instead of assuming a
@@ -225,6 +287,8 @@ func TestLotteryNaturalFirstPrizeResetsPityAtZeroRate(t *testing.T) {
 	require.NoError(t, DB.Create(&UserLotteryProgress{UserID: userID, AvailableDraws: 1, PityCount: 0}).Error)
 	cfg := pityLotteryConfig(20)
 	cfg.Prizes = cfg.Prizes[:1]
+	cfg.Prizes[0].Weight = 100
+	cfg.NextPrizeLevel = 2
 	require.NoError(t, SaveLotteryConfig(cfg))
 
 	draws, err := DrawLotteryCount(userID, 1)
@@ -232,6 +296,7 @@ func TestLotteryNaturalFirstPrizeResetsPityAtZeroRate(t *testing.T) {
 	require.Len(t, draws, 1)
 	require.Equal(t, 1, draws[0].PrizeLevel)
 	require.False(t, draws[0].IsGuaranteed)
+	require.Equal(t, lotteryPityPhaseBase, draws[0].PityPhase)
 	var progress UserLotteryProgress
 	require.NoError(t, DB.Where("user_id = ?", userID).First(&progress).Error)
 	require.Equal(t, 0, progress.PityCount)
@@ -257,6 +322,30 @@ func TestLotterySoftPityHitIsMarkedGuaranteed(t *testing.T) {
 	require.Equal(t, 1, draws[0].PrizeLevel)
 	require.Equal(t, 2, draws[0].PityStep)
 	require.True(t, draws[0].IsGuaranteed)
+	require.Equal(t, lotteryPityPhaseSoft, draws[0].PityPhase)
+}
+
+func TestLotteryStageTwoHitIsMarkedHard(t *testing.T) {
+	clearLotteryTestConfig(t)
+	setLotteryCurrencyForTest(t, 1, operation_setting.QuotaDisplayTypeCNY, 1)
+	require.NoError(t, DB.AutoMigrate(&Option{}, &User{}, &UserLotteryProgress{}, &LotteryDraw{}))
+	userID := 992026
+	DB.Where("user_id = ?", userID).Delete(&UserLotteryProgress{})
+	DB.Where("user_id = ?", userID).Delete(&LotteryDraw{})
+	DB.Unscoped().Where("id = ?", userID).Delete(&User{})
+	require.NoError(t, DB.Create(&User{Id: userID, Username: "lottery-hard-stage", AffCode: "lot-hard-stage", Status: common.UserStatusEnabled}).Error)
+	require.NoError(t, DB.Create(&UserLotteryProgress{UserID: userID, AvailableDraws: 1, PityCount: 2}).Error)
+	cfg := pityLotteryConfig(20)
+	cfg.PityStage2Rates = []float64{100}
+	require.NoError(t, SaveLotteryConfig(cfg))
+
+	draws, err := DrawLotteryCount(userID, 1)
+	require.NoError(t, err)
+	require.Len(t, draws, 1)
+	require.Equal(t, 1, draws[0].PrizeLevel)
+	require.Equal(t, 3, draws[0].PityStep)
+	require.True(t, draws[0].IsGuaranteed)
+	require.Equal(t, lotteryPityPhaseHard, draws[0].PityPhase)
 }
 
 func TestLotteryBaseRateHitIsNotMarkedGuaranteed(t *testing.T) {
@@ -279,6 +368,7 @@ func TestLotteryBaseRateHitIsNotMarkedGuaranteed(t *testing.T) {
 	require.Len(t, draws, 1)
 	require.Equal(t, 1, draws[0].PrizeLevel)
 	require.False(t, draws[0].IsGuaranteed)
+	require.Equal(t, lotteryPityPhaseBase, draws[0].PityPhase)
 }
 
 func TestLotterySingleFirstPrizeIsNotMarkedGuaranteed(t *testing.T) {
@@ -292,6 +382,8 @@ func TestLotterySingleFirstPrizeIsNotMarkedGuaranteed(t *testing.T) {
 	require.NoError(t, DB.Create(&UserLotteryProgress{UserID: userID, AvailableDraws: 1, PityCount: 1}).Error)
 	cfg := pityLotteryConfig(20)
 	cfg.Prizes = cfg.Prizes[:1]
+	cfg.Prizes[0].Weight = 100
+	cfg.NextPrizeLevel = 2
 	cfg.PityStage1Rates = []float64{100}
 	cfg.PityStage2Rates = []float64{100}
 	require.NoError(t, SaveLotteryConfig(cfg))
@@ -302,6 +394,58 @@ func TestLotterySingleFirstPrizeIsNotMarkedGuaranteed(t *testing.T) {
 	require.Equal(t, 1, draws[0].PrizeLevel)
 	require.Equal(t, 2, draws[0].PityStep)
 	require.False(t, draws[0].IsGuaranteed)
+	require.Equal(t, lotteryPityPhaseSoft, draws[0].PityPhase)
+}
+
+func TestLotterySingleFirstPrizeAtHardThresholdIsMarkedGuaranteed(t *testing.T) {
+	clearLotteryTestConfig(t)
+	setLotteryCurrencyForTest(t, 1, operation_setting.QuotaDisplayTypeCNY, 1)
+	require.NoError(t, DB.AutoMigrate(&Option{}, &User{}, &UserLotteryProgress{}, &LotteryDraw{}))
+	userID := 992026
+	DB.Where("user_id = ?", userID).Delete(&UserLotteryProgress{})
+	DB.Where("user_id = ?", userID).Delete(&LotteryDraw{})
+	DB.Unscoped().Where("id = ?", userID).Delete(&User{})
+	require.NoError(t, DB.Create(&User{Id: userID, Username: "lottery-single-hard", AffCode: "lot-single-hard", Status: common.UserStatusEnabled}).Error)
+	require.NoError(t, DB.Create(&UserLotteryProgress{UserID: userID, AvailableDraws: 1, PityCount: 19}).Error)
+	cfg := pityLotteryConfig(20)
+	cfg.Prizes = cfg.Prizes[:1]
+	cfg.Prizes[0].Weight = 100
+	cfg.NextPrizeLevel = 2
+	require.NoError(t, SaveLotteryConfig(cfg))
+
+	draws, err := DrawLotteryCount(userID, 1)
+	require.NoError(t, err)
+	require.Len(t, draws, 1)
+	require.Equal(t, 1, draws[0].PrizeLevel)
+	require.Equal(t, 20, draws[0].PityStep)
+	require.True(t, draws[0].IsGuaranteed)
+	require.Equal(t, lotteryPityPhaseHard, draws[0].PityPhase)
+}
+
+func TestLotterySingleFirstPrizeInHardStageIsNotMarkedGuaranteed(t *testing.T) {
+	clearLotteryTestConfig(t)
+	setLotteryCurrencyForTest(t, 1, operation_setting.QuotaDisplayTypeCNY, 1)
+	require.NoError(t, DB.AutoMigrate(&Option{}, &User{}, &UserLotteryProgress{}, &LotteryDraw{}))
+	userID := 992027
+	DB.Where("user_id = ?", userID).Delete(&UserLotteryProgress{})
+	DB.Where("user_id = ?", userID).Delete(&LotteryDraw{})
+	DB.Unscoped().Where("id = ?", userID).Delete(&User{})
+	require.NoError(t, DB.Create(&User{Id: userID, Username: "lottery-single-hard-stage", AffCode: "lot-single-hard-stage", Status: common.UserStatusEnabled}).Error)
+	require.NoError(t, DB.Create(&UserLotteryProgress{UserID: userID, AvailableDraws: 1, PityCount: 2}).Error)
+	cfg := pityLotteryConfig(20)
+	cfg.Prizes = cfg.Prizes[:1]
+	cfg.Prizes[0].Weight = 100
+	cfg.NextPrizeLevel = 2
+	cfg.PityStage2Rates = []float64{100}
+	require.NoError(t, SaveLotteryConfig(cfg))
+
+	draws, err := DrawLotteryCount(userID, 1)
+	require.NoError(t, err)
+	require.Len(t, draws, 1)
+	require.Equal(t, 1, draws[0].PrizeLevel)
+	require.Equal(t, 3, draws[0].PityStep)
+	require.False(t, draws[0].IsGuaranteed)
+	require.Equal(t, lotteryPityPhaseHard, draws[0].PityPhase)
 }
 
 func TestLotteryDisabledPityDoesNotAdvanceCounter(t *testing.T) {
@@ -318,12 +462,14 @@ func TestLotteryDisabledPityDoesNotAdvanceCounter(t *testing.T) {
 		{ID: "second", Name: "Second", PrizeLevel: 2, Weight: 1},
 	})
 	cfg.Prizes[0].Enabled = false
+	cfg.Prizes[1].Weight = 100
 	require.NoError(t, SaveLotteryConfig(cfg))
 
 	draws, err := DrawLotteryCount(userID, 1)
 	require.NoError(t, err)
 	require.Len(t, draws, 1)
 	require.Equal(t, 0, draws[0].PityStep)
+	require.Empty(t, draws[0].PityPhase)
 	var progress UserLotteryProgress
 	require.NoError(t, DB.Where("user_id = ?", userID).First(&progress).Error)
 	require.Equal(t, 5, progress.PityCount)
@@ -344,6 +490,7 @@ func TestLotteryDisabledPityDoesNotResetCounterOnFirstPrize(t *testing.T) {
 		{ID: "second", Name: "Second", PrizeLevel: 2, Weight: 1, Enabled: false},
 	})
 	cfg.Prizes[1].Enabled = false
+	cfg.Prizes[0].Weight = 100
 	require.NoError(t, SaveLotteryConfig(cfg))
 
 	draws, err := DrawLotteryCount(userID, 1)
@@ -352,6 +499,7 @@ func TestLotteryDisabledPityDoesNotResetCounterOnFirstPrize(t *testing.T) {
 	require.Equal(t, 1, draws[0].PrizeLevel)
 	require.Equal(t, 0, draws[0].PityStep)
 	require.False(t, draws[0].IsGuaranteed)
+	require.Empty(t, draws[0].PityPhase)
 	var progress UserLotteryProgress
 	require.NoError(t, DB.Where("user_id = ?", userID).First(&progress).Error)
 	require.Equal(t, 5, progress.PityCount)
@@ -475,10 +623,10 @@ func TestLotteryLegacyConfigMigratesOnceWithoutProgressMutation(t *testing.T) {
 	require.Equal(t, 20_000_000, cfg.Threshold)
 }
 
-func TestLotteryLegacyProductionOrderMapsTier4ToFirstPrize(t *testing.T) {
+func TestLotteryV3WeightMigrationPreservesExistingPrizeLevels(t *testing.T) {
 	clearLotteryTestConfig(t)
 	setLotteryCurrencyForTest(t, 1_000_000, operation_setting.QuotaDisplayTypeCNY, 1)
-	legacy := `{"enabled":true,"threshold":20000000,"schema_version":2,"unit":"raw_quota","prizes":[{"id":"thanks","name":"谢谢参与","weight":4000,"amount_quota":200000},{"id":"tier-2","name":"Tier 2","weight":4950,"amount_quota":500000},{"id":"tier-3","name":"Tier 3","weight":1000,"amount_quota":1000000},{"id":"tier-4","name":"Tier 4","weight":50,"amount_quota":5000000}]}`
+	legacy := `{"enabled":true,"threshold":20000000,"schema_version":3,"unit":"raw_quota","pity_enabled":true,"pity_target_prize_level":1,"pity_base_rate":0.5,"pity_base_end":10,"pity_stage_1_start":11,"pity_stage_1_end":15,"pity_stage_1_rates":[2,4,6,8,10],"pity_stage_2_start":16,"pity_stage_2_end":19,"pity_stage_2_rates":[30,50,70,90],"pity_hard_threshold":20,"prizes":[{"id":"thanks","name":"谢谢参与","prize_level":4,"weight":4000,"amount_quota":200000,"enabled":true,"sort_order":0},{"id":"tier-2","name":"Tier 2","prize_level":3,"weight":4950,"amount_quota":500000,"enabled":true,"sort_order":1},{"id":"tier-3","name":"Tier 3","prize_level":2,"weight":1000,"amount_quota":1000000,"enabled":true,"sort_order":2},{"id":"tier-4","name":"Tier 4","prize_level":1,"weight":50,"amount_quota":5000000,"enabled":true,"sort_order":3}]}`
 
 	cfg, migrated, err := decodeLotteryConfig(legacy)
 	require.NoError(t, err)
@@ -496,6 +644,78 @@ func TestLotteryLegacyProductionOrderMapsTier4ToFirstPrize(t *testing.T) {
 	})
 	require.Equal(t, "tier-4", cfg.Prizes[3].ID)
 	require.Equal(t, 1, cfg.Prizes[3].PrizeLevel)
+	require.Equal(t, 5, cfg.NextPrizeLevel)
+	require.Equal(t, map[string]int{"thanks": 4, "tier-2": 3, "tier-3": 2, "tier-4": 1}, cfg.PrizeLevelLedger)
+	require.InDelta(t, 100, cfg.Prizes[0].Weight+cfg.Prizes[1].Weight+cfg.Prizes[2].Weight+cfg.Prizes[3].Weight, 0.000001)
+}
+
+func TestLotteryV3MigrationDoesNotOverwriteConcurrentSave(t *testing.T) {
+	clearLotteryTestConfig(t)
+	setLotteryCurrencyForTest(t, 1_000_000, operation_setting.QuotaDisplayTypeCNY, 1)
+	require.NoError(t, DB.AutoMigrate(&Option{}))
+	staleV3 := `{"enabled":true,"threshold":20000000,"schema_version":3,"unit":"raw_quota","pity_enabled":true,"pity_target_prize_level":1,"pity_base_rate":0.5,"pity_base_end":10,"pity_stage_1_start":11,"pity_stage_1_end":15,"pity_stage_1_rates":[2,4,6,8,10],"pity_stage_2_start":16,"pity_stage_2_end":19,"pity_stage_2_rates":[30,50,70,90],"pity_hard_threshold":20,"prizes":[{"id":"first","name":"First","prize_level":1,"weight":1,"enabled":true}]}`
+	concurrent := canonicalLotteryConfig(30_000_000, []LotteryPrize{{ID: "first", Name: "First", PrizeLevel: 1, Weight: 100}})
+	concurrentJSON, err := common.Marshal(concurrent)
+	require.NoError(t, err)
+	require.NoError(t, DB.Save(&Option{Key: lotteryConfigKey, Value: string(concurrentJSON)}).Error)
+
+	refreshLotteryConfigCache(staleV3)
+
+	var stored Option
+	require.NoError(t, DB.Where("key = ?", lotteryConfigKey).First(&stored).Error)
+	require.Equal(t, string(concurrentJSON), stored.Value)
+}
+
+func TestLotteryStaleCanonicalSyncCannotRollBackCache(t *testing.T) {
+	clearLotteryTestConfig(t)
+	require.NoError(t, DB.AutoMigrate(&Option{}, &LotteryDraw{}))
+	oldConfig := canonicalLotteryConfig(20, []LotteryPrize{{ID: "first", Name: "First", Weight: 100}})
+	require.NoError(t, SaveLotteryConfig(oldConfig))
+	var stale Option
+	require.NoError(t, DB.Where("key = ?", lotteryConfigKey).First(&stale).Error)
+
+	newConfig := canonicalLotteryConfig(30, []LotteryPrize{{ID: "first", Name: "First", Weight: 100}})
+	require.NoError(t, SaveLotteryConfig(newConfig))
+	refreshLotteryConfigCache(stale.Value)
+
+	require.Equal(t, 30, GetLotteryConfig().Threshold)
+}
+
+func TestLotteryMigrationWriteErrorKeepsExistingCache(t *testing.T) {
+	clearLotteryTestConfig(t)
+	require.NoError(t, DB.AutoMigrate(&Option{}, &LotteryDraw{}))
+	require.NoError(t, SaveLotteryConfig(canonicalLotteryConfig(40, []LotteryPrize{{ID: "first", Name: "First", Weight: 100}})))
+	staleV3 := `{"enabled":true,"threshold":20,"schema_version":3,"unit":"raw_quota","prizes":[{"id":"first","name":"First","prize_level":1,"weight":100,"enabled":true}]}`
+	require.NoError(t, DB.Save(&Option{Key: lotteryConfigKey, Value: staleV3}).Error)
+
+	forcedErr := errors.New("forced lottery migration write failure")
+	callbackName := "test:fail_lottery_migration_write"
+	require.NoError(t, DB.Callback().Update().Before("gorm:update").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Table == "options" {
+			tx.AddError(forcedErr)
+		}
+	}))
+	t.Cleanup(func() { _ = DB.Callback().Update().Remove(callbackName) })
+
+	refreshLotteryConfigCache(staleV3)
+	require.Equal(t, 40, GetLotteryConfig().Threshold)
+	var stored Option
+	require.NoError(t, DB.Where("key = ?", lotteryConfigKey).First(&stored).Error)
+	require.Equal(t, staleV3, stored.Value)
+}
+
+func TestGenericOptionUpdateCannotBypassLotteryConfigValidation(t *testing.T) {
+	clearLotteryTestConfig(t)
+	require.NoError(t, DB.AutoMigrate(&Option{}, &LotteryDraw{}))
+	require.NoError(t, SaveLotteryConfig(canonicalLotteryConfig(20, []LotteryPrize{{ID: "first", Name: "First", Weight: 100}})))
+	var before Option
+	require.NoError(t, DB.Where("key = ?", lotteryConfigKey).First(&before).Error)
+
+	err := UpdateOption(lotteryConfigKey, `{}`)
+	require.ErrorContains(t, err, "dedicated lottery settings endpoint")
+	var after Option
+	require.NoError(t, DB.Where("key = ?", lotteryConfigKey).First(&after).Error)
+	require.Equal(t, before.Value, after.Value)
 }
 
 func TestLotteryCanonicalConfigUsesSortOrder(t *testing.T) {
@@ -670,6 +890,7 @@ func TestLotteryLogRequiresSuccessfulSettlement(t *testing.T) {
 
 func TestLotteryConcurrentDrawSpendsOnce(t *testing.T) {
 	clearLotteryTestConfig(t)
+	require.NoError(t, DB.AutoMigrate(&Option{}, &UserLotteryProgress{}, &LotteryDraw{}))
 	userID := 991002
 	DB.Where("user_id = ?", userID).Delete(&UserLotteryProgress{})
 	DB.Where("user_id = ?", userID).Delete(&LotteryDraw{})
@@ -711,6 +932,7 @@ func TestLotteryPrizeAmountIsBackwardCompatibleAndReturnedOnDraw(t *testing.T) {
 	legacy := `{"enabled":true,"threshold":20,"prizes":[{"id":"legacy","name":"Legacy","weight":1}]}`
 	var cfg LotteryConfig
 	require.NoError(t, common.UnmarshalJsonStr(legacy, &cfg))
+	cfg = normalizeLotteryConfig(cfg, true)
 	require.NoError(t, ValidateLotteryConfig(cfg))
 	require.Zero(t, cfg.Prizes[0].Amount)
 
@@ -835,6 +1057,7 @@ func TestLotteryZeroAmountPrizeDoesNotCredit(t *testing.T) {
 
 func TestLotteryConcurrentDrawCreditsPrizeOnce(t *testing.T) {
 	clearLotteryTestConfig(t)
+	require.NoError(t, DB.AutoMigrate(&Option{}, &User{}, &UserLotteryProgress{}, &LotteryDraw{}, &Log{}))
 	userID := 991010
 	DB.Where("user_id = ?", userID).Delete(&UserLotteryProgress{})
 	DB.Where("user_id = ?", userID).Delete(&LotteryDraw{})
@@ -874,7 +1097,7 @@ func TestLotteryDrawResponseContractIsSnakeCase(t *testing.T) {
 	for _, key := range []string{"id", "user_id", "prize_id", "prize_name", "prize_amount", "created_at"} {
 		require.Contains(t, m, key)
 	}
-	for _, key := range []string{"ID", "UserID", "PrizeID", "PrizeName", "PrizeAmount", "CreatedAt", "weight"} {
+	for _, key := range []string{"ID", "UserID", "PrizeID", "PrizeName", "PrizeAmount", "CreatedAt", "weight", "pity_phase"} {
 		require.NotContains(t, m, key)
 	}
 
@@ -895,7 +1118,7 @@ func TestLotteryDisabledAccruesExactlyOnceAndPreservesRemainder(t *testing.T) {
 	DB.Where("event_key LIKE ?", "lottery-disabled-test%").Delete(&LotteryConsumptionEvent{})
 	require.NoError(t, DB.Create(&UserLotteryProgress{UserID: userID, Accumulated: 5}).Error)
 
-	require.NoError(t, SaveLotteryConfig(LotteryConfig{Enabled: false, Threshold: 20, Prizes: []LotteryPrize{{ID: "x", Name: "X", Weight: 1, Enabled: true}}, SchemaVersion: lotteryConfigSchemaVersion, Unit: lotteryConfigUnitRawQuota}))
+	require.NoError(t, SaveLotteryConfig(LotteryConfig{Enabled: false, Threshold: 20, Prizes: []LotteryPrize{{ID: "x", Name: "X", PrizeLevel: 1, Weight: 100, Enabled: true}}, SchemaVersion: lotteryConfigSchemaVersion, Unit: lotteryConfigUnitRawQuota}))
 	require.NoError(t, AccumulateLotteryConsumption(userID, 46, "lottery-disabled-test-1"))
 	require.NoError(t, AccumulateLotteryConsumption(userID, 46, "lottery-disabled-test-1"))
 	var events int64
@@ -934,12 +1157,14 @@ func TestLotteryConfigCacheRefreshesOnSaveAndOptionSync(t *testing.T) {
 	// must refresh the cache without a per-request DB read.
 	disabled, err := common.Marshal(LotteryConfig{Enabled: false, Threshold: 30, Prizes: []LotteryPrize{{ID: "x", Name: "X", Weight: 1}}})
 	require.NoError(t, err)
+	require.NoError(t, DB.Save(&Option{Key: lotteryConfigKey, Value: string(disabled)}).Error)
 	require.NoError(t, updateOptionMap(lotteryConfigKey, string(disabled)))
 	cfg := GetLotteryConfig()
 	require.False(t, cfg.Enabled)
 	require.Equal(t, 15_000_000, cfg.Threshold)
 
 	// An invalid synced value falls back to the safe disabled default.
+	require.NoError(t, DB.Save(&Option{Key: lotteryConfigKey, Value: "{not json"}).Error)
 	require.NoError(t, updateOptionMap(lotteryConfigKey, "{not json"))
 	cfg = GetLotteryConfig()
 	require.False(t, cfg.Enabled)

@@ -91,37 +91,10 @@ func applyLotteryLeaderboardRange(query *gorm.DB, start, end int64) *gorm.DB {
 func lotteryDisplayName(displayName, username, email string) string {
 	for _, value := range []string{displayName, username, email} {
 		if strings.TrimSpace(value) != "" {
-			return maskLotteryIdentity(value)
+			return maskRankingName(value)
 		}
 	}
 	return "***"
-}
-
-func maskLotteryIdentity(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return "***"
-	}
-	if at := strings.LastIndexByte(value, '@'); at > 0 {
-		local, domain := []rune(value[:at]), value[at:]
-		prefix := 3
-		if len(local) < prefix {
-			prefix = 1
-		}
-		return string(local[:prefix]) + "***" + domain
-	}
-	runes := []rune(value)
-	allDigits := true
-	for _, r := range runes {
-		if r < '0' || r > '9' {
-			allDigits = false
-			break
-		}
-	}
-	if allDigits && len(runes) > 6 {
-		return string(runes[:3]) + "***" + string(runes[len(runes)-3:])
-	}
-	return string(runes[:1]) + "***"
 }
 
 func lotteryLeaderboardRow(rank int, name string, value int64, pityStep int, createdAt int64) LotteryLeaderboardRow {
@@ -191,7 +164,8 @@ func GetLotteryLeaderboards(currentUserID int, now time.Time, period string) (*L
 	var luckyRows []lotteryLeaderboardUserRow
 	luckyQuery := lotteryLeaderboardBaseQuery().
 		Select("lottery_draws.id, lottery_draws.user_id, lottery_draws.pity_step, lottery_draws.created_at, users.username, users.display_name, users.email").
-		Where("lottery_draws.prize_level = ? AND lottery_draws.pity_step BETWEEN ? AND ? AND lottery_draws.is_guaranteed = ?", 1, 1, 10, false).
+		Where("lottery_draws.prize_level = ?", 1).
+		Where("lottery_draws.pity_phase = ? OR ((lottery_draws.pity_phase IS NULL OR lottery_draws.pity_phase = '') AND lottery_draws.is_guaranteed = ? AND lottery_draws.pity_step BETWEEN ? AND ?)", lotteryPityPhaseBase, false, 1, lotteryDefaultBaseEnd).
 		Order("lottery_draws.pity_step ASC, lottery_draws.created_at DESC, lottery_draws.id DESC")
 	if err := luckyQuery.Scan(&luckyRows).Error; err != nil {
 		return nil, err
@@ -209,7 +183,8 @@ func GetLotteryLeaderboards(currentUserID int, now time.Time, period string) (*L
 	var hardPityRows []lotteryLeaderboardCountRow
 	hardPityQuery := lotteryLeaderboardBaseQuery().
 		Select("lottery_draws.user_id, COUNT(*) AS value, users.username, users.display_name, users.email").
-		Where("lottery_draws.prize_level = ? AND lottery_draws.is_guaranteed = ? AND lottery_draws.pity_step >= ?", 1, true, 20).
+		Where("lottery_draws.prize_level = ?", 1).
+		Where("lottery_draws.pity_phase = ? OR ((lottery_draws.pity_phase IS NULL OR lottery_draws.pity_phase = '') AND lottery_draws.is_guaranteed = ? AND lottery_draws.pity_step >= ?)", lotteryPityPhaseHard, true, lotteryDefaultHardThreshold).
 		Group("lottery_draws.user_id, users.username, users.display_name, users.email").
 		Order("value DESC, lottery_draws.user_id ASC")
 	if err := hardPityQuery.Scan(&hardPityRows).Error; err != nil {

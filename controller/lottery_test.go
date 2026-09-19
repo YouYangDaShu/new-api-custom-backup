@@ -70,7 +70,7 @@ func TestGetLotteryLeaderboardsResponseMasksAccountFields(t *testing.T) {
 	for _, forbidden := range []string{"user_id", "username", "email", "secret-one@example.com", "879123456", "role", "status"} {
 		assert.NotContains(t, body, forbidden)
 	}
-	assert.Contains(t, body, "879***456")
+	assert.Contains(t, body, "879***56")
 }
 
 func TestGetLotteryIncludesRecentDraw(t *testing.T) {
