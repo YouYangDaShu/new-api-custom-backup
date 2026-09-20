@@ -173,7 +173,7 @@ it('respects hidden columns and omits admin fields in the self view', () => {
 
 it('shows separated cached tokens and cache rate on mobile', () => {
   renderLogs()
-  expect(screen.getByTitle('Input')).toHaveTextContent('900')
+  expect(screen.getByTitle('Input')).toHaveTextContent('1,200')
   expect(screen.getByTitle('Output')).toHaveTextContent('800')
   expect(screen.getByTitle('Cached input')).toHaveTextContent('300')
   expect(screen.getByTitle('Cache Rate')).toHaveTextContent('25%')
@@ -192,7 +192,7 @@ it('shows the same cache metrics in the desktop token cell', () => {
     cacheRateIcons.every((icon) => icon.classList.contains('lucide-activity'))
   ).toBe(true)
   expect(screen.getAllByTitle('Cache Rate')[1]).toHaveTextContent('25%')
-  expect(screen.getAllByTitle('Input')[1]).toHaveTextContent('900')
+  expect(screen.getAllByTitle('Input')[1]).toHaveTextContent('1,200')
   expect(screen.getAllByTitle('Output')[1]).toHaveTextContent('800')
 })
 
@@ -264,7 +264,7 @@ it('keeps cache-only metrics but hides zero cache read and rate', () => {
   expect(screen.queryByTitle('Cache Rate')).not.toBeInTheDocument()
 })
 
-it('keeps uncached input green when the long-context warning is active', () => {
+it('keeps total input green when the long-context warning is active', () => {
   renderLogs({
     desktopTokens: true,
     logs: [
@@ -280,12 +280,33 @@ it('keeps uncached input green when the long-context warning is active', () => {
       },
     ],
   })
-  const inputs = screen.getAllByLabelText('Input: 900')
+  const inputs = screen.getAllByLabelText('Input: 1,200')
   expect(inputs).toHaveLength(2)
   for (const input of inputs) {
     expect(input).toHaveClass('text-emerald-600')
     expect(input).not.toHaveClass('text-red-600')
   }
+})
+
+it('shows total input separately from cache read for the reported request', () => {
+  renderLogs({
+    desktopTokens: true,
+    logs: [
+      {
+        ...log,
+        request_id: '202609182300051857107888268d9d6UViGvHyx',
+        prompt_tokens: 171728,
+        completion_tokens: 983,
+        other: JSON.stringify({ cache_tokens: 170496 }),
+      },
+    ],
+  })
+
+  expect(screen.getAllByLabelText('Input: 171,728')).toHaveLength(2)
+  expect(screen.getAllByLabelText('Output: 983')).toHaveLength(2)
+  expect(screen.getAllByLabelText('Cached input: 170,496')).toHaveLength(2)
+  expect(screen.getAllByLabelText('Cache Rate: 99.3%')).toHaveLength(2)
+  expect(screen.queryByLabelText('Input: 1,232')).not.toBeInTheDocument()
 })
 
 it('hides non-finite cache-write values in both views', () => {

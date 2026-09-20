@@ -326,11 +326,11 @@ export function CommonLogMobileCard<TData>(props: {
           <span
             className='inline-flex items-center gap-0.5 text-emerald-600 dark:text-emerald-400'
             title={t('Input')}
-            aria-label={`${t('Input')}: ${cacheMetrics.uncachedInputTokens.toLocaleString()}`}
+            aria-label={`${t('Input')}: ${log.prompt_tokens.toLocaleString()}`}
           >
             <ArrowDown className='size-3.5' aria-hidden='true' />
             <span className='tabular-nums'>
-              {cacheMetrics.uncachedInputTokens.toLocaleString()}
+              {log.prompt_tokens.toLocaleString()}
             </span>
           </span>
           <span

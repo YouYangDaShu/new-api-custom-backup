@@ -754,10 +754,10 @@ export function useCommonLogsColumns(
               <span
                 className='inline-flex items-center gap-0.5 text-emerald-600 dark:text-emerald-400'
                 title={t('Input')}
-                aria-label={`${t('Input')}: ${cacheMetrics.uncachedInputTokens.toLocaleString()}`}
+                aria-label={`${t('Input')}: ${promptTokens.toLocaleString()}`}
               >
                 <ArrowDown className='size-3.5' aria-hidden='true' />
-                {cacheMetrics.uncachedInputTokens.toLocaleString()}
+                {promptTokens.toLocaleString()}
               </span>
               <span
                 className='inline-flex items-center gap-0.5 text-violet-600 dark:text-violet-400'
