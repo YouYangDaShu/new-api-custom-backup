@@ -1047,7 +1047,33 @@ func logStatusCodeSelectExpr() string {
 }
 
 func logCacheTokenSelectExpr() (cacheRead string, cacheCreate string) {
-	switch common.LogDatabaseType() {
+	return logCacheTokenSelectExprForType(common.LogDatabaseType())
+}
+
+func logCacheTokenSelectExprForDB(db *gorm.DB) (cacheRead string, cacheCreate string) {
+	return logCacheTokenSelectExprForType(databaseTypeForDB(db, common.LogDatabaseType()))
+}
+
+func databaseTypeForDB(db *gorm.DB, fallback common.DatabaseType) common.DatabaseType {
+	if db == nil || db.Dialector == nil {
+		return fallback
+	}
+	switch db.Dialector.Name() {
+	case "sqlite":
+		return common.DatabaseTypeSQLite
+	case "mysql":
+		return common.DatabaseTypeMySQL
+	case "postgres", "postgresql":
+		return common.DatabaseTypePostgreSQL
+	case "clickhouse":
+		return common.DatabaseTypeClickHouse
+	default:
+		return fallback
+	}
+}
+
+func logCacheTokenSelectExprForType(databaseType common.DatabaseType) (cacheRead string, cacheCreate string) {
+	switch databaseType {
 	case common.DatabaseTypeSQLite:
 		validOther := "CASE WHEN json_valid(other) THEN other ELSE '{}' END"
 		return fmt.Sprintf("COALESCE(CAST(json_extract(%s, '$.cache_tokens') AS INTEGER), 0)", validOther),

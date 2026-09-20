@@ -15,6 +15,7 @@ import (
 
 func TestGetOpenAIVideoRouteRendersJimengTask(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	configureRouterTestGroups(t)
 
 	previousDB := model.DB
 	previousDatabaseType := common.MainDatabaseType()

@@ -236,7 +236,7 @@ func getUserRankingByRange(start, end int64, limit, currentUserID int) ([]Weekly
 		TotalTokens  int64
 		RequestCount int64
 	}
-	cacheReadExpr, _ := logCacheTokenSelectExpr()
+	cacheReadExpr, _ := logCacheTokenSelectExprForDB(LOG_DB)
 	selectSQL := fmt.Sprintf("user_id, COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens, COALESCE(SUM(completion_tokens), 0) AS output_tokens, COALESCE(SUM(%s), 0) AS cache_tokens, COALESCE(SUM(prompt_tokens), 0) + COALESCE(SUM(completion_tokens), 0) AS total_tokens, COUNT(*) AS request_count", cacheReadExpr)
 	var totals []aggregate
 	err := LOG_DB.Model(&Log{}).
