@@ -24,6 +24,7 @@ import {
   ChevronRight,
   Database,
   KeyRound,
+  Percent,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -148,6 +149,8 @@ export function CommonLogMobileCard<TData>(props: {
     other?.cache_tokens
   )
   const cacheWrite = getLogCacheWriteTokens(other)
+  const hasVisibleCacheRead =
+    cacheMetrics.hasCacheData && cacheMetrics.cacheTokens > 0
   const showTokens =
     displayable &&
     props.cells.has('prompt_tokens') &&
@@ -338,15 +341,24 @@ export function CommonLogMobileCard<TData>(props: {
             <ArrowUp className='size-3.5' aria-hidden='true' />
             {log.completion_tokens.toLocaleString()}
           </span>
-          {cacheMetrics.hasCacheData && (
+          {hasVisibleCacheRead && (
             <span
               className='inline-flex items-center gap-1 text-blue-600 tabular-nums dark:text-blue-400'
               title={t('Cached input')}
-              aria-label={`${t('Cached input')}: ${cacheMetrics.cacheTokens.toLocaleString()}, ${formatLogCacheRate(cacheMetrics.cacheRate)}`}
+              aria-label={`${t('Cached input')}: ${cacheMetrics.cacheTokens.toLocaleString()}`}
             >
               <Database className='size-3.5' aria-hidden='true' />
               {cacheMetrics.cacheTokens.toLocaleString()}
-              <span>{formatLogCacheRate(cacheMetrics.cacheRate)}</span>
+            </span>
+          )}
+          {hasVisibleCacheRead && (
+            <span
+              className='inline-flex items-center gap-1 text-sky-600 tabular-nums dark:text-sky-400'
+              title={t('Cache Rate')}
+              aria-label={`${t('Cache Rate')}: ${formatLogCacheRate(cacheMetrics.cacheRate)}`}
+            >
+              <Percent className='size-3.5' aria-hidden='true' />
+              {formatLogCacheRate(cacheMetrics.cacheRate)}
             </span>
           )}
           {cacheWrite > 0 && (

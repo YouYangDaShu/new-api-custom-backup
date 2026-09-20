@@ -25,6 +25,7 @@ import {
   GitBranch,
   Sparkles,
   KeyRound,
+  Percent,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -719,6 +720,8 @@ export function useCommonLogsColumns(
           other?.cache_tokens
         )
         const cacheWriteTokens = getLogCacheWriteTokens(other)
+        const hasVisibleCacheRead =
+          cacheMetrics.hasCacheData && cacheMetrics.cacheTokens > 0
         if (
           promptTokens === 0 &&
           completionTokens === 0 &&
@@ -765,17 +768,26 @@ export function useCommonLogsColumns(
                 {completionTokens.toLocaleString()}
               </span>
             </span>
-            {(cacheMetrics.hasCacheData || cacheWriteTokens > 0) && (
-              <div className='flex items-center gap-1 text-[11px]'>
-                {cacheMetrics.hasCacheData && (
+            {(hasVisibleCacheRead || cacheWriteTokens > 0) && (
+              <div className='flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]'>
+                {hasVisibleCacheRead && (
                   <span
                     className='inline-flex items-center gap-1 font-mono text-blue-600 tabular-nums dark:text-blue-400'
                     title={t('Cached input')}
-                    aria-label={`${t('Cached input')}: ${cacheMetrics.cacheTokens.toLocaleString()}, ${formatLogCacheRate(cacheMetrics.cacheRate)}`}
+                    aria-label={`${t('Cached input')}: ${cacheMetrics.cacheTokens.toLocaleString()}`}
                   >
                     <Database className='size-3' aria-hidden='true' />
                     {cacheMetrics.cacheTokens.toLocaleString()}
-                    <span>{formatLogCacheRate(cacheMetrics.cacheRate)}</span>
+                  </span>
+                )}
+                {hasVisibleCacheRead && (
+                  <span
+                    className='inline-flex items-center gap-1 font-mono text-sky-600 tabular-nums dark:text-sky-400'
+                    title={t('Cache Rate')}
+                    aria-label={`${t('Cache Rate')}: ${formatLogCacheRate(cacheMetrics.cacheRate)}`}
+                  >
+                    <Percent className='size-3' aria-hidden='true' />
+                    {formatLogCacheRate(cacheMetrics.cacheRate)}
                   </span>
                 )}
                 {cacheWriteTokens > 0 && (

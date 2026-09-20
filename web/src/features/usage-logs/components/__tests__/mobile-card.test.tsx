@@ -171,12 +171,12 @@ it('respects hidden columns and omits admin fields in the self view', () => {
   expect(screen.queryByText('enterprise-production')).not.toBeInTheDocument()
 })
 
-it('shows uncached input, output, cached tokens and cache rate on mobile', () => {
+it('shows separated cached tokens and cache rate on mobile', () => {
   renderLogs()
   expect(screen.getByTitle('Input')).toHaveTextContent('900')
   expect(screen.getByTitle('Output')).toHaveTextContent('800')
   expect(screen.getByTitle('Cached input')).toHaveTextContent('300')
-  expect(screen.getByTitle('Cached input')).toHaveTextContent('25%')
+  expect(screen.getByTitle('Cache Rate')).toHaveTextContent('25%')
   expect(screen.getByText('Cache Write 200')).toBeVisible()
 })
 
@@ -185,7 +185,7 @@ it('shows the same cache metrics in the desktop token cell', () => {
   const cached = screen.getAllByTitle('Cached input')
   expect(cached).toHaveLength(2)
   expect(cached[1]).toHaveTextContent('300')
-  expect(cached[1]).toHaveTextContent('25%')
+  expect(screen.getAllByTitle('Cache Rate')[1]).toHaveTextContent('25%')
   expect(screen.getAllByTitle('Input')[1]).toHaveTextContent('900')
   expect(screen.getAllByTitle('Output')[1]).toHaveTextContent('800')
 })
@@ -201,12 +201,13 @@ it('shows the exact cached token count without compact rounding in both views', 
       },
     ],
   })
-  const cached = screen.getAllByLabelText('Cached input: 1,234,567, 100%')
+  const cached = screen.getAllByLabelText('Cached input: 1,234,567')
   expect(cached).toHaveLength(2)
   for (const metric of cached) {
     expect(metric).toHaveTextContent('1,234,567')
     expect(metric).not.toHaveTextContent('1.23M')
   }
+  expect(screen.getAllByLabelText('Cache Rate: 100%')).toHaveLength(2)
 })
 
 it('does not invent cache metrics when cache_tokens is absent', () => {
@@ -224,7 +225,7 @@ it('does not invent cache metrics when cache_tokens is absent', () => {
   expect(screen.queryByTitle('Cached input')).not.toBeInTheDocument()
 })
 
-it('keeps cache-only and explicit zero cache metrics aligned across both views', () => {
+it('keeps cache-only metrics but hides zero cache read and rate', () => {
   const { unmount } = renderLogs({
     desktopTokens: true,
     logs: [
@@ -238,7 +239,8 @@ it('keeps cache-only and explicit zero cache metrics aligned across both views',
   })
   expect(screen.getAllByLabelText('Input: 0')).toHaveLength(2)
   expect(screen.getAllByLabelText('Output: 0')).toHaveLength(2)
-  expect(screen.getAllByLabelText('Cached input: 150, 0%')).toHaveLength(2)
+  expect(screen.getAllByLabelText('Cached input: 150')).toHaveLength(2)
+  expect(screen.getAllByLabelText('Cache Rate: 0%')).toHaveLength(2)
 
   unmount()
   renderLogs({
@@ -250,7 +252,10 @@ it('keeps cache-only and explicit zero cache metrics aligned across both views',
       },
     ],
   })
-  expect(screen.getAllByLabelText('Cached input: 0, 0%')).toHaveLength(2)
+  expect(screen.getAllByTitle('Input')).toHaveLength(2)
+  expect(screen.getAllByTitle('Output')).toHaveLength(2)
+  expect(screen.queryByTitle('Cached input')).not.toBeInTheDocument()
+  expect(screen.queryByTitle('Cache Rate')).not.toBeInTheDocument()
 })
 
 it('keeps uncached input green when the long-context warning is active', () => {
