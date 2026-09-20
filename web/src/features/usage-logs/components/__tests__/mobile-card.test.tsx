@@ -177,6 +177,7 @@ it('shows separated cached tokens and cache rate on mobile', () => {
   expect(screen.getByTitle('Output')).toHaveTextContent('800')
   expect(screen.getByTitle('Cached input')).toHaveTextContent('300')
   expect(screen.getByTitle('Cache Rate')).toHaveTextContent('25%')
+  expect(screen.getByTestId('cache-rate-icon')).toHaveClass('lucide-activity')
   expect(screen.getByText('Cache Write 200')).toBeVisible()
 })
 
@@ -185,6 +186,11 @@ it('shows the same cache metrics in the desktop token cell', () => {
   const cached = screen.getAllByTitle('Cached input')
   expect(cached).toHaveLength(2)
   expect(cached[1]).toHaveTextContent('300')
+  const cacheRateIcons = screen.getAllByTestId('cache-rate-icon')
+  expect(cacheRateIcons).toHaveLength(2)
+  expect(
+    cacheRateIcons.every((icon) => icon.classList.contains('lucide-activity'))
+  ).toBe(true)
   expect(screen.getAllByTitle('Cache Rate')[1]).toHaveTextContent('25%')
   expect(screen.getAllByTitle('Input')[1]).toHaveTextContent('900')
   expect(screen.getAllByTitle('Output')[1]).toHaveTextContent('800')

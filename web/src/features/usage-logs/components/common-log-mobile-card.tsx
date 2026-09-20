@@ -18,13 +18,13 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { flexRender, type Cell } from '@tanstack/react-table'
 import {
+  Activity,
   AlertTriangle,
   ArrowDown,
   ArrowUp,
   ChevronRight,
   Database,
   KeyRound,
-  Percent,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -357,7 +357,11 @@ export function CommonLogMobileCard<TData>(props: {
               title={t('Cache Rate')}
               aria-label={`${t('Cache Rate')}: ${formatLogCacheRate(cacheMetrics.cacheRate)}`}
             >
-              <Percent className='size-3.5' aria-hidden='true' />
+              <Activity
+                className='size-3.5'
+                data-testid='cache-rate-icon'
+                aria-hidden='true'
+              />
               {formatLogCacheRate(cacheMetrics.cacheRate)}
             </span>
           )}

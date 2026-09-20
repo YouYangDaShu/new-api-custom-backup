@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import type { ColumnDef } from '@tanstack/react-table'
 import {
+  Activity,
   AlertTriangle,
   ArrowDown,
   ArrowUp,
@@ -25,7 +26,6 @@ import {
   GitBranch,
   Sparkles,
   KeyRound,
-  Percent,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -786,7 +786,11 @@ export function useCommonLogsColumns(
                     title={t('Cache Rate')}
                     aria-label={`${t('Cache Rate')}: ${formatLogCacheRate(cacheMetrics.cacheRate)}`}
                   >
-                    <Percent className='size-3' aria-hidden='true' />
+                    <Activity
+                      className='size-3'
+                      data-testid='cache-rate-icon'
+                      aria-hidden='true'
+                    />
                     {formatLogCacheRate(cacheMetrics.cacheRate)}
                   </span>
                 )}
