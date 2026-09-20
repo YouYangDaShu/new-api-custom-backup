@@ -73,7 +73,11 @@ function makeLog(other: LogOtherData): UsageLog {
   }
 }
 
-function DetailPreview(props: { other: LogOtherData; isAdmin: boolean }) {
+function DetailPreview(props: {
+  other: LogOtherData
+  isAdmin: boolean
+  columnId?: string
+}) {
   const table = useReactTable({
     data: [makeLog(props.other)],
     columns: useCommonLogsColumns(props.isAdmin, false),
@@ -82,8 +86,8 @@ function DetailPreview(props: { other: LogOtherData; isAdmin: boolean }) {
   const cell = table
     .getRowModel()
     .rows[0].getAllCells()
-    .find((item) => item.column.id === 'content')
-  if (!cell) throw new Error('The log must have a content column')
+    .find((item) => item.column.id === (props.columnId ?? 'content'))
+  if (!cell) throw new Error('The log must have the requested column')
   return flexRender(cell.column.columnDef.cell, cell.getContext())
 }
 const plugin = {
@@ -126,6 +130,48 @@ function renderPreview(other: LogOtherData, isAdmin = true) {
   )
   return screen.getByRole('button', { name: /./ })
 }
+
+function renderModel(other: LogOtherData, isAdmin = true) {
+  render(
+    <I18nextProvider i18n={i18n}>
+      <QueryClientProvider client={client}>
+        <DetailPreview other={other} isAdmin={isAdmin} columnId='model_name' />
+      </QueryClientProvider>
+    </I18nextProvider>
+  )
+}
+
+test('response model warning compares the final sent model only', async () => {
+  renderModel({
+    admin_info: {
+      response_model: {
+        requested_model: 'A',
+        upstream_model: 'B',
+        returned_model: 'A',
+      },
+    },
+  })
+
+  expect(screen.getByLabelText('Response model: A')).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button'))
+  expect(await screen.findByText('Upstream Model:')).toBeVisible()
+  expect(screen.getAllByText('B').length).toBeGreaterThan(0)
+})
+
+test('response model warning stays hidden when sent and response match', () => {
+  renderModel({
+    admin_info: {
+      response_model: {
+        requested_model: 'A',
+        upstream_model: 'B',
+        returned_model: 'B',
+      },
+    },
+  })
+
+  expect(screen.queryByLabelText('Response model: B')).not.toBeInTheDocument()
+  expect(screen.queryByRole('button')).not.toBeInTheDocument()
+})
 
 test.each([
   {

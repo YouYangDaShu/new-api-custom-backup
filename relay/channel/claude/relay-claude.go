@@ -313,7 +313,9 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 		Usage:        &dto.Usage{},
 	}
 	var err *types.NewAPIError
-	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+	helper.StreamScannerHandlerWithObserver(c, resp, info, func(data string, _ string) {
+		info.UpstreamResponseModelAudit.ObserveClaude([]byte(data))
+	}, func(data string, sr *helper.StreamResult) {
 		err = HandleStreamResponseData(c, info, claudeInfo, data)
 		if err != nil {
 			sr.Stop(err)
@@ -426,6 +428,7 @@ func ClaudeHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayI
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 	}
+	info.UpstreamResponseModelAudit.ObserveClaude(responseBody)
 	if info.IsChannelTest {
 		logger.LogDebug(c, "response body bytes: %d", len(responseBody))
 	} else {

@@ -82,7 +82,9 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 		return true
 	}
 
-	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+	helper.StreamScannerHandlerWithObserver(c, resp, info, func(data string, _ string) {
+		info.UpstreamResponseModelAudit.ObserveClaude([]byte(data))
+	}, func(data string, sr *helper.StreamResult) {
 		var claudeResponse dto.ClaudeResponse
 		if err := common.UnmarshalJsonStr(data, &claudeResponse); err != nil {
 			logger.LogError(c, "failed to unmarshal Claude stream event: "+err.Error())

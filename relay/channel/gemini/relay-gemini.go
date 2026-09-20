@@ -173,7 +173,9 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	var accumulatedUsageMetadata *dto.GeminiUsageMetadata
 	responseText := strings.Builder{}
 
-	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+	helper.StreamScannerHandlerWithObserver(c, resp, info, func(data string, _ string) {
+		info.UpstreamResponseModelAudit.ObserveGemini([]byte(data))
+	}, func(data string, sr *helper.StreamResult) {
 		var geminiResponse dto.GeminiChatResponse
 		if err := common.UnmarshalJsonStr(data, &geminiResponse); err != nil {
 			streamErr = fmt.Errorf("unmarshal Gemini stream response: %w", err)
@@ -377,6 +379,7 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
+	info.UpstreamResponseModelAudit.ObserveGemini(responseBody)
 	service.CloseResponseBodyGracefully(resp)
 	if info.IsChannelTest {
 		logger.LogDebug(c, "Gemini response body bytes: %d", len(responseBody))

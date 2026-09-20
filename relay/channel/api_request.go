@@ -2,6 +2,7 @@ package channel
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -321,6 +322,7 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}
 	ApplyUpstreamBodyMetadata(req, requestBody)
+	freezeFinalSentModel(info, req)
 	headers := req.Header
 	err = a.SetupRequestHeader(c, &headers, info)
 	if err != nil {
@@ -338,6 +340,35 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		return nil, fmt.Errorf("do request failed: %w", err)
 	}
 	return resp, nil
+}
+
+func freezeFinalSentModel(info *common.RelayInfo, req *http.Request) {
+	if info == nil {
+		return
+	}
+
+	model := ""
+	if req != nil && req.GetBody != nil {
+		if reader, err := req.GetBody(); err == nil {
+			defer reader.Close()
+			var payload struct {
+				Model string `json:"model"`
+			}
+			if json.NewDecoder(reader).Decode(&payload) == nil {
+				model = payload.Model
+			}
+		}
+	}
+	if model == "" && req != nil && req.URL != nil {
+		parts := strings.SplitN(req.URL.Path, "/models/", 2)
+		if len(parts) == 2 {
+			model = strings.SplitN(parts[1], ":", 2)[0]
+		}
+	}
+	if model == "" {
+		model = info.UpstreamModelName
+	}
+	info.UpstreamResponseModelAudit.SetSentModel(model)
 }
 
 func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {

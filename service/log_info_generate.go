@@ -94,6 +94,20 @@ func AppendRelayLogAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo,
 	AppendChannelAffinityAdminInfo(ctx, other)
 }
 
+func AppendResponseModelLogInfo(relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
+	if relayInfo == nil || other == nil {
+		return
+	}
+	observation := relayInfo.UpstreamResponseModelAudit.Observation(relayInfo.OriginModelName)
+	if observation == nil {
+		return
+	}
+	if !observation.Mismatch() && observation.RequestedModel == observation.UpstreamModel {
+		return
+	}
+	other.SetAdmin("response_model", observation)
+}
+
 func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, modelRatio, groupRatio, completionRatio float64,
 	cacheTokens int, cacheRatio float64, modelPrice float64, userGroupRatio float64) *model.LogOther {
 	other := model.NewLogOther()
@@ -119,6 +133,7 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	}
 
 	AppendRelayLogAdminInfo(ctx, relayInfo, other)
+	AppendResponseModelLogInfo(relayInfo, other)
 	appendRequestPath(ctx, relayInfo, other)
 	appendRequestConversionChain(relayInfo, other)
 	appendFinalRequestFormat(relayInfo, other)

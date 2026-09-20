@@ -145,6 +145,11 @@ export interface LogOtherData {
     // Reject / intercept reason (admin only)
     reject_reason?: string
     task_plugin?: TaskPluginInfo
+    response_model?: {
+      requested_model: string
+      upstream_model: string
+      returned_model: string
+    }
   }
   root_info?: {
     task_plugin?: TaskPluginRuntimeInfo

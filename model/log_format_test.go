@@ -35,6 +35,35 @@ func TestFormatUserLogsStripsQuotaSaturation(t *testing.T) {
 	require.Contains(t, parsed, "model_price")
 }
 
+func TestResponseModelAuditVisibilityIsRoleSeparated(t *testing.T) {
+	other := common.MapToJsonStr(map[string]any{
+		"model_price": 1.25,
+		"admin_info": map[string]any{
+			"response_model": map[string]any{
+				"requested_model": "A",
+				"upstream_model":  "B",
+				"returned_model":  "A",
+			},
+		},
+	})
+
+	t.Run("user", func(t *testing.T) {
+		logs := []*Log{{Other: other}}
+		formatUserLogs(logs, 0)
+		assert.NotContains(t, logs[0].Other, "response_model")
+		assert.Contains(t, logs[0].Other, "model_price")
+	})
+
+	t.Run("admin", func(t *testing.T) {
+		logs := []*Log{{Other: other}}
+		FormatAdminLogs(logs)
+		assert.Contains(t, logs[0].Other, "response_model")
+		assert.Contains(t, logs[0].Other, "requested_model")
+		assert.Contains(t, logs[0].Other, "upstream_model")
+		assert.Contains(t, logs[0].Other, "returned_model")
+	})
+}
+
 func TestTaskPluginLogVisibilityIsRoleSeparated(t *testing.T) {
 	other := common.MapToJsonStr(map[string]any{
 		"model_price": 1.25,

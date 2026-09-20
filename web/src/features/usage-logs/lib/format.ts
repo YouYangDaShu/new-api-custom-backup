@@ -28,6 +28,7 @@ import {
 import type { UsageLog } from '../data/schema'
 import type { LogOtherData } from '../types'
 import { buildQuotaAuditOperation } from './quota-audit-operation'
+import { isResponseModelMismatch } from './response-model'
 
 export { normalizeTierLabel }
 
@@ -287,6 +288,7 @@ export function formatModelName(log: UsageLog): {
   name: string
   isMapped: boolean
   actualModel?: string
+  responseModel?: NonNullable<LogOtherData['admin_info']>['response_model']
 } {
   const other = parseLogOther(log.other)
   const isMapped = !!(
@@ -294,11 +296,15 @@ export function formatModelName(log: UsageLog): {
     other?.upstream_model_name &&
     other.upstream_model_name !== ''
   )
+  const responseModel = other?.admin_info?.response_model
 
   return {
     name: log.model_name,
     isMapped,
     actualModel: isMapped ? other.upstream_model_name : undefined,
+    responseModel: isResponseModelMismatch(responseModel)
+      ? responseModel
+      : undefined,
   }
 }
 

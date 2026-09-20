@@ -75,6 +75,14 @@ func ExtendWriteDeadline(c *gin.Context) {
 }
 
 func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, dataHandler func(data string, sr *StreamResult)) {
+	streamScannerHandler(c, resp, info, nil, dataHandler)
+}
+
+func StreamScannerHandlerWithObserver(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, observer func(data string, eventType string), dataHandler func(data string, sr *StreamResult)) {
+	streamScannerHandler(c, resp, info, observer, dataHandler)
+}
+
+func streamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo, observer func(data string, eventType string), dataHandler func(data string, sr *StreamResult)) {
 
 	if resp == nil || dataHandler == nil {
 		return
@@ -237,6 +245,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			wg.Done()
 		}()
 
+		eventType := ""
 		for scanner.Scan() {
 			// 检查是否需要停止
 			select {
@@ -255,6 +264,14 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				logger.LogDebug(c, "stream scanner data: %s", data)
 			}
 
+			if data == "" {
+				eventType = ""
+				continue
+			}
+			if strings.HasPrefix(data, "event:") {
+				eventType = strings.TrimSpace(strings.TrimPrefix(data, "event:"))
+				continue
+			}
 			if len(data) < 6 {
 				continue
 			}
@@ -267,6 +284,9 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				continue
 			}
 			if !strings.HasPrefix(data, "[DONE]") {
+				if observer != nil {
+					observer(data, eventType)
+				}
 				info.SetFirstResponseTime()
 				info.ReceivedResponseCount++
 

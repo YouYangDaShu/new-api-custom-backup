@@ -163,6 +163,7 @@ type RelayInfo struct {
 	RuntimeHeadersOverride                map[string]any
 	UseRuntimeHeadersOverride             bool
 	ParamOverrideAudit                    []string
+	UpstreamResponseModelAudit            UpstreamResponseModelAudit
 
 	PriceData hosttypes.PriceData
 
@@ -205,6 +206,7 @@ type RelayInfo struct {
 }
 
 func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
+	info.UpstreamResponseModelAudit.Reset()
 	info.FinalRequestRelayFormat = ""
 	info.RequestConversionChain = nil
 	info.InitRequestConversionChain()
