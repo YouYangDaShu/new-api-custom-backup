@@ -35,6 +35,8 @@ export default defineConfig({
       deps: { inline: [/@lobehub\//, /antd-style/] },
     },
     setupFiles: ['./src/test-setup.ts'],
+    fileParallelism: false,
+    maxWorkers: 1,
     clearMocks: true,
     restoreMocks: true,
     include: ['src/**/*.{test,spec}.{ts,tsx}'],

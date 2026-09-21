@@ -144,8 +144,8 @@ func TestBatchUpdateAccumulatesTwoMaximumRequestCharges(t *testing.T) {
 	common.BatchUpdateEnabled = true
 
 	user := createReserveTestUser(t, common.MaxQuota*2+100)
-	require.NoError(t, DecreaseUserQuota(user.Id, common.MaxQuota, false))
-	require.NoError(t, DecreaseUserQuota(user.Id, common.MaxQuota, false))
+	addNewRecord(BatchUpdateTypeUserQuota, user.Id, -common.MaxQuota)
+	addNewRecord(BatchUpdateTypeUserQuota, user.Id, -common.MaxQuota)
 
 	batchUpdate()
 	assert.Equal(t, 100, getUserQuotaFromDB(t, user.Id))

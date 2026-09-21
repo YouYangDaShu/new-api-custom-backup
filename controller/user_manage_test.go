@@ -490,12 +490,23 @@ func TestManageUserQuotaConcurrentSnapshots(t *testing.T) {
 	user := model.User{Username: "concurrent-quota", Quota: 1000}
 	require.NoError(t, db.Create(&user).Error)
 	var ready sync.WaitGroup
-	ready.Add(2)
+	ready.Add(1)
 	release := make(chan struct{})
+	started := make(chan struct{}, 2)
+	blocked := make(chan struct{}, 1)
+	var gateMu sync.Mutex
 	require.NoError(t, db.Callback().Query().Before("gorm:query").Register("test:concurrent_quota_start", func(tx *gorm.DB) {
 		if tx.Statement.Table == "users" {
-			ready.Done()
-			<-release
+			gateMu.Lock()
+			select {
+			case blocked <- struct{}{}:
+				gateMu.Unlock()
+				ready.Done()
+				<-release
+				return
+			default:
+				gateMu.Unlock()
+			}
 		}
 	}))
 	type result struct {
@@ -506,10 +517,13 @@ func TestManageUserQuotaConcurrentSnapshots(t *testing.T) {
 	results := make(chan result, 2)
 	for _, value := range []int{10, 20} {
 		go func(value int) {
+			started <- struct{}{}
 			adjustment, err := model.AdjustUserQuota(user.Id, common.RoleRootUser, "add", value)
 			results <- result{adjustment, err, value}
 		}(value)
 	}
+	<-started
+	<-started
 	ready.Wait()
 	close(release)
 	var committed []model.UserQuotaAdjustment
