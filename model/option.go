@@ -229,7 +229,7 @@ func MigrateMembershipGroupsOption() error {
 
 	const key = "group_ratio_setting.membership_groups"
 	var option Option
-	err := DB.Where("key = ?", key).First(&option).Error
+	err := DB.Where("`key` = ?", key).First(&option).Error
 	if err == nil {
 		return ratio_setting.CheckMembershipGroups(option.Value)
 	}
@@ -316,7 +316,7 @@ func MigrateMembershipGroupsOption() error {
 	}).Create(&candidate).Error; err != nil {
 		return err
 	}
-	if err := DB.Where("key = ?", key).First(&candidate).Error; err != nil {
+	if err := DB.Where("`key` = ?", key).First(&candidate).Error; err != nil {
 		return err
 	}
 	return ratio_setting.CheckMembershipGroups(candidate.Value)

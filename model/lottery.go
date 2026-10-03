@@ -113,7 +113,7 @@ type UserLotteryProgress struct {
 type LotteryConsumptionEvent struct {
 	ID        uint   `gorm:"primaryKey"`
 	UserID    int    `gorm:"index;not null"`
-	EventKey  string `gorm:"uniqueIndex;not null"`
+	EventKey  string `gorm:"type:varchar(191);uniqueIndex;not null"`
 	Quota     int    `gorm:"not null"`
 	CreatedAt int64  `gorm:"autoCreateTime"`
 }
@@ -508,7 +508,7 @@ func refreshLotteryConfigCache(value string) {
 func refreshLotteryConfigCacheLocked(value string) {
 	if DB != nil {
 		var current Option
-		if err := DB.Where("key = ?", lotteryConfigKey).First(&current).Error; err != nil {
+		if err := DB.Where("`key` = ?", lotteryConfigKey).First(&current).Error; err != nil {
 			common.SysError("failed to read the current lottery config; keeping the existing cache")
 			return
 		}
@@ -532,7 +532,7 @@ func refreshLotteryConfigCacheLocked(value string) {
 		// one we decoded. If a concurrent admin save won, publish that winner
 		// to the cache instead of the stale migrated value.
 		result := DB.Model(&Option{}).
-			Where("key = ? AND value = ?", lotteryConfigKey, value).
+			Where("`key` = ? AND value = ?", lotteryConfigKey, value).
 			Update("value", string(b))
 		if result.Error != nil {
 			common.SysError("failed to persist the migrated lottery config; keeping the existing cache")
@@ -540,7 +540,7 @@ func refreshLotteryConfigCacheLocked(value string) {
 		}
 		if result.RowsAffected == 0 {
 			var current Option
-			if DB.Where("key = ?", lotteryConfigKey).First(&current).Error != nil {
+			if DB.Where("`key` = ?", lotteryConfigKey).First(&current).Error != nil {
 				return
 			}
 			currentCfg, _, currentErr := decodeLotteryConfig(current.Value)
@@ -685,7 +685,7 @@ func validateLotteryConfigAnchorDB(db *gorm.DB, next LotteryConfig) error {
 
 func prepareLotteryConfigAnchorDB(db *gorm.DB, next LotteryConfig) (LotteryConfig, error) {
 	var option Option
-	if err := lockForUpdate(db).Where("key = ?", lotteryConfigKey).First(&option).Error; err != nil {
+	if err := lockForUpdate(db).Where("`key` = ?", lotteryConfigKey).First(&option).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			levels := make([]int, 0, len(next.Prizes))
 			next.PrizeLevelLedger = make(map[string]int, len(next.Prizes))
