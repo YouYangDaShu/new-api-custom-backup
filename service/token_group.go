@@ -103,12 +103,23 @@ func NormalizeTokenGroup(tokenGroup string) string {
 		if normalized := EncodeManualTokenGroup(ParseManualTokenGroups(tokenGroup)); normalized != "" {
 			return normalized
 		}
-		return tokenGroup
+		return TokenGroupAuto
 	}
 	if IsSmartTokenGroup(tokenGroup) {
 		return EncodeSmartTokenGroup(ParseSmartMode(tokenGroup))
 	}
 	return tokenGroup
+}
+
+func ResolveManualTokenGroupCandidatesForUser(userID int, tokenGroup, userGroup string) []string {
+	groups := ParseManualTokenGroups(tokenGroup)
+	filtered := make([]string, 0, len(groups))
+	for _, group := range groups {
+		if IsUserSelectableGroupForUser(userID, userGroup, group) {
+			filtered = append(filtered, group)
+		}
+	}
+	return filtered
 }
 
 func ResolveManualTokenGroupCandidates(tokenGroup, userGroup string) []string {
@@ -120,6 +131,22 @@ func ResolveManualTokenGroupCandidates(tokenGroup, userGroup string) []string {
 		}
 	}
 	return filtered
+}
+
+func ValidateManualTokenGroupForUserID(userID int, tokenGroup, userGroup string) error {
+	if !IsManualTokenGroup(tokenGroup) {
+		return nil
+	}
+	groups := ParseManualTokenGroups(tokenGroup)
+	if len(groups) == 0 {
+		return fmt.Errorf("手动模式下请至少选择一个分组")
+	}
+	for _, group := range groups {
+		if !IsUserSelectableGroupForUser(userID, userGroup, group) {
+			return fmt.Errorf("无权访问 %s 分组", group)
+		}
+	}
+	return nil
 }
 
 func ValidateManualTokenGroupForUser(tokenGroup, userGroup string) error {

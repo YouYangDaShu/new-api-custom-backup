@@ -468,18 +468,18 @@ func TokenAuth() func(c *gin.Context) {
 		userGroup := userCache.Group
 		tokenGroup := service.NormalizeTokenGroup(token.Group)
 		if service.IsManualTokenGroup(tokenGroup) {
-			if err := service.ValidateManualTokenGroupForUser(tokenGroup, userGroup); err != nil {
+			if err := service.ValidateManualTokenGroupForUserID(token.UserId, tokenGroup, userGroup); err != nil {
 				abortWithOpenAiMessage(c, http.StatusForbidden, err.Error())
 				return
 			}
 		} else if tokenGroup == service.TokenGroupAuto {
-			if len(service.GetUserAutoGroup(userGroup)) == 0 {
+			if len(service.GetUserAutoGroupForUser(token.UserId, userGroup)) == 0 {
 				abortWithOpenAiMessage(c, http.StatusForbidden, "自动路由令牌没有可用线路分组")
 				return
 			}
 		} else if service.IsSmartTokenGroup(tokenGroup) {
 			autoGroups, autoGroupsErr := token.GetAutoGroups()
-			if autoGroupsErr != nil || len(service.FilterUserTokenAutoGroups(userGroup, autoGroups)) == 0 {
+			if autoGroupsErr != nil || len(service.FilterUserTokenAutoGroupsForUser(token.UserId, userGroup, autoGroups)) == 0 {
 				abortWithOpenAiMessage(c, http.StatusForbidden, "智能路由令牌必须配置至少一个可用 AutoGroups 分组")
 				return
 			}
@@ -489,7 +489,7 @@ func TokenAuth() func(c *gin.Context) {
 				return
 			}
 			// check common.UserUsableGroups[userGroup]
-			if _, ok := service.GetUserTokenSelectableGroups(userGroup)[tokenGroup]; !ok {
+			if _, ok := service.GetUserTokenSelectableGroupsForUser(token.UserId, userGroup)[tokenGroup]; !ok {
 				abortWithOpenAiMessage(c, http.StatusForbidden, fmt.Sprintf("无权访问 %s 分组", tokenGroup))
 				return
 			}

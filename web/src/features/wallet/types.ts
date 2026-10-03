@@ -34,6 +34,21 @@ export interface ApiResponse<T = unknown> {
  */
 export type TopupInfoResponse = ApiResponse<TopupInfo>
 export type RedemptionResponse = ApiResponse<number>
+export interface InviteFreeGroupCode {
+  id: number
+  key: string
+  role: string
+  status: number
+  created_time: number
+  redeemed_time: number
+}
+
+export interface InviteFreeGroupData {
+  unlocked: boolean
+  codes: InviteFreeGroupCode[]
+}
+
+export type InviteFreeGroupResponse = ApiResponse<InviteFreeGroupData>
 export type AmountResponse = ApiResponse<string>
 export type PaymentResponse = ApiResponse<Record<string, unknown>> & {
   url?: string

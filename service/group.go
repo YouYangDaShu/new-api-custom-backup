@@ -11,11 +11,17 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const InviteFreeGroup = "token福利"
+
 func IsMembershipGroup(name string) bool {
 	return ratio_setting.IsMembershipGroup(name)
 }
 
 func GetUserUsableGroups(userGroup string) map[string]string {
+	return buildUserUsableGroups(userGroup, false)
+}
+
+func buildUserUsableGroups(userGroup string, inviteEligible bool) map[string]string {
 	groupsCopy := setting.GetUserUsableGroupsCopy()
 	if userGroup != "" {
 		specialSettings, b := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup.Get(userGroup)
@@ -41,11 +47,34 @@ func GetUserUsableGroups(userGroup string) map[string]string {
 			groupsCopy[userGroup] = "用户分组"
 		}
 	}
+	delete(groupsCopy, InviteFreeGroup)
+	if inviteEligible {
+		groupsCopy[InviteFreeGroup] = setting.GetUsableGroupDescription(InviteFreeGroup)
+	}
 	return groupsCopy
+}
+
+func GetUserUsableGroupsForUser(userID int, userGroup string) map[string]string {
+	eligible, err := model.HasInviteFreeGroupAccess(userID)
+	if err != nil {
+		common.SysLog("check invite free group access failed: " + err.Error())
+		eligible = false
+	}
+	return buildUserUsableGroups(userGroup, eligible)
 }
 
 func GetUserTokenSelectableGroups(userGroup string) map[string]string {
 	groups := GetUserUsableGroups(userGroup)
+	for name := range groups {
+		if IsMembershipGroup(name) {
+			delete(groups, name)
+		}
+	}
+	return groups
+}
+
+func GetUserTokenSelectableGroupsForUser(userID int, userGroup string) map[string]string {
+	groups := GetUserUsableGroupsForUser(userID, userGroup)
 	for name := range groups {
 		if IsMembershipGroup(name) {
 			delete(groups, name)
@@ -59,11 +88,23 @@ func GroupInUserUsableGroups(userGroup, groupName string) bool {
 	return ok
 }
 
+func GroupInUserUsableGroupsForUser(userID int, userGroup, groupName string) bool {
+	_, ok := GetUserUsableGroupsForUser(userID, userGroup)[groupName]
+	return ok
+}
+
 func IsUserSelectableGroup(userGroup, groupName string) bool {
 	if groupName == "" || groupName == "auto" {
 		return false
 	}
 	return !IsMembershipGroup(groupName) && GroupInUserUsableGroups(userGroup, groupName) && ratio_setting.ContainsGroupRatio(groupName)
+}
+
+func IsUserSelectableGroupForUser(userID int, userGroup, groupName string) bool {
+	if groupName == "" || groupName == "auto" {
+		return false
+	}
+	return !IsMembershipGroup(groupName) && GroupInUserUsableGroupsForUser(userID, userGroup, groupName) && ratio_setting.ContainsGroupRatio(groupName)
 }
 
 // GetUserAutoGroup 根据用户分组获取自动分组设置
@@ -72,6 +113,22 @@ func GetUserAutoGroup(userGroup string) []string {
 	seen := make(map[string]struct{})
 	for _, group := range setting.GetAutoGroups() {
 		if !IsUserSelectableGroup(userGroup, group) {
+			continue
+		}
+		if _, ok := seen[group]; ok {
+			continue
+		}
+		seen[group] = struct{}{}
+		autoGroups = append(autoGroups, group)
+	}
+	return autoGroups
+}
+
+func GetUserAutoGroupForUser(userID int, userGroup string) []string {
+	autoGroups := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, group := range setting.GetAutoGroups() {
+		if !IsUserSelectableGroupForUser(userID, userGroup, group) {
 			continue
 		}
 		if _, ok := seen[group]; ok {
@@ -105,19 +162,40 @@ func FilterUserTokenAutoGroups(userGroup string, groups []string) []string {
 	return filtered
 }
 
+func FilterUserTokenAutoGroupsForUser(userID int, userGroup string, groups []string) []string {
+	maxCount := setting.GetMaxTokenAutoGroups()
+	filtered := make([]string, 0, min(len(groups), maxCount))
+	seen := make(map[string]struct{})
+	for _, group := range groups {
+		if !IsUserSelectableGroupForUser(userID, userGroup, group) {
+			continue
+		}
+		if _, ok := seen[group]; ok {
+			continue
+		}
+		seen[group] = struct{}{}
+		filtered = append(filtered, group)
+		if len(filtered) == maxCount {
+			break
+		}
+	}
+	return filtered
+}
+
 // GetRequestAutoGroups resolves the ordered Auto groups for the current token.
 // The absence of the context value means that the token inherits the complete
 // global Auto list; a present (even empty) value is an explicit token snapshot.
 func GetRequestAutoGroups(c *gin.Context, userGroup string) []string {
+	userID := c.GetInt("id")
 	value, ok := common.GetContextKey(c, constant.ContextKeyTokenAutoGroups)
 	if !ok {
-		return GetUserAutoGroup(userGroup)
+		return GetUserAutoGroupForUser(userID, userGroup)
 	}
 	groups, ok := value.([]string)
 	if !ok {
 		return []string{}
 	}
-	return FilterUserTokenAutoGroups(userGroup, groups)
+	return FilterUserTokenAutoGroupsForUser(userID, userGroup, groups)
 }
 
 // GetGroupsEnabledModels 按 groups 顺序获取各分组启用的模型并去重

@@ -46,7 +46,7 @@ func GetUserGroups(c *gin.Context) {
 	userGroup := ""
 	userId := c.GetInt("id")
 	userGroup, _ = model.GetUserGroup(userId, false)
-	userUsableGroups := service.GetUserTokenSelectableGroups(userGroup)
+	userUsableGroups := service.GetUserTokenSelectableGroupsForUser(userId, userGroup)
 	for groupName, _ := range ratio_setting.GetGroupRatioCopy() {
 		if service.IsMembershipGroup(groupName) {
 			continue

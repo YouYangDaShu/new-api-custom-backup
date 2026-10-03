@@ -26,6 +26,7 @@ import type {
   ApiResponse,
   TopupInfoResponse,
   RedemptionResponse,
+  InviteFreeGroupResponse,
   AmountResponse,
   PaymentResponse,
   StripePaymentResponse,
@@ -67,6 +68,18 @@ export async function redeemTopupCode(
   request: RedemptionRequest
 ): Promise<RedemptionResponse> {
   const res = await api.post('/api/user/topup', request)
+  return res.data
+}
+
+export async function getInviteFreeGroupCodes(): Promise<InviteFreeGroupResponse> {
+  const res = await api.get('/api/user/invite-free-group')
+  return res.data
+}
+
+export async function redeemInviteFreeGroupCode(
+  request: RedemptionRequest
+): Promise<ApiResponse<boolean>> {
+  const res = await api.post('/api/user/invite-free-group', request)
   return res.data
 }
 

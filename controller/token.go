@@ -77,10 +77,15 @@ func buildMaskedTokenResponses(tokens []*model.Token) []*tokenResponse {
 	return maskedTokens
 }
 
-func validateTokenRoutingGroup(userGroup, tokenGroup string) error {
+func validateTokenRoutingGroupForUser(userID int, userGroup, tokenGroup string) error {
 	tokenGroup = service.NormalizeTokenGroup(tokenGroup)
+	if tokenGroup != "" && tokenGroup != service.TokenGroupAuto && !service.IsSmartTokenGroup(tokenGroup) && !service.IsManualTokenGroup(tokenGroup) {
+		if !service.IsUserSelectableGroupForUser(userID, userGroup, tokenGroup) {
+			return fmt.Errorf("无权访问 %s 分组", tokenGroup)
+		}
+	}
 	if service.IsManualTokenGroup(tokenGroup) {
-		return service.ValidateManualTokenGroupForUser(tokenGroup, userGroup)
+		return service.ValidateManualTokenGroupForUserID(userID, tokenGroup, userGroup)
 	}
 	if tokenGroup == service.TokenGroupAuto || service.IsSmartTokenGroup(tokenGroup) {
 		return nil
@@ -89,6 +94,10 @@ func validateTokenRoutingGroup(userGroup, tokenGroup string) error {
 		return fmt.Errorf("会员等级分组 %s 不能作为令牌线路分组", tokenGroup)
 	}
 	return nil
+}
+
+func validateTokenRoutingGroup(userGroup, tokenGroup string) error {
+	return validateTokenRoutingGroupForUser(0, userGroup, tokenGroup)
 }
 
 func getTokenRequestUserGroup(c *gin.Context) (string, error) {
@@ -131,7 +140,7 @@ func setTokenAutoGroups(c *gin.Context, token *model.Token, groups []string) boo
 			return false
 		}
 		seen[group] = struct{}{}
-		if !service.IsUserSelectableGroup(userGroup, group) {
+		if !service.IsUserSelectableGroupForUser(c.GetInt("id"), userGroup, group) {
 			common.ApiErrorI18n(c, i18n.MsgTokenAutoGroupsInvalid, map[string]any{"Group": group})
 			return false
 		}
@@ -197,7 +206,7 @@ func GetTokenAutoGroups(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, gin.H{
-		"groups":    service.GetUserAutoGroup(userGroup),
+		"groups":    service.GetUserAutoGroupForUser(c.GetInt("id"), userGroup),
 		"max_count": setting.GetMaxTokenAutoGroups(),
 	})
 }
@@ -338,7 +347,7 @@ func AddToken(c *gin.Context) {
 		common.ApiError(c, groupErr)
 		return
 	}
-	if groupErr = validateTokenRoutingGroup(userGroup, token.Group); groupErr != nil {
+	if groupErr = validateTokenRoutingGroupForUser(c.GetInt("id"), userGroup, token.Group); groupErr != nil {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": groupErr.Error()})
 		return
 	}
@@ -470,7 +479,7 @@ func UpdateToken(c *gin.Context) {
 			common.ApiError(c, groupErr)
 			return
 		}
-		if groupErr = validateTokenRoutingGroup(userGroup, cleanToken.Group); groupErr != nil {
+		if groupErr = validateTokenRoutingGroupForUser(c.GetInt("id"), userGroup, cleanToken.Group); groupErr != nil {
 			c.JSON(http.StatusOK, gin.H{"success": false, "message": groupErr.Error()})
 			return
 		}

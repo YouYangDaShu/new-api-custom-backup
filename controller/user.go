@@ -624,7 +624,7 @@ func GetUserModels(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	groups := service.GetUserUsableGroups(user.Group)
+	groups := service.GetUserTokenSelectableGroupsForUser(id, user.Group)
 	group := c.Query("group")
 	var groupsToQuery []string
 	switch {
@@ -633,7 +633,9 @@ func GetUserModels(c *gin.Context) {
 			groupsToQuery = append(groupsToQuery, g)
 		}
 	case group == "auto":
-		groupsToQuery = service.GetUserAutoGroup(user.Group)
+		if _, ok := groups[group]; ok {
+			groupsToQuery = service.GetUserAutoGroupForUser(id, user.Group)
+		}
 	default:
 		if _, ok := groups[group]; ok {
 			groupsToQuery = []string{group}
@@ -1430,4 +1432,35 @@ func UpdateUserSetting(c *gin.Context) {
 	}
 
 	common.ApiSuccessI18n(c, i18n.MsgSettingSaved, nil)
+}
+
+// GetInviteFreeGroupCodes returns only the current user's one-time invite unlock codes.
+func GetInviteFreeGroupCodes(c *gin.Context) {
+	id := c.GetInt("id")
+	codes, err := model.GetInviteFreeGroupCodesForUser(id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	unlocked, err := model.HasInviteFreeGroupAccess(id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"unlocked": unlocked, "codes": codes}})
+}
+
+// RedeemInviteFreeGroupCode consumes a code bound to the authenticated user.
+func RedeemInviteFreeGroupCode(c *gin.Context) {
+	id := c.GetInt("id")
+	var req topUpRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if err := model.RedeemInviteFreeGroupCode(req.Key, id); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "分组已解锁", "data": true})
 }

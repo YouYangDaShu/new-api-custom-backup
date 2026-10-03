@@ -123,7 +123,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 				return nil, selectGroup, errors.New("smart routing: no group has this model")
 			}
 		} else {
-			autoGroups = ResolveManualTokenGroupCandidates(param.TokenGroup, userGroup)
+			autoGroups = ResolveManualTokenGroupCandidatesForUser(param.Ctx.GetInt("id"), param.TokenGroup, userGroup)
 			if len(autoGroups) == 0 {
 				return nil, selectGroup, errors.New("manual token groups is empty or not usable")
 			}

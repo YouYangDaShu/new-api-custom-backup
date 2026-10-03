@@ -358,6 +358,7 @@ func migrateDB() error {
 		&Option{},
 		&LoginEncryptionKey{},
 		&Redemption{},
+		&InviteFreeGroupCode{},
 		&AffRebateClaim{},
 		&Ability{},
 		&Log{},

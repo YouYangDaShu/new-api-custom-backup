@@ -204,7 +204,7 @@ func getModelListGroups(c *gin.Context) (modelListGroups, error) {
 		case service.IsSmartTokenGroup(tokenGroup):
 			ownerGroups = service.GetRequestSmartRouteGroups(c, userGroup)
 		default:
-			ownerGroups = service.ResolveManualTokenGroupCandidates(tokenGroup, userGroup)
+			ownerGroups = service.ResolveManualTokenGroupCandidatesForUser(c.GetInt("id"), tokenGroup, userGroup)
 		}
 		return modelListGroups{
 			userGroup:   userGroup,

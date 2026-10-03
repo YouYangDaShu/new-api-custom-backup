@@ -39,14 +39,16 @@ func GetPricing(c *gin.Context) {
 	usableGroup := map[string]string{}
 	groupRatio := map[string]float64{}
 	var group string
+	userID := 0
 	if exists {
-		user, err := model.GetUserCache(userId.(int))
+		userID = userId.(int)
+		user, err := model.GetUserCache(userID)
 		if err == nil {
 			group = user.Group
 		}
 	}
 
-	usableGroup = service.GetUserTokenSelectableGroups(group)
+	usableGroup = service.GetUserTokenSelectableGroupsForUser(userID, group)
 	for routeGroup := range usableGroup {
 		ratio, _, _ := ratio_setting.ResolveGroupRatio(group, routeGroup)
 		groupRatio[routeGroup] = ratio
@@ -55,12 +57,13 @@ func GetPricing(c *gin.Context) {
 
 	c.JSON(200, gin.H{
 		"success":            true,
+		"message":            "",
 		"data":               pricing,
 		"vendors":            model.GetVendors(),
 		"group_ratio":        groupRatio,
 		"usable_group":       usableGroup,
 		"supported_endpoint": model.GetSupportedEndpointMap(),
-		"auto_groups":        service.GetUserAutoGroup(group),
+		"auto_groups":        service.GetUserAutoGroupForUser(userID, group),
 		"pricing_version":    "a42d372ccf0b5dd13ecf71203521f9d2",
 	})
 }

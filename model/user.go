@@ -739,6 +739,11 @@ func (user *User) finishInsert(inviterId int) {
 		}
 	}
 
+	if inviterId != 0 && user.Id != 0 {
+		if err := IssueInviteFreeGroupCodesForReferral(inviterId, user.Id); err != nil {
+			common.SysError(fmt.Sprintf("failed to issue invite unlock codes for invitee %d and inviter %d: %v", user.Id, inviterId, err))
+		}
+	}
 	if common.QuotaForNewUser > 0 {
 		RecordLog(user.Id, LogTypeSystem, fmt.Sprintf("新用户注册赠送 %s", logger.LogQuota(common.QuotaForNewUser)))
 	}
@@ -796,6 +801,11 @@ func (user *User) FinalizeOAuthUserCreation(inviterId int) {
 		}
 	}
 
+	if inviterId != 0 && user.Id != 0 {
+		if err := IssueInviteFreeGroupCodesForReferral(inviterId, user.Id); err != nil {
+			common.SysError(fmt.Sprintf("failed to issue invite unlock codes for invitee %d and inviter %d: %v", user.Id, inviterId, err))
+		}
+	}
 	if common.QuotaForNewUser > 0 {
 		RecordLog(user.Id, LogTypeSystem, fmt.Sprintf("新用户注册赠送 %s", logger.LogQuota(common.QuotaForNewUser)))
 	}
