@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { CheckCircle2, KeyRound, Loader2 } from 'lucide-react'
+import { CheckCircle2, Clock, KeyRound, Loader2 } from 'lucide-react'
 import { CopyButton } from '@/components/copy-button'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -8,9 +8,23 @@ import { Input } from '@/components/ui/input'
 import { getInviteFreeGroupCodes, redeemInviteFreeGroupCode } from '../api'
 import type { InviteFreeGroupCode } from '../types'
 
+function formatExpiry(timestamp?: number) {
+  if (!timestamp || timestamp <= 0) return ''
+  const date = new Date(timestamp * 1000)
+  const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`)
+  const y = date.getFullYear()
+  const m = pad(date.getMonth() + 1)
+  const d = pad(date.getDate())
+  const h = pad(date.getHours())
+  const min = pad(date.getMinutes())
+  const s = pad(date.getSeconds())
+  return `${y}-${m}-${d} ${h}:${min}:${s}`
+}
+
 export function InviteFreeGroupCard() {
   const [codes, setCodes] = useState<InviteFreeGroupCode[]>([])
   const [unlocked, setUnlocked] = useState(false)
+  const [expiresAt, setExpiresAt] = useState<number | undefined>()
   const [groupName, setGroupName] = useState('token福利')
   const [code, setCode] = useState('')
   const [loading, setLoading] = useState(true)
@@ -22,6 +36,7 @@ export function InviteFreeGroupCard() {
       const response = await getInviteFreeGroupCodes()
       if (response.success && response.data) {
         setUnlocked(response.data.unlocked)
+        setExpiresAt(response.data.expires_at)
         setCodes(response.data.codes || [])
         if (response.data.group_name) {
           setGroupName(response.data.group_name)
@@ -38,8 +53,8 @@ export function InviteFreeGroupCard() {
     load()
   }, [load])
 
-  const redeem = async () => {
-    const value = code.trim()
+  const redeemWithKey = async (keyToRedeem: string) => {
+    const value = keyToRedeem.trim()
     if (!value) return
     setRedeeming(true)
     setMessage('')
@@ -47,7 +62,7 @@ export function InviteFreeGroupCard() {
       const response = await redeemInviteFreeGroupCode({ key: value })
       if (response.success) {
         setCode('')
-        setMessage('分组已解锁')
+        setMessage(response.message || '兑换成功，有效时长已更新！')
         await load()
       } else {
         setMessage(response.message || '解锁失败，请检查兑换码')
@@ -62,6 +77,7 @@ export function InviteFreeGroupCard() {
   if (loading) return null
 
   const pendingCodes = codes.filter((item) => item.status === 1)
+  const isExpired = !unlocked && Boolean(expiresAt && expiresAt > 0)
 
   return (
     <Card data-card-hover='false' className='bg-muted/20 py-0'>
@@ -71,58 +87,82 @@ export function InviteFreeGroupCard() {
             <KeyRound />
           </IconBadge>
           <div>
-            <h3 className='text-sm font-semibold'>福利免费分组解锁</h3>
+            <h3 className='text-sm font-semibold'>福利免费分组解锁（1天/次）</h3>
             <p className='text-muted-foreground text-xs'>
-              邀请新用户注册后，双方各获得一枚解锁码。
+              邀请新用户注册后双方各获 1 枚解锁码，每码激活 24 小时权限，支持多码叠加续期。
             </p>
           </div>
           {unlocked && <CheckCircle2 className='ml-auto size-5 text-emerald-500' />}
         </div>
+
         {unlocked ? (
-          <p className='text-sm text-emerald-600'>
-            当前账号已解锁，可使用「{groupName}」分组。
-          </p>
-        ) : (
-          <>
-            {pendingCodes.length > 0 && (
-              <div className='grid gap-2'>
-                <p className='text-muted-foreground text-xs'>你的解锁码：</p>
-                {pendingCodes.map((item) => (
-                  <div className='flex items-center gap-2' key={item.id}>
-                    <Input
-                      value={item.key}
-                      readOnly
-                      className='bg-background font-mono text-xs'
-                    />
-                    <CopyButton
-                      value={item.key}
-                      variant='outline'
-                      className='size-9 shrink-0'
-                      aria-label='复制解锁码'
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-            <div className='flex items-center gap-2'>
-              <Input
-                value={code}
-                onChange={(event) => setCode(event.target.value)}
-                placeholder='输入解锁码'
-                className='bg-background font-mono text-xs'
-              />
-              <Button
-                onClick={redeem}
-                disabled={redeeming || !code.trim()}
-                className='shrink-0'
-              >
-                {redeeming && <Loader2 className='mr-2 size-4 animate-spin' />}
-                兑换解锁
-              </Button>
+          <div className='rounded-md border border-emerald-500/20 bg-emerald-500/10 p-3 text-xs'>
+            <div className='flex items-center gap-1.5 font-medium text-emerald-600 dark:text-emerald-400'>
+              <Clock className='size-3.5' />
+              <span>当前已解锁「{groupName}」分组</span>
             </div>
-          </>
+            {expiresAt && expiresAt > 0 && (
+              <p className='mt-1 text-emerald-700/80 dark:text-emerald-300/80'>
+                有效截止时间：<span className='font-mono font-semibold'>{formatExpiry(expiresAt)}</span>
+              </p>
+            )}
+          </div>
+        ) : isExpired ? (
+          <div className='rounded-md border border-amber-500/20 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400'>
+            <span>上次福利时效已到期（截止于 {formatExpiry(expiresAt)}）。兑换新邀请码可立即恢复 24 小时使用权限。</span>
+          </div>
+        ) : null}
+
+        {pendingCodes.length > 0 && (
+          <div className='grid gap-2'>
+            <p className='text-muted-foreground text-xs font-medium'>
+              待使用的专属解锁码（共 {pendingCodes.length} 枚）：
+            </p>
+            {pendingCodes.map((item) => (
+              <div className='flex items-center gap-2' key={item.id}>
+                <Input
+                  value={item.key}
+                  readOnly
+                  className='bg-background font-mono text-xs'
+                />
+                <CopyButton
+                  value={item.key}
+                  variant='outline'
+                  className='size-9 shrink-0'
+                  aria-label='复制解锁码'
+                />
+                <Button
+                  size='sm'
+                  variant='secondary'
+                  disabled={redeeming}
+                  onClick={() => redeemWithKey(item.key)}
+                  className='shrink-0 text-xs'
+                >
+                  {unlocked ? '续期 +24h' : '立即解锁'}
+                </Button>
+              </div>
+            ))}
+          </div>
         )}
-        {message && <p className='text-xs text-amber-600'>{message}</p>}
+
+        <div className='flex items-center gap-2'>
+          <Input
+            value={code}
+            onChange={(event) => setCode(event.target.value)}
+            placeholder={unlocked ? '输入其他解锁码叠加续期 (+24h)' : '输入专属解锁码'}
+            className='bg-background font-mono text-xs'
+          />
+          <Button
+            onClick={() => redeemWithKey(code)}
+            disabled={redeeming || !code.trim()}
+            className='shrink-0'
+          >
+            {redeeming && <Loader2 className='mr-2 size-4 animate-spin' />}
+            {unlocked ? '叠加续期' : '兑换解锁 (24h)'}
+          </Button>
+        </div>
+
+        {message && <p className='text-xs text-amber-600 dark:text-amber-400'>{message}</p>}
       </CardContent>
     </Card>
   )

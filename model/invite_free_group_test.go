@@ -36,6 +36,9 @@ func TestInviteFreeGroupCodeIsBoundAndUnlocksOnlyItsRecipient(t *testing.T) {
 	allowed, err = HasInviteFreeGroupAccess(inviter.Id)
 	require.NoError(t, err)
 	require.True(t, allowed)
+	expiresAt, err := GetInviteFreeGroupAccessExpiresAt(inviter.Id)
+	require.NoError(t, err)
+	require.Greater(t, expiresAt, common.GetTimestamp())
 	require.Error(t, RedeemInviteFreeGroupCode(inviterCodes[0].Key, inviter.Id))
 
 	allowed, err = HasInviteFreeGroupAccess(invitee.Id)
@@ -45,4 +48,24 @@ func TestInviteFreeGroupCodeIsBoundAndUnlocksOnlyItsRecipient(t *testing.T) {
 	allowed, err = HasInviteFreeGroupAccess(invitee.Id)
 	require.NoError(t, err)
 	require.True(t, allowed)
+
+	// Test stacking: issue a second referral code to inviter
+	thirdUser := &User{Username: "ifg-third-" + common.GetUUID(), Password: "password", Status: 1, AffCode: common.GetUUID()}
+	require.NoError(t, DB.Create(thirdUser).Error)
+	defer DB.Unscoped().Delete(thirdUser)
+	require.NoError(t, IssueInviteFreeGroupCodesForReferral(inviter.Id, thirdUser.Id))
+	inviterCodes2, err := GetInviteFreeGroupCodesForUser(inviter.Id)
+	require.NoError(t, err)
+	require.Len(t, inviterCodes2, 2)
+	// Redeem the second code
+	require.NoError(t, RedeemInviteFreeGroupCode(inviterCodes2[0].Key, inviter.Id))
+	expiresAt2, err := GetInviteFreeGroupAccessExpiresAt(inviter.Id)
+	require.NoError(t, err)
+	require.InDelta(t, expiresAt+InviteFreeGroupAccessDuration, expiresAt2, 5)
+
+	// Test expiration: simulate past expiry time
+	DB.Model(&InviteFreeGroupCode{}).Where("recipient_user_id = ?", inviter.Id).Update("expires_time", common.GetTimestamp()-100)
+	allowed, err = HasInviteFreeGroupAccess(inviter.Id)
+	require.NoError(t, err)
+	require.False(t, allowed)
 }

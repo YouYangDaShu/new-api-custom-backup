@@ -41,10 +41,12 @@ export interface InviteFreeGroupCode {
   status: number
   created_time: number
   redeemed_time: number
+  expires_time?: number
 }
 
 export interface InviteFreeGroupData {
   unlocked: boolean
+  expires_at?: number
   codes: InviteFreeGroupCode[]
   group_name?: string
 }

@@ -11,6 +11,9 @@ import (
 const (
 	InviteFreeGroupCodeStatusEnabled = 1
 	InviteFreeGroupCodeStatusUsed    = 2
+
+	// InviteFreeGroupAccessDuration is 24 hours per redeemed code
+	InviteFreeGroupAccessDuration = 24 * 3600
 )
 
 // InviteFreeGroupCode is a one-time, user-bound code issued after a successful
@@ -25,6 +28,7 @@ type InviteFreeGroupCode struct {
 	Status           int            `json:"status" gorm:"default:1;index"`
 	CreatedTime      int64          `json:"created_time" gorm:"bigint"`
 	RedeemedTime     int64          `json:"redeemed_time" gorm:"bigint"`
+	ExpiresTime      int64          `json:"expires_time" gorm:"bigint;default:0;index"`
 	UsedUserId       int            `json:"used_user_id" gorm:"index"`
 	DeletedAt        gorm.DeletedAt `json:"-" gorm:"index"`
 }
@@ -79,11 +83,25 @@ func HasInviteFreeGroupAccess(userID int) (bool, error) {
 	if userID <= 0 {
 		return false, nil
 	}
+	now := common.GetTimestamp()
 	var count int64
 	err := DB.Model(&InviteFreeGroupCode{}).
-		Where("recipient_user_id = ? AND used_user_id = ? AND status = ?", userID, userID, InviteFreeGroupCodeStatusUsed).
+		Where("recipient_user_id = ? AND used_user_id = ? AND status = ? AND (expires_time > ? OR (expires_time = 0 AND redeemed_time > 0 AND redeemed_time + ? > ?))",
+			userID, userID, InviteFreeGroupCodeStatusUsed, now, InviteFreeGroupAccessDuration, now).
 		Count(&count).Error
 	return count > 0, err
+}
+
+func GetInviteFreeGroupAccessExpiresAt(userID int) (int64, error) {
+	if userID <= 0 {
+		return 0, nil
+	}
+	var maxExpires int64
+	err := DB.Model(&InviteFreeGroupCode{}).
+		Where("recipient_user_id = ? AND used_user_id = ? AND status = ?", userID, userID, InviteFreeGroupCodeStatusUsed).
+		Select("COALESCE(MAX(CASE WHEN expires_time > 0 THEN expires_time ELSE redeemed_time + ? END), 0)", InviteFreeGroupAccessDuration).
+		Scan(&maxExpires).Error
+	return maxExpires, err
 }
 
 func RedeemInviteFreeGroupCode(key string, userID int) error {
@@ -104,12 +122,29 @@ func RedeemInviteFreeGroupCode(key string, userID int) error {
 		if code.RecipientUserId != userID {
 			return errors.New("该解锁码不属于当前用户")
 		}
+
+		var currentMaxExpires int64
+		if err := tx.Model(&InviteFreeGroupCode{}).
+			Where("recipient_user_id = ? AND used_user_id = ? AND status = ?", userID, userID, InviteFreeGroupCodeStatusUsed).
+			Select("COALESCE(MAX(CASE WHEN expires_time > 0 THEN expires_time ELSE redeemed_time + ? END), 0)", InviteFreeGroupAccessDuration).
+			Scan(&currentMaxExpires).Error; err != nil {
+			return err
+		}
+
+		now := common.GetTimestamp()
+		baseTime := now
+		if currentMaxExpires > now {
+			baseTime = currentMaxExpires
+		}
+		newExpiresTime := baseTime + InviteFreeGroupAccessDuration
+
 		result := tx.Model(&InviteFreeGroupCode{}).
 			Where("id = ? AND status = ? AND recipient_user_id = ?", code.Id, InviteFreeGroupCodeStatusEnabled, userID).
 			Updates(map[string]any{
 				"status":        InviteFreeGroupCodeStatusUsed,
-				"redeemed_time": common.GetTimestamp(),
+				"redeemed_time": now,
 				"used_user_id":  userID,
+				"expires_time":  newExpiresTime,
 			})
 		if result.Error != nil {
 			return result.Error

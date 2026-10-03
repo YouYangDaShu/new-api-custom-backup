@@ -1447,10 +1447,16 @@ func GetInviteFreeGroupCodes(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	expiresAt, err := model.GetInviteFreeGroupAccessExpiresAt(id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": gin.H{
 			"unlocked":   unlocked,
+			"expires_at": expiresAt,
 			"codes":      codes,
 			"group_name": service.GetInviteFreeGroupName(),
 		},
@@ -1469,5 +1475,5 @@ func RedeemInviteFreeGroupCode(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "message": "分组已解锁", "data": true})
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "分组已解锁，有效期已延长 1 天 (24小时)", "data": true})
 }
