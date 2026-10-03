@@ -1447,7 +1447,14 @@ func GetInviteFreeGroupCodes(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"unlocked": unlocked, "codes": codes}})
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"unlocked":   unlocked,
+			"codes":      codes,
+			"group_name": service.GetInviteFreeGroupName(),
+		},
+	})
 }
 
 // RedeemInviteFreeGroupCode consumes a code bound to the authenticated user.

@@ -55,6 +55,7 @@ const quotaSchema = z.object({
   PreConsumedQuota: z.coerce.number().min(0),
   QuotaForInviter: z.coerce.number().min(0),
   QuotaForInvitee: z.coerce.number().min(0),
+  InviteFreeGroupName: z.string().optional(),
   AffTopupRate: z.coerce.number().min(0).max(1),
   TopUpLink: z.string(),
   general_setting: z.object({
@@ -232,6 +233,33 @@ export function QuotaSettingsSection({
                     {t('Quota given to invited users ({{formattedQuota}})', {
                       formattedQuota: formatQuotaInputValue(field.value),
                     })}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name='InviteFreeGroupName'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('邀请解锁福利分组名称')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      type='text'
+                      placeholder='例如：token福利'
+                      value={field.value ?? ''}
+                      onChange={field.onChange}
+                      name={field.name}
+                      onBlur={field.onBlur}
+                      ref={field.ref}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      '用户通过邀请好友并兑换解锁码后，激活的专属线路分组名称（默认为 token福利，可随时修改）'
+                    )}
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

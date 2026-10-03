@@ -11,7 +11,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const InviteFreeGroup = "token福利"
+func GetInviteFreeGroupName() string {
+	name := strings.TrimSpace(common.InviteFreeGroupName)
+	if name == "" {
+		return "token福利"
+	}
+	return name
+}
 
 func IsMembershipGroup(name string) bool {
 	return ratio_setting.IsMembershipGroup(name)
@@ -47,9 +53,12 @@ func buildUserUsableGroups(userGroup string, inviteEligible bool) map[string]str
 			groupsCopy[userGroup] = "用户分组"
 		}
 	}
-	delete(groupsCopy, InviteFreeGroup)
-	if inviteEligible {
-		groupsCopy[InviteFreeGroup] = setting.GetUsableGroupDescription(InviteFreeGroup)
+	inviteGroup := GetInviteFreeGroupName()
+	if inviteGroup != "" {
+		delete(groupsCopy, inviteGroup)
+		if inviteEligible && setting.ContainsUsableGroup(inviteGroup) {
+			groupsCopy[inviteGroup] = setting.GetUsableGroupDescription(inviteGroup)
+		}
 	}
 	return groupsCopy
 }

@@ -46,6 +46,7 @@ export interface InviteFreeGroupCode {
 export interface InviteFreeGroupData {
   unlocked: boolean
   codes: InviteFreeGroupCode[]
+  group_name?: string
 }
 
 export type InviteFreeGroupResponse = ApiResponse<InviteFreeGroupData>

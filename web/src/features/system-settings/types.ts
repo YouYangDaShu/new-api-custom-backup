@@ -268,6 +268,7 @@ export type BillingSettings = {
   PreConsumedQuota: number
   QuotaForInviter: number
   QuotaForInvitee: number
+  InviteFreeGroupName?: string
   AffTopupRate: number
   TopUpLink: string
   'general_setting.docs_link': string

@@ -11,6 +11,7 @@ import type { InviteFreeGroupCode } from '../types'
 export function InviteFreeGroupCard() {
   const [codes, setCodes] = useState<InviteFreeGroupCode[]>([])
   const [unlocked, setUnlocked] = useState(false)
+  const [groupName, setGroupName] = useState('token福利')
   const [code, setCode] = useState('')
   const [loading, setLoading] = useState(true)
   const [redeeming, setRedeeming] = useState(false)
@@ -22,6 +23,9 @@ export function InviteFreeGroupCard() {
       if (response.success && response.data) {
         setUnlocked(response.data.unlocked)
         setCodes(response.data.codes || [])
+        if (response.data.group_name) {
+          setGroupName(response.data.group_name)
+        }
       }
     } catch {
       /* supplementary card */
@@ -76,7 +80,7 @@ export function InviteFreeGroupCard() {
         </div>
         {unlocked ? (
           <p className='text-sm text-emerald-600'>
-            当前账号已解锁，可使用「token福利」分组。
+            当前账号已解锁，可使用「{groupName}」分组。
           </p>
         ) : (
           <>

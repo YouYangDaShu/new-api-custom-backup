@@ -29,6 +29,7 @@ const defaultBillingSettings: BillingSettings = {
   PreConsumedQuota: 0,
   QuotaForInviter: 0,
   QuotaForInvitee: 0,
+  InviteFreeGroupName: 'token福利',
   AffTopupRate: 0,
   TopUpLink: '',
   'general_setting.docs_link': '',

@@ -42,6 +42,13 @@ func UpdateUserUsableGroupsByJSONString(jsonStr string) error {
 	return json.Unmarshal([]byte(jsonStr), &userUsableGroups)
 }
 
+func ContainsUsableGroup(groupName string) bool {
+	userUsableGroupsMutex.RLock()
+	defer userUsableGroupsMutex.RUnlock()
+	_, ok := userUsableGroups[groupName]
+	return ok
+}
+
 func GetUsableGroupDescription(groupName string) string {
 	userUsableGroupsMutex.RLock()
 	defer userUsableGroupsMutex.RUnlock()

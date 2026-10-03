@@ -65,6 +65,7 @@ const BILLING_SECTIONS = [
           PreConsumedQuota: settings.PreConsumedQuota,
           QuotaForInviter: settings.QuotaForInviter,
           QuotaForInvitee: settings.QuotaForInvitee,
+          InviteFreeGroupName: settings.InviteFreeGroupName || 'token福利',
           AffTopupRate: settings.AffTopupRate,
           TopUpLink: settings.TopUpLink,
           general_setting: {

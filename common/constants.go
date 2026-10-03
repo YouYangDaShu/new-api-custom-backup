@@ -153,6 +153,7 @@ var TelegramBotName = ""
 var QuotaForNewUser = 0
 var QuotaForInviter = 0
 var QuotaForInvitee = 0
+var InviteFreeGroupName = "token福利"
 
 // AffTopupRate is the inviter rebate rate for invitee top-ups. It is
 // deliberately disabled by default; an administrator must opt in explicitly.
