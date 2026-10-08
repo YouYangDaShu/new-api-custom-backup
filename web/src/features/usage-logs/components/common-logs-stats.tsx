@@ -100,7 +100,7 @@ export function CommonLogsStats() {
         : DEFAULT_LOG_STATS
     },
     placeholderData: (previousData) => previousData,
-    refetchInterval: autoRefresh ? 30_000 : false,
+    refetchInterval: isAdmin && autoRefresh ? 30_000 : false,
   })
 
   if (isLoading) {

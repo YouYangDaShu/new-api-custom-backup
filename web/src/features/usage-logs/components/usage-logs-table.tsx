@@ -169,7 +169,8 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
       }
       return undefined
     },
-    refetchInterval: autoRefresh && logCategory === 'common' ? 3_000 : false,
+    refetchInterval:
+      isAdmin && autoRefresh && logCategory === 'common' ? 10_000 : false,
   })
 
   const logs = data?.items || []

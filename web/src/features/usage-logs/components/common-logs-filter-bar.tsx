@@ -319,7 +319,7 @@ export function CommonLogsFilterBar<TData>(
           </div>
         }
       />
-      <TooltipContent>{t('Auto refresh every 3s for new logs')}</TooltipContent>
+      <TooltipContent>{t('Auto refresh every 10s for new logs')}</TooltipContent>
     </Tooltip>
   )
   const sensitiveToggle = (
@@ -514,7 +514,7 @@ export function CommonLogsFilterBar<TData>(
       stats={statsBar}
       actionStart={
         <>
-          {autoRefreshToggle}
+          {isAdmin && autoRefreshToggle}
           {sensitiveToggle}
         </>
       }
