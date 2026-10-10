@@ -28,7 +28,8 @@ import {
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
-import type { ChannelAffinityInfo } from '../types'
+import type { UsageLog } from '../data/schema'
+import type { ChannelAffinityInfo, TaskLog } from '../types'
 
 export type LogsViewScope = 'all' | 'self' | 'model_test'
 export type LogsViewAccess = 'self' | 'admin' | 'root' | 'model_test'
@@ -53,6 +54,10 @@ interface UsageLogsContextValue {
   setAffinityTarget: (target: ChannelAffinityInfo | null) => void
   affinityDialogOpen: boolean
   setAffinityDialogOpen: (open: boolean) => void
+  detailLog: UsageLog | null
+  setDetailLog: (log: UsageLog | null) => void
+  taskDetailLog: TaskLog | null
+  setTaskDetailLog: (log: TaskLog | null) => void
   sensitiveVisible: boolean
   setSensitiveVisible: (visible: boolean) => void
   /** Manual by default; opt-in polling for list + stats. */
@@ -81,6 +86,8 @@ export function UsageLogsProvider({ children }: { children: ReactNode }) {
   const [affinityTarget, setAffinityTarget] =
     useState<ChannelAffinityInfo | null>(null)
   const [affinityDialogOpen, setAffinityDialogOpen] = useState(false)
+  const [detailLog, setDetailLog] = useState<UsageLog | null>(null)
+  const [taskDetailLog, setTaskDetailLog] = useState<TaskLog | null>(null)
   const [sensitiveVisible, setSensitiveVisible] = useState(true)
   const [autoRefresh, setAutoRefreshState] = useState(false)
   const [viewScope, setViewScope] = useState<LogsViewScope>('all')
@@ -109,6 +116,10 @@ export function UsageLogsProvider({ children }: { children: ReactNode }) {
         setAffinityTarget,
         affinityDialogOpen,
         setAffinityDialogOpen,
+        detailLog,
+        setDetailLog,
+        taskDetailLog,
+        setTaskDetailLog,
         sensitiveVisible,
         setSensitiveVisible,
         autoRefresh,

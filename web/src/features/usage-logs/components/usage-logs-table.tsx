@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
 import type { ColumnDef } from '@tanstack/react-table'
+import { useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -185,8 +186,11 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
     refetchInterval: (query) => {
       if (logCategory !== 'common') return false
       const currentItems = query.state.data?.items
-      const hasInProgress = currentItems?.some((item) => item.type === 8)
-      if (hasInProgress) {
+      const nowSec = Math.floor(Date.now() / 1000)
+      const hasFreshInProgress = currentItems?.some(
+        (item) => item.type === 8 && nowSec - (item.created_at ?? 0) < 180
+      )
+      if (hasFreshInProgress) {
         return 1_000
       }
       return 10_000
@@ -216,6 +220,10 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
   })
 
   const isCommon = logCategory === 'common'
+  const getColumnClassName = useCallback(
+    () => (isCommon ? 'py-2' : 'py-3.5'),
+    [isCommon]
+  )
 
   return (
     <DataTablePage
@@ -267,7 +275,7 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
             key={row.id}
             row={row}
             className={cn('transition-colors', tintClass)}
-            getColumnClassName={() => (isCommon ? 'py-2' : 'py-3.5')}
+            getColumnClassName={getColumnClassName}
           />
         )
       }}

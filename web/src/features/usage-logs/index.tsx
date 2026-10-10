@@ -26,6 +26,8 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { CacheStatsDialog } from '@/features/system-settings/general/channel-affinity/cache-stats-dialog'
 import { useSidebarConfig } from '@/hooks/use-sidebar-config'
 
+import { DetailsDialog } from './components/dialogs/details-dialog'
+import { TaskDetailsDialog } from './components/dialogs/task-details-dialog'
 import { UserInfoDialog } from './components/dialogs/user-info-dialog'
 import {
   type LogsViewScope,
@@ -70,8 +72,13 @@ function UsageLogsContent() {
     affinityTarget,
     affinityDialogOpen,
     setAffinityDialogOpen,
+    detailLog,
+    setDetailLog,
+    taskDetailLog,
+    setTaskDetailLog,
   } = useUsageLogsContext()
-  const { canManageScope, viewScope, setViewScope } = useLogsViewScope()
+  const { canManageScope, viewScope, setViewScope, isAdminView, isRootView } =
+    useLogsViewScope()
   const tabNavGroups = useMemo<NavGroup[]>(
     () => [
       {
@@ -190,6 +197,30 @@ function UsageLogsContent() {
             : null
         }
       />
+
+      {detailLog && (
+        <DetailsDialog
+          log={detailLog}
+          isAdmin={isAdminView}
+          isRoot={isRootView}
+          open={Boolean(detailLog)}
+          onOpenChange={(open) => {
+            if (!open) setDetailLog(null)
+          }}
+        />
+      )}
+
+      {taskDetailLog && (
+        <TaskDetailsDialog
+          log={taskDetailLog}
+          isAdmin={isAdminView}
+          isRoot={isRootView}
+          open={Boolean(taskDetailLog)}
+          onOpenChange={(open) => {
+            if (!open) setTaskDetailLog(null)
+          }}
+        />
+      )}
     </>
   )
 }

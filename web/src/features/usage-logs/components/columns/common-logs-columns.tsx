@@ -27,7 +27,7 @@ import {
   Sparkles,
   KeyRound,
 } from 'lucide-react'
-import { useState } from 'react'
+import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { GroupBadge } from '@/components/group-badge'
@@ -81,7 +81,6 @@ import {
   isPerCallBilling,
 } from '../../lib/utils'
 import type { LogOtherData } from '../../types'
-import { DetailsDialog } from '../dialogs/details-dialog'
 import { LogCostDisplay } from '../log-cost-display'
 import { ModelBadge } from '../model-badge'
 import { TimingMetricsCell, StreamTpsCell } from '../timing-metrics-cell'
@@ -346,7 +345,10 @@ export function useCommonLogsColumns(
   isRoot: boolean
 ): ColumnDef<UsageLog>[] {
   const { t } = useTranslation()
-  const columns: ColumnDef<UsageLog>[] = [
+  const pricingData = usePricingData(false)
+
+  return useMemo(() => {
+    const columns: ColumnDef<UsageLog>[] = [
     {
       accessorKey: 'created_at',
       header: t('Time'),
@@ -851,15 +853,10 @@ export function useCommonLogsColumns(
       header: t('Details'),
       cell: function DetailsCell({ row }) {
         const { t } = useTranslation()
-        const [dialogOpen, setDialogOpen] = useState(false)
+        const { setDetailLog } = useUsageLogsContext()
         const log = row.original
         const other = parseLogOther(log.other)
 
-        const pricingData = usePricingData(
-          log.type === 2 &&
-            other?.is_task === true &&
-            other.billing_mode === 'tiered_expr'
-        )
         const usageSchema = pricingData.models.find(
           (model) => model.model_name === log.model_name
         )?.billing_usage_schema
@@ -904,23 +901,14 @@ export function useCommonLogsColumns(
         }
 
         return (
-          <>
-            <button
-              type='button'
-              className='group flex max-w-[200px] items-center gap-1 text-left text-xs'
-              onClick={() => setDialogOpen(true)}
-              title={t('Click to view full details')}
-            >
-              {detailPreview}
-            </button>
-            <DetailsDialog
-              log={log}
-              isAdmin={isAdmin}
-              isRoot={isRoot}
-              open={dialogOpen}
-              onOpenChange={setDialogOpen}
-            />
-          </>
+          <button
+            type='button'
+            className='group flex max-w-[200px] items-center gap-1 text-left text-xs'
+            onClick={() => setDetailLog(log)}
+            title={t('Click to view full details')}
+          >
+            {detailPreview}
+          </button>
         )
       },
       size: 180,
@@ -929,4 +917,5 @@ export function useCommonLogsColumns(
   )
 
   return columns
+  }, [isAdmin, isRoot, t, pricingData])
 }
