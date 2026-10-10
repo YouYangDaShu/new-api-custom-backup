@@ -162,6 +162,7 @@ export function buildApiParams(config: {
   columnFilters?: Array<{ id: string; value: unknown }>
   isAdmin: boolean
   scope?: 'model_test'
+  fast?: boolean
 }): GetLogsParams {
   const {
     page,
@@ -170,6 +171,7 @@ export function buildApiParams(config: {
     columnFilters = [],
     isAdmin,
     scope,
+    fast,
   } = config
 
   // Helper to process type parameter (single value from array)
@@ -192,6 +194,7 @@ export function buildApiParams(config: {
   const params: GetLogsParams = {
     p: page,
     page_size: pageSize,
+    ...(fast ? { fast: 1 } : {}),
     ...(searchParams.type ? { type: processType(searchParams.type) } : {}),
     ...(searchParams.model ? { model_name: String(searchParams.model) } : {}),
     ...(searchParams.token ? { token_name: String(searchParams.token) } : {}),
@@ -261,6 +264,7 @@ export async function fetchLogsByCategory(
     searchParams,
     columnFilters,
     scope,
+    fast,
   } = config
 
   if (logCategory === 'common') {
@@ -271,6 +275,7 @@ export async function fetchLogsByCategory(
       columnFilters,
       isAdmin,
       scope,
+      fast,
     })
     if (scope === 'model_test') return await getModelTestLogs(params)
     return isAdmin ? await getAllLogs(params) : await getUserLogs(params)

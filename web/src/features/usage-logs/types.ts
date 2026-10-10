@@ -411,6 +411,7 @@ export interface GetLogsParams {
   request_id?: string
   upstream_request_id?: string
   scope?: 'model_test'
+  fast?: boolean | number
 }
 
 export interface GetLogsResponse {
@@ -485,6 +486,7 @@ export interface FetchLogsConfig {
   searchParams: Record<string, unknown>
   columnFilters: Array<{ id: string; value: unknown }>
   scope?: 'model_test'
+  fast?: boolean
 }
 
 // ============================================================================

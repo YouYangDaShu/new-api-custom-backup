@@ -687,6 +687,10 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 }
 
 func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, startIdx int, num int, channel int, group string, requestId string, upstreamRequestId string, scopes ...LogScope) (logs []*Log, total int64, err error) {
+	return GetAllLogsEx(logType, startTimestamp, endTimestamp, modelName, username, tokenName, startIdx, num, channel, group, requestId, upstreamRequestId, false, scopes...)
+}
+
+func GetAllLogsEx(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, startIdx int, num int, channel int, group string, requestId string, upstreamRequestId string, skipCount bool, scopes ...LogScope) (logs []*Log, total int64, err error) {
 	var tx *gorm.DB
 	if logType == LogTypeUnknown {
 		tx = LOG_DB
@@ -731,9 +735,13 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 	if group != "" {
 		tx = tx.Where("logs."+logGroupCol+" = ?", group)
 	}
-	err = tx.Model(&Log{}).Count(&total).Error
-	if err != nil {
-		return nil, 0, err
+	if !skipCount {
+		err = tx.Model(&Log{}).Count(&total).Error
+		if err != nil {
+			return nil, 0, err
+		}
+	} else {
+		total = -1
 	}
 	order := logOrder("logs.")
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
@@ -793,6 +801,10 @@ func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName
 const logSearchCountLimit = 10000
 
 func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int64, modelName string, tokenName string, startIdx int, num int, group string, requestId string, upstreamRequestId string, scopes ...LogScope) (logs []*Log, total int64, err error) {
+	return GetUserLogsEx(userId, logType, startTimestamp, endTimestamp, modelName, tokenName, startIdx, num, group, requestId, upstreamRequestId, false, scopes...)
+}
+
+func GetUserLogsEx(userId int, logType int, startTimestamp int64, endTimestamp int64, modelName string, tokenName string, startIdx int, num int, group string, requestId string, upstreamRequestId string, skipCount bool, scopes ...LogScope) (logs []*Log, total int64, err error) {
 	var tx *gorm.DB
 	if logType == LogTypeUnknown {
 		tx = LOG_DB.Where("logs.user_id = ?", userId)
@@ -826,10 +838,14 @@ func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int
 	if group != "" {
 		tx = tx.Where("logs."+logGroupCol+" = ?", group)
 	}
-	err = tx.Model(&Log{}).Limit(logSearchCountLimit).Count(&total).Error
-	if err != nil {
-		common.SysError("failed to count user logs: " + err.Error())
-		return nil, 0, errors.New("查询日志失败")
+	if !skipCount {
+		err = tx.Model(&Log{}).Limit(logSearchCountLimit).Count(&total).Error
+		if err != nil {
+			common.SysError("failed to count user logs: " + err.Error())
+			return nil, 0, errors.New("查询日志失败")
+		}
+	} else {
+		total = -1
 	}
 	order := logOrder("logs.")
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {

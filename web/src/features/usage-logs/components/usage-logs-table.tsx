@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
 import type { ColumnDef } from '@tanstack/react-table'
 import { useTranslation } from 'react-i18next'
@@ -39,7 +39,7 @@ import {
 import { useColumnsByCategory } from '../lib/columns'
 import { parseLogOther } from '../lib/format'
 import { fetchLogsByCategory } from '../lib/utils'
-import type { LogCategory } from '../types'
+import type { GetLogsResponse, LogCategory } from '../types'
 import { CommonLogsFilterBar } from './common-logs-filter-bar'
 import { TaskLogsFilterBar } from './task-logs-filter-bar'
 import { UsageLogsMobileList } from './usage-logs-mobile-card'
@@ -130,18 +130,23 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
     ],
   })
 
+  const queryClient = useQueryClient()
+  const currentQueryKey = [
+    'logs',
+    logCategory,
+    viewAccess,
+    pagination.pageIndex + 1,
+    pagination.pageSize,
+    columnFilters,
+    searchParams,
+    t,
+  ]
+
   const { data, isLoading, isFetching } = useQuery({
-    queryKey: [
-      'logs',
-      logCategory,
-      viewAccess,
-      pagination.pageIndex + 1,
-      pagination.pageSize,
-      columnFilters,
-      searchParams,
-      t,
-    ],
+    queryKey: currentQueryKey,
     queryFn: async () => {
+      const existingData = queryClient.getQueryData<NonNullable<GetLogsResponse['data']>>(currentQueryKey)
+      const isRefetch = Boolean(existingData)
       const result = await fetchLogsByCategory({
         logCategory,
         isAdmin,
@@ -150,6 +155,7 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
         searchParams,
         columnFilters,
         scope: isModelTestView ? 'model_test' : undefined,
+        fast: isRefetch,
       })
 
       if (!result?.success) {
@@ -157,7 +163,15 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
         return DEFAULT_LOGS_DATA
       }
 
-      return result.data || DEFAULT_LOGS_DATA
+      const resData = result.data || DEFAULT_LOGS_DATA
+      if (resData.total === -1 && existingData) {
+        return {
+          ...resData,
+          total: Math.max(existingData.total, resData.items.length),
+        }
+      }
+
+      return resData
     },
     placeholderData: (previousData, previousQuery) => {
       if (
@@ -169,7 +183,7 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
       return undefined
     },
     refetchInterval: (query) => {
-      if (!canManageScope || logCategory !== 'common') return false
+      if (logCategory !== 'common') return false
       const currentItems = query.state.data?.items
       const hasInProgress = currentItems?.some((item) => item.type === 8)
       if (hasInProgress) {
