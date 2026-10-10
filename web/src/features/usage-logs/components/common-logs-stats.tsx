@@ -61,9 +61,9 @@ function StatBadge(props: {
 
 export function CommonLogsStats() {
   const { t } = useTranslation()
-  const { isAdminView: isAdmin, isModelTestView } = useLogsViewScope()
+  const { canManageScope, isAdminView: isAdmin, isModelTestView } = useLogsViewScope()
   const searchParams = route.useSearch()
-  const { sensitiveVisible, autoRefresh } = useUsageLogsContext()
+  const { sensitiveVisible } = useUsageLogsContext()
 
   const { data: stats, isLoading } = useQuery({
     queryKey: ['usage-logs-stats', isAdmin, isModelTestView, searchParams],
@@ -100,7 +100,7 @@ export function CommonLogsStats() {
         : DEFAULT_LOG_STATS
     },
     placeholderData: (previousData) => previousData,
-    refetchInterval: isAdmin && autoRefresh ? 30_000 : false,
+    refetchInterval: canManageScope && isAdmin ? 30_000 : false,
   })
 
   if (isLoading) {

@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useQueryClient, useIsFetching, useQuery } from '@tanstack/react-query'
+import { useQueryClient, useQuery } from '@tanstack/react-query'
 import { useNavigate, getRouteApi } from '@tanstack/react-router'
 import type { Table } from '@tanstack/react-table'
 import { Eye, EyeOff } from 'lucide-react'
@@ -26,7 +26,6 @@ import { useTranslation } from 'react-i18next'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Combobox } from '@/components/ui/combobox'
-import { Label } from '@/components/ui/label'
 import {
   Select,
   SelectContent,
@@ -35,7 +34,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
 import {
   Tooltip,
   TooltipContent,
@@ -125,9 +123,7 @@ export function CommonLogsFilterBar<TData>(
   const queryClient = useQueryClient()
   const searchParams = route.useSearch()
   const { isAdminView: isAdmin } = useLogsViewScope()
-  const { sensitiveVisible, setSensitiveVisible, autoRefresh, setAutoRefresh } =
-    useUsageLogsContext()
-  const fetchingLogs = useIsFetching({ queryKey: ['logs'] })
+  const { sensitiveVisible, setSensitiveVisible } = useUsageLogsContext()
   const { data: adminGroups } = useQuery({
     queryKey: ['groups', 'channel'],
     queryFn: () => getGroups('channel'),
@@ -299,29 +295,6 @@ export function CommonLogsFilterBar<TData>(
   )
 
   const statsBar = <CommonLogsStats />
-  const autoRefreshToggle = (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <div className='border-border/60 bg-muted/20 inline-flex h-8 items-center gap-2 rounded-md border px-2'>
-            <Switch
-              id='usage-logs-auto-refresh'
-              checked={autoRefresh}
-              onCheckedChange={setAutoRefresh}
-              size='sm'
-            />
-            <Label
-              htmlFor='usage-logs-auto-refresh'
-              className='text-muted-foreground cursor-pointer text-xs font-medium whitespace-nowrap'
-            >
-              {t('Auto refresh')}
-            </Label>
-          </div>
-        }
-      />
-      <TooltipContent>{t('Auto refresh every 10s for new logs')}</TooltipContent>
-    </Tooltip>
-  )
   const sensitiveToggle = (
     <Tooltip>
       <TooltipTrigger
@@ -512,12 +485,7 @@ export function CommonLogsFilterBar<TData>(
       table={props.table}
       compactMobile
       stats={statsBar}
-      actionStart={
-        <>
-          {isAdmin && autoRefreshToggle}
-          {sensitiveToggle}
-        </>
-      }
+      actionStart={sensitiveToggle}
       primaryFilters={
         <>
           {dateRangeFilter}
@@ -544,7 +512,6 @@ export function CommonLogsFilterBar<TData>(
       advancedFilterCount={expandedFilterCount}
       hasActiveFilters={hasAdditionalFilters}
       onSearch={() => handleApply()}
-      searchLoading={fetchingLogs > 0}
       onReset={handleReset}
     />
   )

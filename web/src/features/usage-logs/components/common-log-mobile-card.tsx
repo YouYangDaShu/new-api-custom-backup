@@ -235,6 +235,8 @@ export function CommonLogMobileCard<TData>(props: {
                   indicator='dot'
                   compact
                   className='min-h-6 max-w-full min-w-0 items-center justify-end [&>div]:justify-end'
+                  isProcessing={log.type === 8}
+                  createdAt={log.created_at}
                 />
               )}
             </div>

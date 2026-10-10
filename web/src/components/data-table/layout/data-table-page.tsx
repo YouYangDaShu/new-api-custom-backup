@@ -93,6 +93,11 @@ export type DataTablePageProps<TData> = {
   isFetching?: boolean
 
   /**
+   * Whether to dim the table during background refetch (defaults to false to prevent flashing).
+   */
+  dimOnFetching?: boolean
+
+  /**
    * Empty-state title (used for both desktop {@link TableEmpty} and mobile fallback).
    */
   emptyTitle?: string
@@ -419,7 +424,7 @@ function renderMobile<TData>(
     return null
   }
 
-  const isFetchingOnly = props.isFetching && !props.isLoading
+  const isFetchingOnly = Boolean(props.dimOnFetching) && props.isFetching && !props.isLoading
   const ownGetRowClassName = props.getRowClassName
   const mobileGetRowClassName =
     props.mobileProps?.getRowClassName ??
@@ -500,7 +505,7 @@ function renderDesktop<TData>(
     return null
   }
 
-  const isFetchingOnly = props.isFetching && !props.isLoading
+  const isFetchingOnly = Boolean(props.dimOnFetching) && props.isFetching && !props.isLoading
   const fixedHeight = props.fixedHeight !== false
 
   if (cardViewActive && viewMode === DATA_TABLE_VIEW_MODES.CARD) {

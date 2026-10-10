@@ -354,6 +354,7 @@ export function useCommonLogsColumns(
         const log = row.original
         const timestamp = log.finished_at || log.created_at
         const config = getLogTypeConfig(log.type)
+        const isProcessing = log.type === 8
 
         return (
           <div className='flex min-w-0 flex-col gap-0.5'>
@@ -365,7 +366,10 @@ export function useCommonLogsColumns(
               variant={config.color as StatusBadgeProps['variant']}
               size='sm'
               copyable={false}
-              className='-ml-1.5 !text-xs [&_span]:!text-xs'
+              className={cn(
+                '-ml-1.5 !text-xs [&_span]:!text-xs',
+                isProcessing && 'animate-pulse'
+              )}
             />
           </div>
         )
@@ -835,6 +839,8 @@ export function useCommonLogsColumns(
             completionTokens={log.completion_tokens}
             frtMs={other?.frt}
             isStream={log.is_stream}
+            isProcessing={log.type === 8}
+            createdAt={log.created_at}
           />
         )
       },

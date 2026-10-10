@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { CircleAlert } from 'lucide-react'
+import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -64,11 +65,34 @@ interface TimingMetricsCellProps {
    */
   indicator?: 'bar' | 'dot'
   compact?: boolean
+  isProcessing?: boolean
+  createdAt?: number
 }
 
 export function TimingMetricsCell(props: TimingMetricsCellProps) {
   const { t } = useTranslation()
   const indicator = props.indicator ?? 'bar'
+  const isProcessing = Boolean(props.isProcessing)
+
+  const [elapsedSec, setElapsedSec] = React.useState<number>(() => {
+    if (isProcessing && props.createdAt) {
+      return Math.max(0, Math.floor(Date.now() / 1000 - props.createdAt))
+    }
+    return props.useTimeSec
+  })
+
+  React.useEffect(() => {
+    if (!isProcessing || !props.createdAt) return
+    const update = () => {
+      setElapsedSec(Math.max(0, Math.floor(Date.now() / 1000 - (props.createdAt ?? 0))))
+    }
+    update()
+    const timer = setInterval(update, 1000)
+    return () => clearInterval(timer)
+  }, [isProcessing, props.createdAt])
+
+  const effectiveUseTimeSec = isProcessing && props.createdAt ? elapsedSec : props.useTimeSec
+
   const showFirstToken = props.isStream
   const firstTokenSeconds =
     props.frtMs != null && props.frtMs > 0 ? props.frtMs / 1000 : null
@@ -76,13 +100,12 @@ export function TimingMetricsCell(props: TimingMetricsCellProps) {
     firstTokenSeconds == null
       ? 'neutral'
       : getFirstResponseTimeColor(firstTokenSeconds)
-  const totalTimeVariant = getResponseTimeColor(
-    props.useTimeSec,
-    props.completionTokens
-  )
+  const totalTimeVariant: StatusVariant = isProcessing
+    ? 'warning'
+    : getResponseTimeColor(props.useTimeSec, props.completionTokens)
   const firstTokenLabel =
     firstTokenSeconds == null ? t('N/A') : formatUseTime(firstTokenSeconds)
-  const totalTimeLabel = formatUseTime(props.useTimeSec)
+  const totalTimeLabel = formatUseTime(effectiveUseTimeSec)
 
   const labels = (
     <div
@@ -117,12 +140,19 @@ export function TimingMetricsCell(props: TimingMetricsCellProps) {
             aria-hidden
             className={cn(
               'size-1.5 shrink-0 rounded-full',
-              dotColorMap[totalTimeVariant]
+              dotColorMap[totalTimeVariant],
+              isProcessing && 'animate-pulse'
             )}
           />
         )}
         <span className='text-muted-foreground shrink-0'>{t('Duration')}</span>
-        <span className={cn('tabular-nums', textColorMap[totalTimeVariant])}>
+        <span
+          className={cn(
+            'tabular-nums font-mono',
+            textColorMap[totalTimeVariant],
+            isProcessing && 'font-medium animate-pulse'
+          )}
+        >
           {totalTimeLabel}
         </span>
       </div>
@@ -141,13 +171,20 @@ export function TimingMetricsCell(props: TimingMetricsCellProps) {
         aria-hidden
         className={cn(
           'flex w-1 shrink-0 flex-col overflow-hidden rounded-full',
-          !showFirstToken && barColorMap[totalTimeVariant]
+          !showFirstToken && barColorMap[totalTimeVariant],
+          isProcessing && 'animate-pulse'
         )}
       >
         {showFirstToken && (
           <>
             <span className={cn('flex-1', barColorMap[firstTokenVariant])} />
-            <span className={cn('flex-1', barColorMap[totalTimeVariant])} />
+            <span
+              className={cn(
+                'flex-1',
+                barColorMap[totalTimeVariant],
+                isProcessing && 'animate-pulse'
+              )}
+            />
           </>
         )}
       </span>

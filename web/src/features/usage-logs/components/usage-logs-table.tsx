@@ -45,7 +45,6 @@ import { TaskLogsFilterBar } from './task-logs-filter-bar'
 import { UsageLogsMobileList } from './usage-logs-mobile-card'
 import {
   useLogsViewScope,
-  useUsageLogsContext,
   type LogsViewAccess,
 } from './usage-logs-provider'
 
@@ -84,6 +83,7 @@ interface UsageLogsTableProps {
 export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
   const { t } = useTranslation()
   const {
+    canManageScope,
     isAdminView: isAdmin,
     isRootView: isRoot,
     isModelTestView,
@@ -91,7 +91,6 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
   } = useLogsViewScope()
   const isMobile = useMediaQuery('(max-width: 640px)')
   const searchParams = route.useSearch()
-  const { autoRefresh } = useUsageLogsContext()
 
   const {
     columnFilters,
@@ -169,8 +168,15 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
       }
       return undefined
     },
-    refetchInterval:
-      isAdmin && autoRefresh && logCategory === 'common' ? 10_000 : false,
+    refetchInterval: (query) => {
+      if (!canManageScope || logCategory !== 'common') return false
+      const currentItems = query.state.data?.items
+      const hasInProgress = currentItems?.some((item) => item.type === 8)
+      if (hasInProgress) {
+        return 1_000
+      }
+      return 10_000
+    },
   })
 
   const logs = data?.items || []
