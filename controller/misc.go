@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -46,6 +47,14 @@ func GetStatus(c *gin.Context) {
 	cs := console_setting.GetConsoleSetting()
 	common.OptionMapRWMutex.RLock()
 	defer common.OptionMapRWMutex.RUnlock()
+
+	// The option lock is already held; do not call the locking model helper.
+	rawTokenRanking, existsTokenRanking := common.OptionMap["TokenRankingEnabled"]
+	tokenRankingEnabled := true
+	if existsTokenRanking && rawTokenRanking != "" {
+		enabled, err := strconv.ParseBool(rawTokenRanking)
+		tokenRankingEnabled = err == nil && enabled
+	}
 
 	passkeySetting := system_setting.GetPasskeySettings()
 	legalSetting := system_setting.GetLegalSettings()
@@ -94,7 +103,7 @@ func GetStatus(c *gin.Context) {
 		"password_login_enabled":        common.PasswordLoginEnabled,
 		"password_register_enabled":     common.PasswordRegisterEnabled,
 		"default_use_auto_group":        setting.DefaultUseAutoGroup,
-		"token_ranking_enabled":         model.WeeklyRankingRewardsEnabled(),
+		"token_ranking_enabled":         tokenRankingEnabled,
 		"channel_monitor_enabled":       common.ChannelMonitorEnabled,
 
 		"password_login_encryption_enabled": common.PasswordLoginEncryptionEnabled,
