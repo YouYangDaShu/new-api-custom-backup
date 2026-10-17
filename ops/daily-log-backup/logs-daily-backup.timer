@@ -1,0 +1,11 @@
+[Unit]
+Description=Archive previous day New API logs without automatic database deletion
+
+[Timer]
+OnCalendar=*-*-* 00:00:00
+Persistent=true
+RandomizedDelaySec=60
+Unit=logs-daily-backup.service
+
+[Install]
+WantedBy=timers.target

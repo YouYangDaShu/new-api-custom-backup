@@ -1,6 +1,8 @@
 # 0909 定制版来源与备份范围
 
-> 最新追加发布：`20261010-v1.0.0-rc.36-usage-logs-realtime-fluid`。详见 [`RELEASE_NOTES_20261010.md`](./RELEASE_NOTES_20261010.md)。
+> 最新追加发布：`20261018-v1.0.0-rc.36-status-audit-backup`，继承 `fe5b29b31` 并包含 `b9ca8a6ec`、`a9dfe9f98` 两个已上线修复和日志备份机制源码归档。详见 [`RELEASE_NOTES_20261018.md`](./RELEASE_NOTES_20261018.md)。生产构建提交与本次文档提交分开记录，不为补发再次重启。
+> 运维代码：`ops/daily-log-backup/`；不含实际数据库、历史归档、生产凭据或旧不安全脚本。下方为历史 0909 快照的原始说明，不能当作最新生产状态。
+> 前一历史追加发布：`20261010-v1.0.0-rc.36-usage-logs-realtime-fluid`。详见 [`RELEASE_NOTES_20261010.md`](./RELEASE_NOTES_20261010.md)。
 > 前一追加发布：`20261009-v1.0.0-rc.36-usage-logs-wallet`（详见 [`RELEASE_NOTES_20261009.md`](./RELEASE_NOTES_20261009.md)）。
 > 历史累计发布：`20261003-v1.0.0-rc.36-invite-free-group`（详见 [`RELEASE_NOTES_20261003.md`](./RELEASE_NOTES_20261003.md)）。
 

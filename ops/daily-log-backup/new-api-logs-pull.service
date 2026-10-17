@@ -1,0 +1,9 @@
+[Unit]
+Description=Pull New API daily logs and verify before 15-day database cleanup
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/youyang/桌面/Hermes备份工具/new-api-logs-pull.py
+TimeoutStartSec=3600
+UMask=0077
+Nice=10

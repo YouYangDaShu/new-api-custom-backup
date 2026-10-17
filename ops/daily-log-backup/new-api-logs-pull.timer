@@ -1,0 +1,11 @@
+[Unit]
+Description=Verify New API logs locally daily, with hourly offline catch-up
+
+[Timer]
+OnCalendar=*-*-* *:15:00
+RandomizedDelaySec=60
+Persistent=true
+Unit=new-api-logs-pull.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=New API daily logs archive only; cleanup requires verified M5 copy
+After=docker.service network.target
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/new-api-backups/logs-daily-backup.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=new-api-logs-backup
+TimeoutStartSec=3600
+UMask=0077
