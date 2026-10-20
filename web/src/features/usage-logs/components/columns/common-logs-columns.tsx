@@ -747,7 +747,7 @@ export function useCommonLogsColumns(
         return (
           <div className='flex flex-col gap-0.5'>
             <span
-              className='flex items-center gap-1 font-mono text-xs font-medium tabular-nums'
+              className='flex items-center gap-1 font-mono text-xs font-medium whitespace-nowrap tabular-nums'
               title={
                 isContextWarning ? t('Context threshold exceeded') : undefined
               }
@@ -776,7 +776,7 @@ export function useCommonLogsColumns(
               </span>
             </span>
             {(hasVisibleCacheRead || cacheWriteTokens > 0) && (
-              <div className='flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]'>
+              <div className='flex flex-nowrap items-center gap-x-2 whitespace-nowrap text-[11px]'>
                 {hasVisibleCacheRead && (
                   <span
                     className='inline-flex items-center gap-1 font-mono text-blue-600 tabular-nums dark:text-blue-400'
@@ -811,6 +811,7 @@ export function useCommonLogsColumns(
           </div>
         )
       },
+      size: 210,
     },
     {
       accessorKey: 'quota',

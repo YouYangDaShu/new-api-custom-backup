@@ -87,7 +87,16 @@ export function UserInfoDialog({
     <Dialog
       open={open}
       onOpenChange={onOpenChange}
-      title={t('User Information')}
+      title={
+        <span className='inline-flex items-baseline gap-1.5'>
+          {t('User Information')}
+          {userId != null && (
+            <span className='text-muted-foreground font-mono text-xs font-normal'>
+              (ID: {userId})
+            </span>
+          )}
+        </span>
+      }
       description={t(
         'View detailed information about this user including balance, usage statistics, and invitation details.'
       )}

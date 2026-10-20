@@ -64,7 +64,7 @@ func weeklyRankingAdminHistory(rows []model.WeeklyRankingReward) []weeklyRanking
 
 func GetWeeklyRankingAdmin(c *gin.Context) {
 	var ledgers []model.WeeklyRankingReward
-	if err := model.DB.Order("created_at desc, rank asc").Limit(200).Find(&ledgers).Error; err != nil {
+	if err := model.DB.Order("created_at desc, `rank` asc").Limit(200).Find(&ledgers).Error; err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -124,7 +124,7 @@ func UpdateWeeklyRankingAdmin(c *gin.Context) {
 }
 
 func GetWeeklyRankingHistory(c *gin.Context) {
-	query := model.DB.Order("created_at desc, rank asc")
+	query := model.DB.Order("created_at desc, `rank` asc")
 	if week := strings.TrimSpace(c.Query("week_start")); week != "" {
 		query = query.Where("week_start = ?", week)
 	}
