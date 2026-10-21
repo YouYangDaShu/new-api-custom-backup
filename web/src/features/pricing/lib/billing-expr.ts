@@ -238,10 +238,48 @@ export type RequestRuleTrace = {
   matched: boolean
 }
 
+export type TierTokenVar = 'p' | 'c' | 'len'
+export const TIER_TIME_FUNCS = [
+  'hour',
+  'minute',
+  'weekday',
+  'month',
+  'day',
+] as const
+export type TierTimeFunc = (typeof TIER_TIME_FUNCS)[number]
+export type TierConditionVar = TierTokenVar | TierTimeFunc
+
+/** Value domains for time functions; out-of-range bounds are invalid. */
+export const TIER_TIME_FUNC_RANGES: Record<TierTimeFunc, [number, number]> = {
+  hour: [0, 23],
+  minute: [0, 59],
+  weekday: [0, 6],
+  month: [1, 12],
+  day: [1, 31],
+}
+
+export function isTierTimeFunc(value: unknown): value is TierTimeFunc {
+  return (
+    typeof value === 'string' &&
+    (TIER_TIME_FUNCS as readonly string[]).includes(value)
+  )
+}
+
+function isTierTimeValueInRange(
+  timeFunc: TierTimeFunc,
+  value: number
+): boolean {
+  if (!Number.isFinite(value) || !Number.isInteger(value)) return false
+  const [min, max] = TIER_TIME_FUNC_RANGES[timeFunc]
+  return value >= min && value <= max
+}
+
 export type TierCondition = {
-  var: 'p' | 'c' | 'len'
+  var: TierConditionVar
   op: '<' | '<=' | '>' | '>='
   value: number
+  /** IANA timezone; present only when `var` is a time function. */
+  timezone?: string
 }
 
 export type ParsedTier = {
@@ -306,9 +344,10 @@ export function parseTiersFromExpr(exprStr: string): ParsedTier[] {
   try {
     const versioned = stripExprVersion(exprStr.trim())
     const body = unwrapOuterParens(versioned.body)
-    const condGroup =
-      `((?:(?:p|c|len)\\s*(?:<|<=|>|>=)\\s*[\\d.eE+]+)` +
-      `(?:\\s*&&\\s*(?:p|c|len)\\s*(?:<|<=|>|>=)\\s*[\\d.eE+]+)*)`
+    const condItem =
+      `(?:(?:p|c|len)\\s*(?:<|<=|>|>=)\\s*[\\d.eE+]+` +
+      `|(?:hour|minute|weekday|month|day)\\("[^"]+"\\)\\s*(?:<|<=|>|>=)\\s*[\\d.eE+]+)`
+    const condGroup = `(${condItem}(?:\\s*&&\\s*${condItem})*)`
     const tierRe = new RegExp(
       `(?:${condGroup}\\s*\\?\\s*)?tier\\("([^"]*)",\\s*([^)]+)\\)`,
       'g'
@@ -330,11 +369,27 @@ export function parseTiersFromExpr(exprStr: string): ParsedTier[] {
           if (cm) {
             if (!Number.isFinite(Number(cm[3]))) return []
             conditions.push({
-              var: cm[1] as TierCondition['var'],
+              var: cm[1] as TierTokenVar,
               op: cm[2] as TierCondition['op'],
               value: Number(cm[3]),
             })
+            continue
           }
+          const tm = cp
+            .trim()
+            .match(
+              /^(hour|minute|weekday|month|day)\("([^"]+)"\)\s*(<|<=|>|>=)\s*([\d.eE+]+)$/
+            )
+          if (!tm) return []
+          const timeFunc = tm[1] as TierTimeFunc
+          const bound = Number(tm[4])
+          if (!isTierTimeValueInRange(timeFunc, bound)) return []
+          conditions.push({
+            var: timeFunc,
+            op: tm[3] as TierCondition['op'],
+            value: bound,
+            timezone: tm[2],
+          })
         }
       }
       const prices = parseTierBody(m[3])

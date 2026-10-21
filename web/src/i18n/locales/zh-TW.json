@@ -3039,7 +3039,7 @@
     "Draw count period": "次數榜週期",
     "All time": "全歷史",
     "This week": "本週",
-    "This month": "本月",
+    "This month": "本月獲得",
     "draws": "抽",
     "hard pity hits": "次硬保底",
     "Your best record": "你的最佳記錄",
@@ -5514,7 +5514,6 @@
     "This model has both fixed-price and token-price settings. Saving the current mode will rewrite the conflicting fields.": "該模型同時存在固定價格和按 token 價格設定。儲存目前模式會重寫衝突欄位。",
     "This model is billed by usage, but the administrator has not configured its pricing yet.": "此模型按用量計費，但管理員尚未設定價格。",
     "This model is not available in any group, or no group pricing information is configured.": "此模型在任何分組中均不可用，或未設定分組定價資訊。",
-    "This month": "本月獲得",
     "This page has not been created yet.": "此頁面尚未建立。",
     "This plan does not allow balance redemption": "該套餐不允許使用餘額兌換",
     "This plugin has no factory fallback. Deleting or disabling it makes this platform unavailable.": "此外掛没有內建回落版本，刪除或禁用后该平台将不可用。",
@@ -5543,7 +5542,6 @@
     "This verification method is currently unavailable.": "此驗證方式目前無法使用。",
     "This verification method is not allowed for this action.": "此操作不允許使用該驗證方式。",
     "This verification method requires its dedicated verification flow.": "此驗證方式需要透過專用驗證流程完成。",
-    "This week": "本週",
     "This will append 2 template rules (Codex CLI and Claude CLI) to the existing rule list.": "這將在現有規則列表中追加 2 條模板規則（Codex CLI 和 Claude CLI）。",
     "This will clear custom pricing ratios and revert to upstream defaults.": "這將清除自訂定價比例並恢復到上游預設值。",
     "This will delete all": "這將刪除所有",
@@ -6360,6 +6358,16 @@
     "Understand how membership tiers, model routes, combined ratios, and pair overrides work together.": "了解會員等級、模型線路、組合倍率與成對覆蓋規則如何協同。",
     "In JSON, the membership group is the outer key and the route group is the inner key. The example below means: vip users pay final ratio 0.8 through standard and 0.3 through premium.": "在 JSON 中，外層鍵是會員組，內層鍵是線路組。下面範例表示：vip 使用者通過 standard 時最終倍率為 0.8，通過 premium 時為 0.3。",
     "Only configured combinations are overridden. All other calls multiply the route ratio by the membership discount.": "只有已設定的組合會被覆蓋；其他呼叫均使用線路倍率乘以會員折扣。",
-    "Special usable route rules make extra token route groups visible to, or hide default route groups from, users of a specific membership tier.": "特殊可用線路規則可以為指定會員等級顯示額外權杖線路組，或隱藏預設線路組。"
+    "Special usable route rules make extra token route groups visible to, or hide default route groups from, users of a specific membership tier.": "特殊可用線路規則可以為指定會員等級顯示額外權杖線路組，或隱藏預設線路組。",
+    "Timezone": "時區",
+    "Monday": "週一",
+    "Tuesday": "週二",
+    "Wednesday": "週三",
+    "Thursday": "週四",
+    "Friday": "週五",
+    "Saturday": "週六",
+    "Sunday": "週日",
+    "Enter a valid condition value.": "請輸入合法的條件值。",
+    "Each tier supports up to {{count}} conditions, all of which must match. The last tier without conditions is the fallback.": "每個階梯最多支援 {{count}} 個條件，需全部滿足。最後一個無條件階梯作為兜底。"
   }
 }

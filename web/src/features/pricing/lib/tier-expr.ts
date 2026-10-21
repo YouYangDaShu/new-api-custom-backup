@@ -16,16 +16,49 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { BILLING_CACHE_VAR_MAP } from './billing-expr'
+import {
+  BILLING_CACHE_VAR_MAP,
+  TIER_TIME_FUNCS,
+  TIER_TIME_FUNC_RANGES,
+  isTierTimeFunc,
+  type TierConditionVar,
+  type TierTimeFunc,
+  type TierTokenVar,
+} from './billing-expr'
+
+// Re-export the tier condition primitives from the module that already owns
+// them, so the visual editor has a single import site.
+export {
+  TIER_TIME_FUNCS,
+  TIER_TIME_FUNC_RANGES,
+  isTierTimeFunc,
+  type TierConditionVar,
+  type TierTimeFunc,
+  type TierTokenVar,
+}
 
 export const CACHE_MODE_TIMED = 'timed'
 export const CACHE_MODE_GENERIC = 'generic'
 export type CacheMode = typeof CACHE_MODE_TIMED | typeof CACHE_MODE_GENERIC
 
+export const DEFAULT_TIER_TIMEZONE = 'Asia/Shanghai'
+
+export function isTierTimeValueInRange(
+  timeFunc: TierTimeFunc,
+  value: number | string
+): boolean {
+  const num = typeof value === 'number' ? value : Number(String(value).trim())
+  if (!Number.isFinite(num) || !Number.isInteger(num)) return false
+  const [min, max] = TIER_TIME_FUNC_RANGES[timeFunc]
+  return num >= min && num <= max
+}
+
 export type TierConditionInput = {
-  var: 'p' | 'c' | 'len'
+  var: TierConditionVar
   op: '<' | '<=' | '>' | '>='
   value: number | string
+  /** IANA timezone; only meaningful when `var` is a time function. */
+  timezone?: string
 }
 
 export type VisualTier = {
@@ -104,11 +137,29 @@ export function normalizeVisualConfig(
   }
 }
 
+/** Build the left-hand operand for one tier condition. */
+export function buildTierConditionOperand(
+  cond: TierConditionInput
+): string | null {
+  if (isTierTimeFunc(cond.var)) {
+    const tz = (cond.timezone || DEFAULT_TIER_TIMEZONE).trim()
+    if (!tz) return null
+    if (!isTierTimeValueInRange(cond.var, cond.value)) return null
+    return `${cond.var}(${JSON.stringify(tz)})`
+  }
+  return cond.var
+}
+
 function buildConditionStr(conditions: TierConditionInput[]): string {
   if (!conditions || conditions.length === 0) return ''
   return conditions
-    .filter((c) => c.var && c.op && c.value != null && c.value !== '')
-    .map((c) => `${c.var} ${c.op} ${c.value}`)
+    .map((c) => {
+      if (!c.var || !c.op || c.value == null || c.value === '') return ''
+      const operand = buildTierConditionOperand(c)
+      if (!operand) return ''
+      return `${operand} ${c.op} ${c.value}`
+    })
+    .filter(Boolean)
     .join(' && ')
 }
 
@@ -193,9 +244,10 @@ export function tryParseVisualConfig(
       })
     }
 
-    const condGroup =
-      `((?:(?:p|c|len)\\s*(?:<|<=|>|>=)\\s*[\\d.eE+]+)` +
-      `(?:\\s*&&\\s*(?:p|c|len)\\s*(?:<|<=|>|>=)\\s*[\\d.eE+]+)*)`
+    const condItem =
+      `(?:(?:p|c|len)\\s*(?:<|<=|>|>=)\\s*[\\d.eE+]+` +
+      `|(?:hour|minute|weekday|month|day)\\("[^"]+"\\)\\s*(?:<|<=|>|>=)\\s*[\\d.eE+]+)`
+    const condGroup = `(${condItem}(?:\\s*&&\\s*${condItem})*)`
     const tierRe = new RegExp(
       `(?:${condGroup}\\s*\\?\\s*)?tier\\("([^"]*)",\\s*${bodyPat}\\)`,
       'g'
@@ -210,9 +262,25 @@ export function tryParseVisualConfig(
           const cm = cp.trim().match(/^(p|c|len)\s*(<|<=|>|>=)\s*([\d.eE+]+)$/)
           if (cm) {
             conditions.push({
-              var: cm[1] as TierConditionInput['var'],
+              var: cm[1] as TierTokenVar,
               op: cm[2] as TierConditionInput['op'],
               value: Number(cm[3]),
+            })
+            continue
+          }
+          const tm = cp
+            .trim()
+            .match(
+              /^(hour|minute|weekday|month|day)\("([^"]+)"\)\s*(<|<=|>|>=)\s*([\d.eE+]+)$/
+            )
+          if (tm) {
+            const timeFunc = tm[1] as TierTimeFunc
+            if (!isTierTimeValueInRange(timeFunc, tm[4])) continue
+            conditions.push({
+              var: timeFunc,
+              op: tm[3] as TierConditionInput['op'],
+              value: Number(tm[4]),
+              timezone: tm[2],
             })
           }
         }
@@ -246,6 +314,48 @@ export function tryParseVisualConfig(
 // ---------------------------------------------------------------------------
 // Local cost evaluator (for the estimator preview)
 // ---------------------------------------------------------------------------
+
+/**
+ * Read the clock fields of "now" in an IANA timezone for the local estimator.
+ * Mirrors the backend `timeInZone`: an unknown/empty timezone falls back to
+ * UTC instead of throwing, so the preview never diverges from settlement by
+ * silently erroring out.
+ */
+function tierTimeInZone(tz: string): {
+  hour: number
+  minute: number
+  weekday: number
+  month: number
+  day: number
+} {
+  const trimmed = (tz || '').trim()
+  const now = new Date()
+  let parts: Intl.DateTimeFormatPart[]
+  try {
+    parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: trimmed || 'UTC',
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      weekday: 'short',
+    }).formatToParts(now)
+  } catch {
+    return tierTimeInZone('UTC')
+  }
+  const pick = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? ''
+  const weekdayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+  return {
+    hour: Number(pick('hour')),
+    minute: Number(pick('minute')),
+    weekday: Math.max(0, weekdayNames.indexOf(pick('weekday'))),
+    month: Number(pick('month')),
+    day: Number(pick('day')),
+  }
+}
 
 const ESTIMATOR_VARS = [
   { var: 'cr', stateKey: 'cacheReadTokens' },
@@ -298,6 +408,11 @@ export function evalExprLocally(
       abs: Math.abs,
       ceil: Math.ceil,
       floor: Math.floor,
+      hour: (tz: string) => tierTimeInZone(tz).hour,
+      minute: (tz: string) => tierTimeInZone(tz).minute,
+      weekday: (tz: string) => tierTimeInZone(tz).weekday,
+      month: (tz: string) => tierTimeInZone(tz).month,
+      day: (tz: string) => tierTimeInZone(tz).day,
     }
     for (const field of ESTIMATOR_VARS) {
       env[field.var] = extraTokenValues[field.stateKey] || 0

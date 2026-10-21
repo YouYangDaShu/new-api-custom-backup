@@ -18,7 +18,10 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { createContext, useContext } from 'react'
 
-import { BILLING_PRICING_VARS, splitBillingExprAndRequestRules } from '@/features/pricing/lib/billing-expr'
+import {
+  BILLING_PRICING_VARS,
+  splitBillingExprAndRequestRules,
+} from '@/features/pricing/lib/billing-expr'
 import { tryParseVisualConfig } from '@/features/pricing/lib/tier-expr'
 
 import type { PricingSyncValues } from '../types'
@@ -127,8 +130,12 @@ export function getSyncPriceLines(
   return lines
 }
 
-export function getSyncExpressionPricing(expression: string, t: (key: string) => string) {
-  const { billingExpr, requestRuleExpr } = splitBillingExprAndRequestRules(expression)
+export function getSyncExpressionPricing(
+  expression: string,
+  t: (key: string) => string
+) {
+  const { billingExpr, requestRuleExpr } =
+    splitBillingExprAndRequestRules(expression)
   const config = tryParseVisualConfig(billingExpr)
   if (!config) return null
   // Do not turn malformed or overflowing upstream numbers into free prices.
@@ -136,17 +143,46 @@ export function getSyncExpressionPricing(expression: string, t: (key: string) =>
   for (const match of body.matchAll(/\*\s*([+\-\d.eE]+)/g)) {
     if (!Number.isFinite(Number(match[1])) || Number(match[1]) < 0) return null
   }
-  const fields = BILLING_PRICING_VARS.filter((field) =>
-    field.tierField && new RegExp(`\\b${field.key}\\s*\\*`).test(body)
+  const fields = BILLING_PRICING_VARS.filter(
+    (field) =>
+      field.tierField && new RegExp(`\\b${field.key}\\s*\\*`).test(body)
   )
-  const conditionLabels = { p: t('Input tokens'), c: t('Output tokens'), len: t('Length') }
+  const conditionLabels: Record<string, string> = {
+    p: t('Input tokens'),
+    c: t('Output tokens'),
+    len: t('Length'),
+    hour: t('Hour of day'),
+    minute: t('Minute'),
+    weekday: t('Weekday'),
+    month: t('Month number'),
+    day: t('Day of month'),
+  }
   return {
     requestRuleExpr,
     tiers: config.tiers.map((tier) => ({
       label: tier.label,
-      condition: tier.conditions.map((condition) =>
-        `${conditionLabels[condition.var]} ${condition.op} ${Number(condition.value).toLocaleString()}`
-      ).join(' ∧ '),
+      condition: tier.conditions
+        .map((condition) => {
+          const label = conditionLabels[condition.var] || condition.var
+          const isTime =
+            condition.var in
+            {
+              hour: 1,
+              minute: 1,
+              weekday: 1,
+              month: 1,
+              day: 1,
+            }
+          // Clock fields are small integers: no thousands separators, and the
+          // timezone is part of what the condition actually means.
+          const value = isTime
+            ? String(Number(condition.value))
+            : Number(condition.value).toLocaleString()
+          const suffix =
+            isTime && condition.timezone ? ` (${condition.timezone})` : ''
+          return `${label} ${condition.op} ${value}${suffix}`
+        })
+        .join(' ∧ '),
       lines: fields.map((field) => ({
         label: t(field.shortLabel),
         value: `$${formatPricingNumber(Number(tier[field.tierField!]))}`,
@@ -167,10 +203,14 @@ export function describeSyncPrice(
         t('Expression pricing'),
         `USD / ${t('1M token')}`,
         ...parsed.tiers.flatMap((tier) => [
-          ...(parsed.tiers.length > 1 ? [tier.condition || tier.label || t('Default')] : []),
+          ...(parsed.tiers.length > 1
+            ? [tier.condition || tier.label || t('Default')]
+            : []),
           ...tier.lines.map((line) => `${line.label}: ${line.value}`),
         ]),
-        ...(parsed.requestRuleExpr ? [`${t('Includes request rules')}: ${parsed.requestRuleExpr}`] : []),
+        ...(parsed.requestRuleExpr
+          ? [`${t('Includes request rules')}: ${parsed.requestRuleExpr}`]
+          : []),
       ].join('\n')
     }
     return `${t('Expression pricing')}\n${values.billing_expr}`

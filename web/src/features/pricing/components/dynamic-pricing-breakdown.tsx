@@ -34,6 +34,7 @@ import {
   MATCH_LT,
   MATCH_RANGE,
   SOURCE_TIME,
+  TIER_TIME_FUNCS,
   parseTiersFromExpr,
   requestRuleGroupsFromTrace,
   splitBillingExprAndRequestRules,
@@ -117,6 +118,11 @@ const VAR_LABELS: Record<string, string> = {
   p: 'Input',
   c: 'Output',
   len: 'Full input length',
+  hour: 'Hour of day',
+  minute: 'Minute',
+  weekday: 'Weekday',
+  month: 'Month number',
+  day: 'Day of month',
 }
 const OP_LABELS: Record<string, string> = {
   '<': '<',
@@ -151,8 +157,14 @@ function formatConditionSummary(
   return conditions
     .map((c) => {
       const varLabel = t(VAR_LABELS[c.var] || c.var)
-      const hint = formatTokenHint(c.value)
-      return `${varLabel} ${OP_LABELS[c.op] || c.op} ${hint || c.value}`
+      const isTime = TIER_TIME_FUNCS.includes(c.var as never)
+      // Token counts get a compact hint; clock fields are plain small
+      // integers where "1.0K" would be nonsense.
+      const value = isTime
+        ? String(c.value)
+        : formatTokenHint(c.value) || c.value
+      const suffix = isTime && c.timezone ? ` (${c.timezone})` : ''
+      return `${varLabel} ${OP_LABELS[c.op] || c.op} ${value}${suffix}`
     })
     .filter(Boolean)
     .join(' && ')

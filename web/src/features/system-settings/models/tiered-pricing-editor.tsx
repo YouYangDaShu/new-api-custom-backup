@@ -103,6 +103,10 @@ import {
   exprUsesExtraVars,
   generateExprFromVisualConfig,
   getTierCacheMode,
+  DEFAULT_TIER_TIMEZONE,
+  TIER_TIME_FUNCS,
+  TIER_TIME_FUNC_RANGES,
+  isTierTimeFunc,
   normalizeVisualConfig,
   normalizeVisualTier,
   tryParseVisualConfig,
@@ -123,8 +127,31 @@ const CONDITION_INPUT_OPTIONS: {
   { value: 'len', labelKey: 'Full input length' },
   { value: 'p', labelKey: 'Billable input tokens' },
   { value: 'c', labelKey: 'Billable output tokens' },
+  { value: 'hour', labelKey: 'Hour of day' },
+  { value: 'weekday', labelKey: 'Weekday' },
+  { value: 'month', labelKey: 'Month number' },
+  { value: 'day', labelKey: 'Day of month' },
+  { value: 'minute', labelKey: 'Minute' },
 ]
 const OPS: TierConditionInput['op'][] = ['<', '<=', '>', '>=']
+
+const TIME_CONDITION_VARS = TIER_TIME_FUNCS as readonly string[]
+
+/**
+ * Cap on tier conditions. Peak/off-peak pricing needs weekday bounds plus one
+ * hour range, so the historical two-condition limit cannot express it.
+ */
+const MAX_TIER_CONDITIONS = 6
+
+const WEEKDAY_OPTIONS = [
+  { value: '1', label: 'Monday' },
+  { value: '2', label: 'Tuesday' },
+  { value: '3', label: 'Wednesday' },
+  { value: '4', label: 'Thursday' },
+  { value: '5', label: 'Friday' },
+  { value: '6', label: 'Saturday' },
+  { value: '0', label: 'Sunday' },
+]
 
 type Preset = {
   key: string
@@ -440,18 +467,55 @@ function ConditionRow({ condition, onChange, onRemove }: ConditionRowProps) {
   const currentInputOption = CONDITION_INPUT_OPTIONS.find(
     (option) => option.value === condition.var
   )
+  const isTime = TIME_CONDITION_VARS.includes(condition.var)
+  const timezone = condition.timezone || DEFAULT_TIER_TIMEZONE
+  const isWeekday = condition.var === 'weekday'
+  const [min, max] = isTime
+    ? TIER_TIME_FUNC_RANGES[condition.var as keyof typeof TIER_TIME_FUNC_RANGES]
+    : [0, Number.MAX_SAFE_INTEGER]
+  const outOfRange =
+    isTime &&
+    (!Number.isInteger(Number(condition.value)) ||
+      Number(condition.value) < min ||
+      Number(condition.value) > max)
+
+  const handleVarChange = (value: string | null) => {
+    if (!value) return
+    if (isTierTimeFunc(value)) {
+      // Clock fields are small integers with their own domain; keep the value
+      // inside range instead of carrying a token count over from len/p/c.
+      const [low] = TIER_TIME_FUNC_RANGES[value]
+      const carried = Number(condition.value)
+      const nextValue =
+        Number.isInteger(carried) &&
+        carried >= low &&
+        carried <= TIER_TIME_FUNC_RANGES[value][1]
+          ? carried
+          : low
+      onChange({
+        ...condition,
+        var: value as TierConditionInput['var'],
+        value: nextValue,
+        timezone: condition.timezone || DEFAULT_TIER_TIMEZONE,
+      })
+      return
+    }
+    onChange({
+      ...condition,
+      var: value as TierConditionInput['var'],
+      timezone: undefined,
+    })
+  }
 
   return (
-    <div className='flex items-center gap-2'>
+    <div className='flex flex-wrap items-center gap-2'>
       <Select
         items={CONDITION_INPUT_OPTIONS.map((option) => ({
           value: option.value,
           label: t(option.labelKey),
         }))}
         value={condition.var}
-        onValueChange={(value) =>
-          onChange({ ...condition, var: value as TierConditionInput['var'] })
-        }
+        onValueChange={handleVarChange}
       >
         <SelectTrigger className='w-32' size='sm'>
           <SelectValue>
@@ -490,16 +554,61 @@ function ConditionRow({ condition, onChange, onRemove }: ConditionRowProps) {
           </SelectGroup>
         </SelectContent>
       </Select>
-      <DraftNumberInput
-        min={0}
-        value={condition.value}
-        onValueChange={(value) => onChange({ ...condition, value })}
-        placeholder='tokens'
-        className='w-32'
-      />
-      <span className='text-muted-foreground text-xs'>
-        {formatTokenHint(condition.value)}
-      </span>
+      {isWeekday ? (
+        <Select
+          items={WEEKDAY_OPTIONS.map((option) => ({
+            value: option.value,
+            label: t(option.label),
+          }))}
+          value={String(condition.value)}
+          onValueChange={(value) => {
+            if (value == null) return
+            onChange({ ...condition, value })
+          }}
+        >
+          <SelectTrigger className='w-32' size='sm'>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent alignItemWithTrigger={false}>
+            <SelectGroup>
+              {WEEKDAY_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {t(option.label)}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+      ) : (
+        <DraftNumberInput
+          min={isTime ? min : 0}
+          max={isTime ? max : undefined}
+          value={condition.value}
+          onValueChange={(value) => onChange({ ...condition, value })}
+          placeholder={isTime ? '0' : 'tokens'}
+          className='w-32'
+        />
+      )}
+      {isTime ? (
+        <Input
+          value={timezone}
+          onChange={(event) =>
+            onChange({ ...condition, timezone: event.target.value })
+          }
+          placeholder='Asia/Shanghai'
+          aria-label={t('Timezone')}
+          className='h-8 w-40'
+        />
+      ) : (
+        <span className='text-muted-foreground text-xs'>
+          {formatTokenHint(condition.value)}
+        </span>
+      )}
+      {outOfRange && (
+        <span className='text-destructive text-xs'>
+          {t('Enter a valid condition value.')}
+        </span>
+      )}
       <Button
         variant='ghost'
         size='icon'
@@ -673,7 +782,7 @@ function VisualTierCard({
             variant='ghost'
             size='sm'
             onClick={onAddCondition}
-            disabled={tier.conditions.length >= 2}
+            disabled={tier.conditions.length >= MAX_TIER_CONDITIONS}
             className='h-7 px-2 text-xs'
           >
             <Plus className='mr-1 h-3 w-3' />
@@ -841,7 +950,7 @@ function VisualEditor({ visualConfig, onChange, currency }: VisualEditorProps) {
 
   const handleAddCondition = (index: number) => {
     const tier = config.tiers[index]
-    if (tier.conditions.length >= 2) return
+    if (tier.conditions.length >= MAX_TIER_CONDITIONS) return
     // Prefer `len` (input length) over `p`/`c` for tier conditions because
     // `p` is subject to auto-exclusion when sub-categories like `cr` are
     // priced separately, which can misroute long-input requests into shorter
@@ -868,7 +977,8 @@ function VisualEditor({ visualConfig, onChange, currency }: VisualEditorProps) {
     <div className='space-y-2'>
       <p className='text-muted-foreground text-xs'>
         {t(
-          'Each tier supports up to 2 conditions. The last tier without conditions is the fallback.'
+          'Each tier supports up to {{count}} conditions, all of which must match. The last tier without conditions is the fallback.',
+          { count: MAX_TIER_CONDITIONS }
         )}
       </p>
       {config.tiers.map((tier, index) => (
