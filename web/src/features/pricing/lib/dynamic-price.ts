@@ -318,7 +318,14 @@ export function getDynamicPricingSummary(
 
   const tiers = getDynamicPricingTiers(model)
   const isTaskUsage = isTaskUsagePricingModel(model)
-  const tier = isTaskUsage ? (tiers.at(-1) ?? null) : (tiers[0] ?? null)
+  // The reference price is the fallback tier — the last one without
+  // conditions. For peak/off-peak models that is the off-peak rate, which is
+  // the base price; using `tiers[0]` would advertise the peak rate instead.
+  const fallbackTier =
+    [...tiers].reverse().find((item) => item.conditions.length === 0) ?? null
+  const tier = isTaskUsage
+    ? (tiers.at(-1) ?? null)
+    : (fallbackTier ?? tiers[0] ?? null)
   let entries = getDynamicPriceEntries(tier, {
     ...options,
     usageSchema: model.billing_usage_schema,

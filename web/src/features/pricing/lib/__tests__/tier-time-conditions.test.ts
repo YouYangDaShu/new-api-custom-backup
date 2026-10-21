@@ -27,6 +27,7 @@ import {
   type TierCondition,
   type TierConditionGroup,
 } from '../billing-expr'
+import { getDynamicPricingSummary } from '../dynamic-price'
 import {
   buildConditionStr,
   evalExprLocally,
@@ -290,5 +291,40 @@ describe('buildConditionStr nested shapes', () => {
     expect(buildConditionStr(tautology)).toBe(
       '(hour("Asia/Shanghai") >= 9 || hour("Asia/Shanghai") < 12)'
     )
+  })
+})
+
+describe('base price comes from the fallback tier', () => {
+  // Peak/off-peak models must advertise the off-peak rate as the base price.
+  // Picking the first tier would advertise the peak rate and make the model
+  // look like it always charges double.
+  const model = {
+    id: 1,
+    model_name: 'deepseek-v4.1-flash',
+    quota_type: 0,
+    model_ratio: 37.5,
+    completion_ratio: 1,
+    model_price: 0,
+    billing_mode: 'tiered_expr',
+    billing_expr:
+      'weekday("Asia/Shanghai") >= 1 && weekday("Asia/Shanghai") <= 5 && ' +
+      '((hour("Asia/Shanghai") >= 9 && hour("Asia/Shanghai") < 12) || ' +
+      '(hour("Asia/Shanghai") >= 14 && hour("Asia/Shanghai") < 18)) ' +
+      '? tier("峰时", p * 2 + c * 8 + cr * 0.04) ' +
+      ': tier("闲时", p * 1 + c * 4 + cr * 0.02)',
+    enable_groups: ['default'],
+  } as never
+
+  test('summary tier is the unconditional fallback, not the first tier', () => {
+    const summary = getDynamicPricingSummary(model, { tokenUnit: 'M' })
+    expect(summary?.tierCount).toBe(2)
+    expect(summary?.tier?.label).toBe('闲时')
+    expect(summary?.primaryEntries.map((entry) => entry.value)).toEqual([1, 4])
+  })
+
+  test('still reports the full spread across tiers', () => {
+    const summary = getDynamicPricingSummary(model, { tokenUnit: 'M' })
+    expect(summary?.primaryEntries[0]?.formattedRange).toBe('$1 – $2')
+    expect(summary?.tierLabels).toEqual(['峰时', '闲时'])
   })
 })

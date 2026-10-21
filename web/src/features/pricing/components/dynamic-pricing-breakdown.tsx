@@ -207,6 +207,10 @@ function formatBreakdownConditionSummary(
   tierCount: number
 ): string {
   if (!isTaskBreakdownTier(tier)) {
+    // A named tier already says which band it is. Spelling out
+    // `weekday >= 1 (Asia/Shanghai) && weekday <= 5 && ((hour >= 9 && ...`
+    // under "Peak" just buries the price the reader came for.
+    if (tier.label?.trim()) return ''
     return formatConditionSummary(tier.conditions, t)
   }
   return (
