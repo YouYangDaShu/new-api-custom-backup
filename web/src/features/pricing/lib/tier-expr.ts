@@ -20,7 +20,14 @@ import {
   BILLING_CACHE_VAR_MAP,
   TIER_TIME_FUNCS,
   TIER_TIME_FUNC_RANGES,
+  buildTierConditionExpr,
+  findTernaryColon,
+  findTopLevelCharacter,
+  isTierConditionGroup,
   isTierTimeFunc,
+  parseTierConditionExpr,
+  type TierCondition,
+  type TierConditionNode,
   type TierConditionVar,
   type TierTimeFunc,
   type TierTokenVar,
@@ -31,7 +38,9 @@ import {
 export {
   TIER_TIME_FUNCS,
   TIER_TIME_FUNC_RANGES,
+  isTierConditionGroup,
   isTierTimeFunc,
+  type TierConditionNode,
   type TierConditionVar,
   type TierTimeFunc,
   type TierTokenVar,
@@ -56,14 +65,59 @@ export function isTierTimeValueInRange(
 export type TierConditionInput = {
   var: TierConditionVar
   op: '<' | '<=' | '>' | '>='
+  /** Kept as a string while the user is typing; serialized as a number. */
   value: number | string
   /** IANA timezone; only meaningful when `var` is a time function. */
   timezone?: string
 }
 
+export type TierConditionGroupInput = {
+  kind: 'all' | 'any'
+  conditions: TierConditionInputNode[]
+}
+
+export type TierConditionInputNode =
+  | TierConditionInput
+  | TierConditionGroupInput
+
+export function isTierConditionGroupInput(
+  node: TierConditionInputNode
+): node is TierConditionGroupInput {
+  return 'kind' in node
+}
+
+/** Count comparison leaves in an in-progress editor tree. */
+export function countTierConditionInputs(
+  nodes: TierConditionInputNode[]
+): number {
+  return nodes.reduce(
+    (total, node) =>
+      total +
+      (isTierConditionGroupInput(node)
+        ? countTierConditionInputs(node.conditions)
+        : 1),
+    0
+  )
+}
+
+/** Flatten a condition tree into its comparison leaves. */
+export function flattenTierConditions(
+  nodes: TierConditionInputNode[]
+): TierConditionInput[] {
+  return nodes.flatMap((node) =>
+    isTierConditionGroupInput(node)
+      ? flattenTierConditions(node.conditions)
+      : [node]
+  )
+}
+
 export type VisualTier = {
   label: string
-  conditions: TierConditionInput[]
+  /**
+   * Condition tree: comparisons plus `all`/`any` groups. A single tier can
+   * therefore cover e.g. two peak windows without duplicating its prices.
+   */
+  conditions: TierConditionInputNode[]
   input_unit_cost: number
   output_unit_cost: number
   cache_mode: CacheMode
@@ -150,17 +204,55 @@ export function buildTierConditionOperand(
   return cond.var
 }
 
-function buildConditionStr(conditions: TierConditionInput[]): string {
+/** Convert one editor comparison into the engine's `TierCondition` shape. */
+export function toTierCondition(
+  input: TierConditionInput
+): TierCondition | null {
+  if (!input.var || !input.op || input.value == null || input.value === '') {
+    return null
+  }
+  const operand = buildTierConditionOperand(input)
+  if (!operand) return null
+  const value = Number(input.value)
+  if (!Number.isFinite(value)) return null
+  return isTierTimeFunc(input.var)
+    ? {
+        var: input.var,
+        op: input.op,
+        value,
+        timezone: (input.timezone || DEFAULT_TIER_TIMEZONE).trim(),
+      }
+    : { var: input.var, op: input.op, value }
+}
+
+function inputNodeToConditionNode(
+  node: TierConditionInputNode
+): TierConditionNode | null {
+  if (isTierConditionGroupInput(node)) {
+    const inner = node.conditions
+      .map(inputNodeToConditionNode)
+      .filter((child): child is TierConditionNode => child !== null)
+    if (inner.length === 0) return null
+    return { kind: node.kind, conditions: inner }
+  }
+  return toTierCondition(node)
+}
+
+/**
+ * Build the condition string for a tier.
+ *
+ * Incomplete rows are dropped (a half-typed value must not break the whole
+ * expression), and an empty result means "fallback tier". Groups nest to any
+ * depth, so a single tier can hold e.g. "weekdays AND (09-12 OR 14-18)".
+ */
+export function buildConditionStr(
+  conditions: TierConditionInputNode[]
+): string {
   if (!conditions || conditions.length === 0) return ''
-  return conditions
-    .map((c) => {
-      if (!c.var || !c.op || c.value == null || c.value === '') return ''
-      const operand = buildTierConditionOperand(c)
-      if (!operand) return ''
-      return `${operand} ${c.op} ${c.value}`
-    })
-    .filter(Boolean)
-    .join(' && ')
+  const nodes = conditions
+    .map(inputNodeToConditionNode)
+    .filter((node): node is TierConditionNode => node !== null)
+  return buildTierConditionExpr(nodes)
 }
 
 function buildTierBodyExpr(tier: VisualTier): string {
@@ -211,98 +303,107 @@ export function generateExprFromVisualConfig(
   return parts.join(' : ')
 }
 
+/** Strip redundant outer parentheses around the whole expression. */
+function unwrapVisualParens(expr: string): string {
+  let current = expr
+  for (let guard = 0; guard < 8; guard += 1) {
+    if (!current.startsWith('(') || !current.endsWith(')')) return current
+    let depth = 0
+    let wrapsAll = true
+    for (let i = 0; i < current.length; i += 1) {
+      if (current[i] === '(') depth += 1
+      else if (current[i] === ')') depth -= 1
+      if (depth === 0 && i < current.length - 1) {
+        wrapsAll = false
+        break
+      }
+    }
+    if (!wrapsAll || depth !== 0) return current
+    current = current.slice(1, -1).trim()
+  }
+  return current
+}
+
+function tierConditionToInput(node: TierConditionNode): TierConditionInputNode {
+  if (isTierConditionGroup(node)) {
+    return {
+      kind: node.kind,
+      conditions: node.conditions.map(tierConditionToInput),
+    }
+  }
+  return {
+    var: node.var,
+    op: node.op,
+    value: node.value,
+    ...(node.timezone ? { timezone: node.timezone } : {}),
+  }
+}
+
 export function tryParseVisualConfig(
   exprStr: string | null | undefined
 ): VisualConfig | null {
   if (!exprStr) return null
   try {
-    let body = exprStr
+    let body = exprStr.trim()
     const versionMatch = body.match(/^v\d+:([\s\S]*)$/)
-    if (versionMatch) body = versionMatch[1]
+    if (versionMatch) body = versionMatch[1].trim()
+    body = unwrapVisualParens(body)
+
     const cacheVarNames = BILLING_CACHE_VAR_MAP.map((cv) => cv.exprVar)
     const optCacheStr = cacheVarNames
       .map((v) => `(?:\\s*\\+\\s*${v}\\s*\\*\\s*([\\d.eE+-]+))?`)
       .join('')
-
     const bodyPat = `p\\s*\\*\\s*([\\d.eE+-]+)\\s*\\+\\s*c\\s*\\*\\s*([\\d.eE+-]+)${optCacheStr}`
-
     const singleRe = new RegExp(`^tier\\("([^"]*)",\\s*${bodyPat}\\)$`)
-    const simple = body.match(singleRe)
-    if (simple) {
-      const tier: Record<string, unknown> = {
-        conditions: [],
-        input_unit_cost: Number(simple[2]),
-        output_unit_cost: Number(simple[3]),
-        label: simple[1],
-      }
-      BILLING_CACHE_VAR_MAP.forEach((cv, i) => {
-        const val = simple[4 + i]
-        if (val != null) tier[cv.field] = Number(val)
-      })
-      return normalizeVisualConfig({
-        tiers: [normalizeVisualTier(tier as Partial<VisualTier>)],
-      })
-    }
 
-    const condItem =
-      `(?:(?:p|c|len)\\s*(?:<|<=|>|>=)\\s*[\\d.eE+]+` +
-      `|(?:hour|minute|weekday|month|day)\\("[^"]+"\\)\\s*(?:<|<=|>|>=)\\s*[\\d.eE+]+)`
-    const condGroup = `(${condItem}(?:\\s*&&\\s*${condItem})*)`
-    const tierRe = new RegExp(
-      `(?:${condGroup}\\s*\\?\\s*)?tier\\("([^"]*)",\\s*${bodyPat}\\)`,
-      'g'
-    )
     const tiers: VisualTier[] = []
-    let match: RegExpExecArray | null
-    while ((match = tierRe.exec(body)) !== null) {
-      const condStr = match[1] || ''
-      const conditions: TierConditionInput[] = []
-      if (condStr) {
-        for (const cp of condStr.split(/\s*&&\s*/)) {
-          const cm = cp.trim().match(/^(p|c|len)\s*(<|<=|>|>=)\s*([\d.eE+]+)$/)
-          if (cm) {
-            conditions.push({
-              var: cm[1] as TierTokenVar,
-              op: cm[2] as TierConditionInput['op'],
-              value: Number(cm[3]),
-            })
-            continue
-          }
-          const tm = cp
-            .trim()
-            .match(
-              /^(hour|minute|weekday|month|day)\("([^"]+)"\)\s*(<|<=|>|>=)\s*([\d.eE+]+)$/
-            )
-          if (tm) {
-            const timeFunc = tm[1] as TierTimeFunc
-            if (!isTierTimeValueInRange(timeFunc, tm[4])) continue
-            conditions.push({
-              var: timeFunc,
-              op: tm[3] as TierConditionInput['op'],
-              value: Number(tm[4]),
-              timezone: tm[2],
-            })
-          }
+    let rest = body
+    for (let guard = 0; guard <= 32; guard += 1) {
+      const simple = rest.match(singleRe)
+      if (simple) {
+        const tier: Record<string, unknown> = {
+          conditions: [],
+          input_unit_cost: Number(simple[2]),
+          output_unit_cost: Number(simple[3]),
+          label: simple[1],
         }
+        BILLING_CACHE_VAR_MAP.forEach((cv, i) => {
+          const val = simple[4 + i]
+          if (val != null) tier[cv.field] = Number(val)
+        })
+        tiers.push(normalizeVisualTier(tier as Partial<VisualTier>))
+        rest = ''
+        break
       }
+
+      const question = findTopLevelCharacter(rest, '?')
+      if (question < 0) return null
+      const colon = findTernaryColon(rest, question)
+      if (colon < 0) return null
+      const branch = rest.slice(question + 1, colon).trim()
+      const parsedTier = branch.match(singleRe)
+      if (!parsedTier) return null
+      const nodes = parseTierConditionExpr(rest.slice(0, question))
+      if (!nodes || nodes.length === 0) return null
       const tier: Record<string, unknown> = {
-        conditions,
-        input_unit_cost: Number(match[3]),
-        output_unit_cost: Number(match[4]),
-        label: match[2],
+        conditions: nodes.map(tierConditionToInput),
+        input_unit_cost: Number(parsedTier[2]),
+        output_unit_cost: Number(parsedTier[3]),
+        label: parsedTier[1],
       }
-      const m = match
       BILLING_CACHE_VAR_MAP.forEach((cv, i) => {
-        const val = m[5 + i]
+        const val = parsedTier[4 + i]
         if (val != null) tier[cv.field] = Number(val)
       })
       tiers.push(normalizeVisualTier(tier as Partial<VisualTier>))
+      rest = rest.slice(colon + 1).trim()
     }
-    if (tiers.length === 0) return null
+
+    if (tiers.length === 0 || rest !== '') return null
 
     const cfg = normalizeVisualConfig({ tiers })
     const regenerated = generateExprFromVisualConfig(cfg)
-    if (regenerated.replace(/\s+/g, '') !== body.replace(/\s+/g, '')) {
+    if (regenerated.replaceAll(/\s+/g, '') !== body.replaceAll(/\s+/g, '')) {
       return null
     }
     return cfg

@@ -1,4 +1,15 @@
-import { parseTiersFromExpr } from '@/features/pricing/lib/billing-expr'
+import {
+  isTierConditionGroup,
+  parseTiersFromExpr,
+  type TierCondition,
+  type TierConditionNode,
+} from '@/features/pricing/lib/billing-expr'
+
+function flattenConditions(nodes: TierConditionNode[]): TierCondition[] {
+  return nodes.flatMap((node) =>
+    isTierConditionGroup(node) ? flattenConditions(node.conditions) : [node]
+  )
+}
 
 export function isGptLongContextWarningModel(
   modelName: string | undefined
@@ -13,10 +24,12 @@ export function isGptLongContextWarningModel(
  * Invalid expressions and expressions without `len` conditions are deliberately
  * treated as having no warning threshold rather than guessing from a model.
  */
-export function getTieredInputTokenThreshold(expression: string): number | null {
+export function getTieredInputTokenThreshold(
+  expression: string
+): number | null {
   const tiers = parseTiersFromExpr(expression)
   const thresholds = tiers.flatMap((tier) =>
-    tier.conditions
+    flattenConditions(tier.conditions)
       .filter((condition) => condition.var === 'len')
       .map((condition) => condition.value)
       .filter((value) => Number.isFinite(value) && value > 0)

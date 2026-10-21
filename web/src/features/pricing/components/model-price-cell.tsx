@@ -100,6 +100,10 @@ export function ModelPriceCell(props: {
     if (dynamic.isTaskUsage) caption = currencyLabel
     if (dynamic.tierCount > 1) {
       caption += ` · ${t('{{count}} tiers', { count: dynamic.tierCount })}`
+      // Name the tiers so the plaza row says which prices the range covers
+      // (e.g. peak / off-peak) instead of only a bare tier count.
+      const labels = dynamic.tierLabels.filter(Boolean)
+      if (labels.length > 0) caption += ` · ${labels.join(' / ')}`
     }
   } else {
     if (isUnconfiguredTaskUsageModel(props.model)) {

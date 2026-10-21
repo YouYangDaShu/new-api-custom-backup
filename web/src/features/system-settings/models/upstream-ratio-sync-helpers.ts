@@ -20,9 +20,14 @@ import { createContext, useContext } from 'react'
 
 import {
   BILLING_PRICING_VARS,
+  TIER_TIME_FUNCS,
   splitBillingExprAndRequestRules,
 } from '@/features/pricing/lib/billing-expr'
-import { tryParseVisualConfig } from '@/features/pricing/lib/tier-expr'
+import {
+  isTierConditionGroupInput,
+  tryParseVisualConfig,
+  type TierConditionInputNode,
+} from '@/features/pricing/lib/tier-expr'
 
 import type { PricingSyncValues } from '../types'
 import {
@@ -130,6 +135,35 @@ export function getSyncPriceLines(
   return lines
 }
 
+function formatSyncConditions(
+  nodes: TierConditionInputNode[],
+  conditionLabels: Record<string, string>
+): string {
+  const joinNodes = (list: TierConditionInputNode[], joiner: string): string =>
+    list
+      .map((node) => {
+        if (isTierConditionGroupInput(node)) {
+          const inner = joinNodes(
+            node.conditions,
+            node.kind === 'any' ? ' ∨ ' : ' ∧ '
+          )
+          return inner ? `(${inner})` : ''
+        }
+        const label = conditionLabels[node.var] || node.var
+        const isTime = TIER_TIME_FUNCS.includes(node.var as never)
+        // Clock fields are small integers: no thousands separators, and the
+        // timezone is part of what the condition actually means.
+        const value = isTime
+          ? String(Number(node.value))
+          : Number(node.value).toLocaleString()
+        const suffix = isTime && node.timezone ? ` (${node.timezone})` : ''
+        return `${label} ${node.op} ${value}${suffix}`
+      })
+      .filter(Boolean)
+      .join(joiner)
+  return joinNodes(nodes, ' ∧ ')
+}
+
 export function getSyncExpressionPricing(
   expression: string,
   t: (key: string) => string
@@ -161,28 +195,7 @@ export function getSyncExpressionPricing(
     requestRuleExpr,
     tiers: config.tiers.map((tier) => ({
       label: tier.label,
-      condition: tier.conditions
-        .map((condition) => {
-          const label = conditionLabels[condition.var] || condition.var
-          const isTime =
-            condition.var in
-            {
-              hour: 1,
-              minute: 1,
-              weekday: 1,
-              month: 1,
-              day: 1,
-            }
-          // Clock fields are small integers: no thousands separators, and the
-          // timezone is part of what the condition actually means.
-          const value = isTime
-            ? String(Number(condition.value))
-            : Number(condition.value).toLocaleString()
-          const suffix =
-            isTime && condition.timezone ? ` (${condition.timezone})` : ''
-          return `${label} ${condition.op} ${value}${suffix}`
-        })
-        .join(' ∧ '),
+      condition: formatSyncConditions(tier.conditions, conditionLabels),
       lines: fields.map((field) => ({
         label: t(field.shortLabel),
         value: `$${formatPricingNumber(Number(tier[field.tierField!]))}`,

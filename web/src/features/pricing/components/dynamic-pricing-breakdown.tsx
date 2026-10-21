@@ -35,6 +35,7 @@ import {
   MATCH_RANGE,
   SOURCE_TIME,
   TIER_TIME_FUNCS,
+  isTierConditionGroup,
   parseTiersFromExpr,
   requestRuleGroupsFromTrace,
   splitBillingExprAndRequestRules,
@@ -45,6 +46,7 @@ import {
   type RequestRuleGroup,
   type RequestRuleTrace,
   type TierCondition,
+  type TierConditionNode,
 } from '../lib/billing-expr'
 import { isBreakdownTierMatched } from '../lib/breakdown-tier-match'
 import {
@@ -150,24 +152,47 @@ function formatTokenHint(value: string | number): string {
   return String(n)
 }
 
-function formatConditionSummary(
-  conditions: TierCondition[],
+function formatConditionLeaf(
+  condition: TierCondition,
   t: (key: string) => string
 ): string {
-  return conditions
-    .map((c) => {
-      const varLabel = t(VAR_LABELS[c.var] || c.var)
-      const isTime = TIER_TIME_FUNCS.includes(c.var as never)
-      // Token counts get a compact hint; clock fields are plain small
-      // integers where "1.0K" would be nonsense.
-      const value = isTime
-        ? String(c.value)
-        : formatTokenHint(c.value) || c.value
-      const suffix = isTime && c.timezone ? ` (${c.timezone})` : ''
-      return `${varLabel} ${OP_LABELS[c.op] || c.op} ${value}${suffix}`
-    })
-    .filter(Boolean)
-    .join(' && ')
+  const varLabel = t(VAR_LABELS[condition.var] || condition.var)
+  const isTime = TIER_TIME_FUNCS.includes(condition.var as never)
+  // Token counts get a compact hint; clock fields are plain small integers
+  // where "1.0K" would be nonsense.
+  const value = isTime
+    ? String(condition.value)
+    : formatTokenHint(condition.value) || condition.value
+  const suffix = isTime && condition.timezone ? ` (${condition.timezone})` : ''
+  return `${varLabel} ${OP_LABELS[condition.op] || condition.op} ${value}${suffix}`
+}
+
+/**
+ * Render a tier's condition tree.
+ *
+ * `all` groups join with `&&`, `any` groups with `||`, and groups are
+ * parenthesised so a nested OR is readable next to its siblings.
+ */
+function formatConditionSummary(
+  conditions: TierConditionNode[],
+  t: (key: string) => string
+): string {
+  const joinNodes = (
+    nodes: TierConditionNode[],
+    joiner: ' && ' | ' || '
+  ): string =>
+    nodes
+      .map((node) => {
+        if (!isTierConditionGroup(node)) return formatConditionLeaf(node, t)
+        const inner = joinNodes(
+          node.conditions,
+          node.kind === 'any' ? ' || ' : ' && '
+        )
+        return inner ? `(${inner})` : ''
+      })
+      .filter(Boolean)
+      .join(joiner)
+  return joinNodes(conditions, ' && ')
 }
 
 function isTaskBreakdownTier(tier: BreakdownTier): tier is ParsedTaskTier {

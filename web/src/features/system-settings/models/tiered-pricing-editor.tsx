@@ -29,6 +29,7 @@ import {
   type FocusEvent,
   type InputHTMLAttributes,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
 } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -96,6 +97,7 @@ import {
   type CacheMode,
   type ExtraTokenValues,
   type TierConditionInput,
+  type TierConditionInputNode,
   type VisualConfig,
   type VisualTier,
   createDefaultVisualConfig,
@@ -103,6 +105,9 @@ import {
   exprUsesExtraVars,
   generateExprFromVisualConfig,
   getTierCacheMode,
+  isTierConditionGroupInput,
+  countTierConditionInputs,
+  flattenTierConditions,
   DEFAULT_TIER_TIMEZONE,
   TIER_TIME_FUNCS,
   TIER_TIME_FUNC_RANGES,
@@ -138,10 +143,13 @@ const OPS: TierConditionInput['op'][] = ['<', '<=', '>', '>=']
 const TIME_CONDITION_VARS = TIER_TIME_FUNCS as readonly string[]
 
 /**
- * Cap on tier conditions. Peak/off-peak pricing needs weekday bounds plus one
- * hour range, so the historical two-condition limit cannot express it.
+ * Cap on tier conditions (comparison leaves, counting nested groups).
+ *
+ * Peak/off-peak needs weekday bounds plus two hour ranges, i.e. six leaves
+ * before any extra guard (holidays, minute precision), so the historical
+ * two-condition limit is far too small.
  */
-const MAX_TIER_CONDITIONS = 6
+const MAX_TIER_CONDITIONS = 10
 
 const WEEKDAY_OPTIONS = [
   { value: '1', label: 'Monday' },
@@ -460,9 +468,16 @@ type ConditionRowProps = {
   condition: TierConditionInput
   onChange: (next: TierConditionInput) => void
   onRemove: () => void
+  /** Wrap this row's siblings into an `any` group, so a tier can hold OR. */
+  onAddGroup?: () => void
 }
 
-function ConditionRow({ condition, onChange, onRemove }: ConditionRowProps) {
+function ConditionRow({
+  condition,
+  onChange,
+  onRemove,
+  onAddGroup,
+}: ConditionRowProps) {
   const { t } = useTranslation()
   const currentInputOption = CONDITION_INPUT_OPTIONS.find(
     (option) => option.value === condition.var
@@ -609,15 +624,395 @@ function ConditionRow({ condition, onChange, onRemove }: ConditionRowProps) {
           {t('Enter a valid condition value.')}
         </span>
       )}
+      {onAddGroup && (
+        <Button
+          variant='ghost'
+          size='sm'
+          onClick={onAddGroup}
+          className='ml-auto h-7 px-2 text-xs'
+        >
+          {t('Group OR')}
+        </Button>
+      )}
       <Button
         variant='ghost'
         size='icon'
         onClick={onRemove}
         aria-label='remove'
-        className='ml-auto'
+        className={onAddGroup ? '' : 'ml-auto'}
       >
         <Trash2 className='text-destructive h-4 w-4' />
       </Button>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Condition tree (comparisons + nested all/any groups)
+// ---------------------------------------------------------------------------
+
+type ConditionTreeProps = {
+  nodes: TierConditionInputNode[]
+  onChange: (nodes: TierConditionInputNode[]) => void
+  depth?: number
+}
+
+/** Value editor shared by single rows and range ends. */
+function ConditionValueInput({
+  condition,
+  onChange,
+}: {
+  condition: TierConditionInput
+  onChange: (next: TierConditionInput) => void
+}) {
+  const { t } = useTranslation()
+  const isTime = TIME_CONDITION_VARS.includes(condition.var)
+  const isWeekday = condition.var === 'weekday'
+  const [min, max] = isTime
+    ? TIER_TIME_FUNC_RANGES[condition.var as keyof typeof TIER_TIME_FUNC_RANGES]
+    : [0, Number.MAX_SAFE_INTEGER]
+  const outOfRange =
+    isTime &&
+    (!Number.isInteger(Number(condition.value)) ||
+      Number(condition.value) < min ||
+      Number(condition.value) > max)
+  if (isWeekday) {
+    return (
+      <Select
+        items={WEEKDAY_OPTIONS.map((option) => ({
+          value: option.value,
+          label: t(option.label),
+        }))}
+        value={String(condition.value)}
+        onValueChange={(value) => {
+          if (value == null) return
+          onChange({ ...condition, value })
+        }}
+      >
+        <SelectTrigger className='w-28' size='sm'>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent alignItemWithTrigger={false}>
+          <SelectGroup>
+            {WEEKDAY_OPTIONS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {t(option.label)}
+              </SelectItem>
+            ))}
+          </SelectGroup>
+        </SelectContent>
+      </Select>
+    )
+  }
+  return (
+    <>
+      <DraftNumberInput
+        min={isTime ? min : 0}
+        max={isTime ? max : undefined}
+        value={condition.value}
+        onValueChange={(value) => onChange({ ...condition, value })}
+        placeholder={isTime ? '0' : 'tokens'}
+        className='w-24'
+      />
+      {outOfRange && (
+        <span className='text-destructive text-xs'>
+          {t('Enter a valid condition value.')}
+        </span>
+      )}
+    </>
+  )
+}
+
+function ConditionVarSelect({
+  value,
+  onChange,
+}: {
+  value: TierConditionInput['var']
+  onChange: (next: TierConditionInput) => void
+}) {
+  const { t } = useTranslation()
+  return (
+    <Select
+      items={CONDITION_INPUT_OPTIONS.map((option) => ({
+        value: option.value,
+        label: t(option.labelKey),
+      }))}
+      value={value}
+      onValueChange={(next) => {
+        if (!next) return
+        if (isTierTimeFunc(next)) {
+          onChange({
+            var: next,
+            op: '>=',
+            value: TIER_TIME_FUNC_RANGES[next][0],
+            timezone: DEFAULT_TIER_TIMEZONE,
+          })
+          return
+        }
+        onChange({ var: next as TierConditionInput['var'], op: '>=', value: 0 })
+      }}
+    >
+      <SelectTrigger className='w-32' size='sm'>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent alignItemWithTrigger={false}>
+        <SelectGroup>
+          {CONDITION_INPUT_OPTIONS.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {t(option.labelKey)}
+            </SelectItem>
+          ))}
+        </SelectGroup>
+      </SelectContent>
+    </Select>
+  )
+}
+
+function ConditionTree({ nodes, onChange, depth = 0 }: ConditionTreeProps) {
+  const { t } = useTranslation()
+
+  const replaceRange = (
+    start: number,
+    count: number,
+    next: TierConditionInputNode[]
+  ) => {
+    const copy = [...nodes]
+    copy.splice(start, count, ...next)
+    onChange(copy)
+  }
+
+  /**
+   * Wrap this row and the following one in an `any` group, so "09-12 OR 14-18"
+   * is one click: pick both ranges, press OR, done.
+   *
+   * Each side is wrapped in an inner `all` group first. Without that, a range
+   * collapses into `hour >= 9 || hour < 12`, which is a tautology — the exact
+   * bug the competitor documents for their range widget.
+   */
+  const wrapInOrGroup = (start: number, span: number) => {
+    const nextStart = start + span
+    const nextSpan = countRowSpan(nextStart)
+    if (nextSpan === 0) return
+    const asGroup = (from: number, count: number): TierConditionInputNode => {
+      const slice = nodes.slice(from, from + count)
+      return count === 1 && slice[0] && !isTierConditionGroupInput(slice[0])
+        ? slice[0]
+        : { kind: 'all', conditions: slice }
+    }
+    const copy = [...nodes]
+    copy.splice(start, span + nextSpan, {
+      kind: 'any',
+      conditions: [asGroup(start, span), asGroup(nextStart, nextSpan)],
+    })
+    onChange(copy)
+  }
+
+  /** Number of raw nodes the display row at `start` covers (1 or 2). */
+  const countRowSpan = (start: number): number => {
+    const first = nodes[start]
+    const second = nodes[start + 1]
+    if (
+      first &&
+      second &&
+      !isTierConditionGroupInput(first) &&
+      !isTierConditionGroupInput(second) &&
+      first.var === second.var &&
+      (first.timezone || '') === (second.timezone || '') &&
+      (first.op === '>' || first.op === '>=') &&
+      (second.op === '<' || second.op === '<=')
+    ) {
+      return 2
+    }
+    return first ? 1 : 0
+  }
+
+  // One pass over the tree: adjacent bound pairs collapse into a single
+  // "from X to Y" row (display only), groups render as nested blocks.
+  const rendered: ReactNode[] = []
+  for (let index = 0; index < nodes.length; index += 1) {
+    const node = nodes[index]
+    if (!node) continue
+    if (isTierConditionGroupInput(node)) {
+      const groupIndex = index
+      rendered.push(
+        <div
+          key={`group-${groupIndex}`}
+          className='bg-muted/30 space-y-2 rounded-lg border p-2'
+        >
+          <div className='flex flex-wrap items-center gap-2'>
+            <Select
+              items={[
+                { value: 'all', label: t('All conditions') },
+                { value: 'any', label: t('Any condition') },
+              ]}
+              value={node.kind}
+              onValueChange={(value) => {
+                if (value !== 'all' && value !== 'any') return
+                replaceRange(groupIndex, 1, [{ ...node, kind: value }])
+              }}
+            >
+              <SelectTrigger className='w-40' size='sm'>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent alignItemWithTrigger={false}>
+                <SelectGroup>
+                  <SelectItem value='all'>{t('All conditions')}</SelectItem>
+                  <SelectItem value='any'>{t('Any condition')}</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+            <span className='text-muted-foreground text-xs'>
+              {node.kind === 'all'
+                ? t('Every condition in this group must match')
+                : t('Any one condition in this group may match')}
+            </span>
+            <Button
+              variant='ghost'
+              size='sm'
+              className='ml-auto h-7 px-2 text-xs'
+              onClick={() =>
+                replaceRange(groupIndex, 1, [
+                  {
+                    ...node,
+                    conditions: [
+                      ...node.conditions,
+                      {
+                        var: 'hour',
+                        op: '>=',
+                        value: 0,
+                        timezone: DEFAULT_TIER_TIMEZONE,
+                      },
+                    ],
+                  },
+                ])
+              }
+            >
+              <Plus className='mr-1 h-3 w-3' />
+              {t('Add condition')}
+            </Button>
+            <Button
+              variant='ghost'
+              size='icon'
+              onClick={() => replaceRange(groupIndex, 1, [])}
+              aria-label={t('Remove group')}
+            >
+              <Trash2 className='text-destructive h-4 w-4' />
+            </Button>
+          </div>
+          <ConditionTree
+            nodes={node.conditions}
+            depth={depth + 1}
+            onChange={(childNodes) =>
+              replaceRange(groupIndex, 1, [{ ...node, conditions: childNodes }])
+            }
+          />
+        </div>
+      )
+      continue
+    }
+
+    const next = nodes[index + 1]
+    const pairsWithNext =
+      next &&
+      !isTierConditionGroupInput(next) &&
+      node.var === next.var &&
+      (node.timezone || '') === (next.timezone || '') &&
+      (node.op === '>' || node.op === '>=') &&
+      (next.op === '<' || next.op === '<=')
+
+    if (pairsWithNext) {
+      const endNode = next as TierConditionInput
+      // Capture the position: the handlers below run after the loop has
+      // advanced `index`, and a mutated `let` would splice the wrong slot.
+      const startIndex = index
+      rendered.push(
+        <div
+          key={`range-${startIndex}`}
+          className='flex flex-wrap items-center gap-2'
+        >
+          <ConditionVarSelect
+            value={node.var}
+            onChange={(picked) => {
+              const timezone = picked.timezone ?? node.timezone
+              replaceRange(startIndex, 2, [
+                { ...picked, op: node.op, timezone },
+                { ...picked, op: endNode.op, value: endNode.value, timezone },
+              ])
+            }}
+          />
+          <span className='text-muted-foreground text-xs'>{t('from')}</span>
+          <ConditionValueInput
+            condition={node}
+            onChange={(changed) => replaceRange(startIndex, 1, [changed])}
+          />
+          <span className='text-muted-foreground text-xs'>{t('to')}</span>
+          <ConditionValueInput
+            condition={endNode}
+            onChange={(changed) => replaceRange(startIndex + 1, 1, [changed])}
+          />
+          {TIME_CONDITION_VARS.includes(node.var) && (
+            <Input
+              value={node.timezone || DEFAULT_TIER_TIMEZONE}
+              onChange={(event) => {
+                const timezone = event.target.value
+                replaceRange(startIndex, 2, [
+                  { ...node, timezone },
+                  { ...endNode, timezone },
+                ])
+              }}
+              placeholder='Asia/Shanghai'
+              aria-label={t('Timezone')}
+              className='h-8 w-36'
+            />
+          )}
+          <Button
+            variant='ghost'
+            size='sm'
+            className='ml-auto h-7 px-2 text-xs'
+            onClick={() => wrapInOrGroup(startIndex, 2)}
+          >
+            {t('Group OR')}
+          </Button>
+          <Button
+            variant='ghost'
+            size='icon'
+            onClick={() => replaceRange(startIndex, 2, [])}
+            aria-label={t('Remove condition')}
+          >
+            <Trash2 className='text-destructive h-4 w-4' />
+          </Button>
+        </div>
+      )
+      index += 1
+      continue
+    }
+
+    const rowIndex = index
+    rendered.push(
+      <ConditionRow
+        key={`row-${rowIndex}`}
+        condition={node}
+        onChange={(changed) => replaceRange(rowIndex, 1, [changed])}
+        onRemove={() => replaceRange(rowIndex, 1, [])}
+        onAddGroup={() => wrapInOrGroup(rowIndex, 1)}
+      />
+    )
+  }
+
+  return (
+    <div className={depth > 0 ? 'space-y-2' : 'space-y-1.5'}>
+      {rendered}
+      {depth === 0 && (
+        <Button
+          variant='ghost'
+          size='sm'
+          className='h-7 px-2 text-xs'
+          onClick={() => onChange([...nodes, { kind: 'any', conditions: [] }])}
+        >
+          <Plus className='mr-1 h-3 w-3' />
+          {t('Add condition group')}
+        </Button>
+      )}
     </div>
   )
 }
@@ -686,20 +1081,8 @@ function VisualTierCard({
   const { t } = useTranslation()
   const cacheMode = getTierCacheMode(tier)
 
-  const handleConditionChange = (
-    conditionIndex: number,
-    next: TierConditionInput
-  ) => {
-    const conditions = [...tier.conditions]
-    conditions[conditionIndex] = next
+  const handleConditionsChange = (conditions: TierConditionInputNode[]) => {
     onChange({ ...tier, conditions })
-  }
-
-  const handleConditionRemove = (conditionIndex: number) => {
-    onChange({
-      ...tier,
-      conditions: tier.conditions.filter((_, i) => i !== conditionIndex),
-    })
   }
 
   const handlePriceChange = (field: keyof VisualTier, value: number) => {
@@ -782,7 +1165,9 @@ function VisualTierCard({
             variant='ghost'
             size='sm'
             onClick={onAddCondition}
-            disabled={tier.conditions.length >= MAX_TIER_CONDITIONS}
+            disabled={
+              countTierConditionInputs(tier.conditions) >= MAX_TIER_CONDITIONS
+            }
             className='h-7 px-2 text-xs'
           >
             <Plus className='mr-1 h-3 w-3' />
@@ -794,15 +1179,10 @@ function VisualTierCard({
             {t('Always matches (default tier).')}
           </p>
         ) : (
-          tier.conditions.map((condition, conditionIndex) => (
-            <ConditionRow
-              // eslint-disable-next-line react/no-array-index-key -- Parsed editor rows have no IDs; preserve input identity while their editable labels and values change.
-              key={conditionIndex}
-              condition={condition}
-              onChange={(next) => handleConditionChange(conditionIndex, next)}
-              onRemove={() => handleConditionRemove(conditionIndex)}
-            />
-          ))
+          <ConditionTree
+            nodes={tier.conditions}
+            onChange={handleConditionsChange}
+          />
         )}
       </div>
 
@@ -950,12 +1330,14 @@ function VisualEditor({ visualConfig, onChange, currency }: VisualEditorProps) {
 
   const handleAddCondition = (index: number) => {
     const tier = config.tiers[index]
-    if (tier.conditions.length >= MAX_TIER_CONDITIONS) return
+    if (countTierConditionInputs(tier.conditions) >= MAX_TIER_CONDITIONS) return
     // Prefer `len` (input length) over `p`/`c` for tier conditions because
     // `p` is subject to auto-exclusion when sub-categories like `cr` are
     // priced separately, which can misroute long-input requests into shorter
     // tiers when cache-hits reduce the effective `p`.
-    const usedVars = new Set(tier.conditions.map((c) => c.var))
+    const usedVars = new Set(
+      flattenTierConditions(tier.conditions).map((c) => c.var)
+    )
     const nextVar: TierConditionInput['var'] = usedVars.has('len') ? 'c' : 'len'
     onChange({
       ...config,
@@ -964,7 +1346,7 @@ function VisualEditor({ visualConfig, onChange, currency }: VisualEditorProps) {
           ? {
               ...current,
               conditions: [
-                ...tier.conditions,
+                ...current.conditions,
                 { var: nextVar, op: '<', value: 200000 },
               ],
             }
@@ -977,7 +1359,7 @@ function VisualEditor({ visualConfig, onChange, currency }: VisualEditorProps) {
     <div className='space-y-2'>
       <p className='text-muted-foreground text-xs'>
         {t(
-          'Each tier supports up to {{count}} conditions, all of which must match. The last tier without conditions is the fallback.',
+          'Each tier supports up to {{count}} conditions. Conditions inside a group are joined with AND or OR; the last tier without conditions is the fallback.',
           { count: MAX_TIER_CONDITIONS }
         )}
       </p>

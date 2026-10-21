@@ -82,6 +82,8 @@ export type DynamicPricingSummary = {
   tierCount: number
   hasRequestRules: boolean
   isSpecialExpression: boolean
+  /** Labels of the tiers that differ in price, in expression order. */
+  tierLabels: string[]
   rawExpression: string
   entries: DynamicPriceEntry[]
   primaryEntries: DynamicPriceEntry[]
@@ -321,37 +323,44 @@ export function getDynamicPricingSummary(
     ...options,
     usageSchema: model.billing_usage_schema,
   })
-  if (isTaskUsage) {
-    const priceRanges = new Map<string, { min: number; max: number }>()
-    for (const [field] of getTaskNumberFields(model.billing_usage_schema)) {
-      let min = Number.POSITIVE_INFINITY
-      let max = Number.NEGATIVE_INFINITY
-      for (const taskTier of tiers) {
-        if (!isTaskPricingTier(taskTier)) continue
-        const value = Number(taskTier.unitPrices[field])
-        if (!Number.isFinite(value) || value < 0) continue
-        min = Math.min(min, value)
-        max = Math.max(max, value)
-      }
-      if (Number.isFinite(min) && Number.isFinite(max)) {
-        priceRanges.set(field, { min, max })
-      }
+  // The plaza shows one row per model, so a tiered model must advertise the
+  // spread across its tiers instead of only the first (usually peak) tier.
+  const priceRanges = new Map<string, { min: number; max: number }>()
+  for (const entry of entries) {
+    let min = Number.POSITIVE_INFINITY
+    let max = Number.NEGATIVE_INFINITY
+    for (const candidate of tiers) {
+      if (isTaskUsage !== isTaskPricingTier(candidate)) continue
+      const raw = isTaskUsage
+        ? (candidate as ParsedTaskTier).unitPrices[entry.field]
+        : (candidate as ParsedTier)[entry.field as string]
+      const value = Number(raw)
+      if (!Number.isFinite(value) || value < 0) continue
+      min = Math.min(min, value)
+      max = Math.max(max, value)
     }
-    entries = entries.map((entry) => {
-      const range = priceRanges.get(entry.field)
-      if (!range || range.min === range.max) return entry
-      return {
-        ...entry,
-        formattedRange: `${formatTaskUsageUnitPrice(range.min, options)} – ${formatTaskUsageUnitPrice(range.max, options)}`,
-      }
-    })
+    if (Number.isFinite(min) && Number.isFinite(max)) {
+      priceRanges.set(entry.field, { min, max })
+    }
   }
+  entries = entries.map((entry) => {
+    const range = priceRanges.get(entry.field)
+    if (!range || range.min === range.max) return entry
+    const format = isTaskUsage
+      ? (value: number) => formatTaskUsageUnitPrice(value, options)
+      : (value: number) => formatDynamicUnitPrice(value, options)
+    return {
+      ...entry,
+      formattedRange: `${format(range.min)} – ${format(range.max)}`,
+    }
+  })
   const rawExpression = model.billing_expr || ''
 
   return {
     tiers,
     tier,
     tierCount: tiers.length,
+    tierLabels: [...new Set(tiers.map((item) => item.label).filter(Boolean))],
     hasRequestRules: hasDynamicRequestRules(model),
     isSpecialExpression: rawExpression.trim().length > 0 && tiers.length === 0,
     rawExpression,

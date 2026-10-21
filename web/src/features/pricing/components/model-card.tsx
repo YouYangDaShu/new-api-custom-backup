@@ -150,6 +150,14 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
                 ({dynamicSummary.tier.label})
               </span>
             )}
+          {/* Name the tiers behind a price range so the card says what the
+              spread is (peak / off-peak) instead of a bare range. */}
+          {!dynamicSummary.isTaskUsage &&
+            dynamicSummary.tierLabels.length > 1 && (
+              <span className='text-muted-foreground col-span-full text-xs break-words'>
+                {dynamicSummary.tierLabels.join(' / ')}
+              </span>
+            )}
         </>
       )
     } else {

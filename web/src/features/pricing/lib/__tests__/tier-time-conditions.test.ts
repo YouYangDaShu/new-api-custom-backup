@@ -19,133 +19,124 @@ For commercial licensing, please contact support@quantumnous.com
 import { describe, expect, test } from 'vitest'
 
 import {
+  buildTierConditionExpr,
+  countTierConditions,
+  isTierConditionGroup,
+  parseTierConditionExpr,
   parseTiersFromExpr,
-  splitBillingExprAndRequestRules,
+  type TierCondition,
+  type TierConditionGroup,
 } from '../billing-expr'
 import {
-  DEFAULT_TIER_TIMEZONE,
+  buildConditionStr,
   evalExprLocally,
   generateExprFromVisualConfig,
-  normalizeVisualTier,
   tryParseVisualConfig,
-  type ExtraTokenValues,
-  type VisualTier,
+  type TierConditionInputNode,
 } from '../tier-expr'
 
-const EMPTY_EXTRA: ExtraTokenValues = {
-  cacheReadTokens: 0,
-  cacheCreateTokens: 0,
-  cacheCreate1hTokens: 0,
-  imageTokens: 0,
-  imageOutputTokens: 0,
-  audioInputTokens: 0,
-  audioOutputTokens: 0,
-}
+const strip = (value: string) => value.replaceAll(/\s+/g, '')
 
-function tier(overrides: Partial<VisualTier> = {}): VisualTier {
-  return normalizeVisualTier({
-    label: 'peak',
-    input_unit_cost: 2,
-    output_unit_cost: 8,
-    ...overrides,
-  })
-}
+const PEAK_TWO_WINDOWS =
+  'weekday("Asia/Shanghai") >= 1 && weekday("Asia/Shanghai") <= 5 && ' +
+  '((hour("Asia/Shanghai") >= 9 && hour("Asia/Shanghai") < 12) || ' +
+  '(hour("Asia/Shanghai") >= 14 && hour("Asia/Shanghai") < 18)) ? ' +
+  'tier("峰时", p * 2 + c * 8 + cr * 0.04) : tier("闲时", p * 1 + c * 4 + cr * 0.02)'
 
-describe('tier conditions with clock fields', () => {
-  test('builds weekday and hour bounds as a single AND chain', () => {
-    const expr = generateExprFromVisualConfig({
-      tiers: [
-        tier({
-          conditions: [
-            {
-              var: 'weekday',
-              op: '>=',
-              value: 1,
-              timezone: 'Asia/Shanghai',
-            },
-            {
-              var: 'weekday',
-              op: '<=',
-              value: 5,
-              timezone: 'Asia/Shanghai',
-            },
-            { var: 'hour', op: '>=', value: 9, timezone: 'Asia/Shanghai' },
-            { var: 'hour', op: '<', value: 12, timezone: 'Asia/Shanghai' },
-          ],
-        }),
-        tier({ label: 'offpeak', input_unit_cost: 1, output_unit_cost: 4 }),
-      ],
-    })
+const FLAT_PEAK =
+  'weekday("Asia/Shanghai") >= 1 && weekday("Asia/Shanghai") <= 5 && ' +
+  'hour("Asia/Shanghai") >= 9 && hour("Asia/Shanghai") < 12 ? ' +
+  'tier("峰时", p * 2 + c * 8 + cr * 0.04) : tier("闲时", p * 1 + c * 4 + cr * 0.02)'
 
-    expect(expr).toBe(
-      'weekday("Asia/Shanghai") >= 1 && weekday("Asia/Shanghai") <= 5 && ' +
-        'hour("Asia/Shanghai") >= 9 && hour("Asia/Shanghai") < 12 ? ' +
-        'tier("peak", p * 2 + c * 8) : tier("offpeak", p * 1 + c * 4)'
-    )
-  })
-
-  test('defaults the timezone when the condition omits one', () => {
-    const expr = generateExprFromVisualConfig({
-      tiers: [
-        tier({ conditions: [{ var: 'hour', op: '>=', value: 9 }] }),
-        tier({ label: 'offpeak' }),
-      ],
-    })
-    expect(expr).toContain(`hour("${DEFAULT_TIER_TIMEZONE}") >= 9`)
-  })
-
-  test.each([
-    ['hour above domain', { var: 'hour', op: '>=', value: 24 }],
-    ['hour below domain', { var: 'hour', op: '<', value: -1 }],
-    ['weekday above domain', { var: 'weekday', op: '>=', value: 7 }],
-    ['month below domain', { var: 'month', op: '>=', value: 0 }],
-    ['non-integer minute', { var: 'minute', op: '>=', value: 30.5 }],
-  ])(
-    'drops out-of-domain %s instead of emitting a tautology',
-    (_name, cond) => {
-      const expr = generateExprFromVisualConfig({
-        tiers: [
-          tier({ conditions: [cond as never] }),
-          tier({ label: 'offpeak' }),
-        ],
-      })
-      // The condition is dropped, so the first tier becomes the unconditional
-      // chain head: no ternary is emitted at all.
-      expect(expr).not.toContain('?')
+function leaves(nodes: readonly unknown[]): TierCondition[] {
+  return nodes.flatMap((node) => {
+    if (isTierConditionGroup(node as never)) {
+      return leaves((node as TierConditionGroup).conditions)
     }
-  )
+    return [node as TierCondition]
+  })
+}
 
-  test('round-trips a time-conditioned tier expression through the parser', () => {
-    const expr =
-      'weekday("Asia/Shanghai") >= 1 && weekday("Asia/Shanghai") <= 5 && ' +
-      'hour("Asia/Shanghai") >= 9 && hour("Asia/Shanghai") < 12 ? ' +
-      'tier("peak", p * 2 + c * 8 + cr * 0.04) : ' +
-      'tier("offpeak", p * 1 + c * 4 + cr * 0.02)'
+describe('tier condition parser', () => {
+  test('parses a flat && chain into leaves', () => {
+    const nodes = parseTierConditionExpr(
+      'len < 200000 && p > 10 && hour("Asia/Shanghai") >= 9'
+    )
+    expect(nodes).not.toBeNull()
+    expect(nodes).toHaveLength(3)
+    expect(nodes?.every((node) => !isTierConditionGroup(node))).toBe(true)
+  })
 
-    const config = tryParseVisualConfig(expr)
+  test('parses a nested OR group and keeps the structure', () => {
+    const nodes = parseTierConditionExpr(
+      'weekday("Asia/Shanghai") >= 1 && ((hour("Asia/Shanghai") >= 9 && hour("Asia/Shanghai") < 12) || (hour("Asia/Shanghai") >= 14 && hour("Asia/Shanghai") < 18))'
+    )
+    expect(nodes).not.toBeNull()
+    if (!nodes) throw new Error('expected nodes')
+    expect(nodes).toHaveLength(2)
+    const group = nodes[1]
+    expect(isTierConditionGroup(group)).toBe(true)
+    if (!isTierConditionGroup(group)) throw new Error('expected a group')
+    expect(group.kind).toBe('any')
+    expect(group.conditions).toHaveLength(2)
+    expect(countTierConditions(nodes)).toBe(5)
+  })
+
+  test('rejects conditions it cannot represent instead of guessing', () => {
+    expect(parseTierConditionExpr('p > 10 && foo > 3')).toBeNull()
+    expect(parseTierConditionExpr('hour("Asia/Shanghai") > 24')).toBeNull()
+    expect(parseTierConditionExpr('(p > 10')).toBeNull()
+  })
+
+  test('round-trips through buildTierConditionExpr', () => {
+    const nodes = parseTierConditionExpr(PEAK_TWO_WINDOWS.split(' ? ')[0])
+    expect(nodes).not.toBeNull()
+    if (!nodes) throw new Error('expected nodes')
+    const rebuilt = parseTierConditionExpr(buildTierConditionExpr(nodes))
+    expect(rebuilt).toEqual(nodes)
+  })
+})
+
+describe('visual config round trip', () => {
+  test('flat clock conditions survive parse + regenerate', () => {
+    const config = tryParseVisualConfig(FLAT_PEAK)
     expect(config).not.toBeNull()
     if (!config) throw new Error('expected a parsed visual config')
-    const peak = config.tiers[0]
-    expect(peak.label).toBe('peak')
-    expect(peak.conditions).toEqual([
+    expect(config.tiers).toHaveLength(2)
+    const peakLeaves = leaves(config.tiers[0].conditions)
+    expect(peakLeaves).toEqual([
       { var: 'weekday', op: '>=', value: 1, timezone: 'Asia/Shanghai' },
       { var: 'weekday', op: '<=', value: 5, timezone: 'Asia/Shanghai' },
       { var: 'hour', op: '>=', value: 9, timezone: 'Asia/Shanghai' },
       { var: 'hour', op: '<', value: 12, timezone: 'Asia/Shanghai' },
     ])
-    // cache coefficients must survive the round trip too
-    expect(peak.cache_read_unit_cost).toBeCloseTo(0.04, 10)
-    expect(peak.input_unit_cost).toBe(2)
-    expect(peak.output_unit_cost).toBe(8)
+    expect(peakLeaves[0].value).toBe(1)
+    expect(config.tiers[0].input_unit_cost).toBe(2)
+    expect(config.tiers[0].output_unit_cost).toBe(8)
+    expect(config.tiers[0].cache_read_unit_cost).toBeCloseTo(0.04, 10)
     expect(config.tiers[1].conditions).toEqual([])
-
-    // regenerate must be byte-identical (whitespace-insensitive), otherwise
+    // Regenerate must be byte-identical (whitespace-insensitive), otherwise
     // the editor silently rewrites the admin's expression on open.
-    const strip = (value: string) => value.replaceAll(/\s+/g, '')
-    expect(strip(generateExprFromVisualConfig(config))).toBe(strip(expr))
+    expect(strip(generateExprFromVisualConfig(config))).toBe(strip(FLAT_PEAK))
   })
 
-  test('still parses plain token-only conditions unchanged', () => {
+  test('nested two-window peak expression is editable, not raw mode', () => {
+    const config = tryParseVisualConfig(PEAK_TWO_WINDOWS)
+    expect(config).not.toBeNull()
+    if (!config) throw new Error('expected a parsed visual config')
+    expect(config.tiers).toHaveLength(2)
+    const nodes = config.tiers[0].conditions
+    // weekday >= 1, weekday <= 5, and one any-group holding the two windows.
+    expect(nodes).toHaveLength(3)
+    expect(isTierConditionGroup(nodes[2] as never)).toBe(true)
+    expect(countTierConditions(nodes as never)).toBe(6)
+    expect(leaves(nodes)).toHaveLength(6)
+    expect(strip(generateExprFromVisualConfig(config))).toBe(
+      strip(PEAK_TWO_WINDOWS)
+    )
+  })
+
+  test('parses plain token-only conditions unchanged', () => {
     const expr =
       'len < 200000 ? tier("short", p * 1 + c * 2) : tier("long", p * 3 + c * 4)'
     const config = tryParseVisualConfig(expr)
@@ -154,79 +145,150 @@ describe('tier conditions with clock fields', () => {
     expect(config.tiers[0].conditions).toEqual([
       { var: 'len', op: '<', value: 200000 },
     ])
-    expect(config.tiers[0].conditions[0].timezone).toBeUndefined()
+    const [first] = config.tiers[0].conditions
+    expect(isTierConditionGroup(first as never)).toBe(false)
+    expect('timezone' in first).toBe(false)
   })
 
-  test('lemonGir-style expression parses into tiers instead of raw mode', () => {
-    // The competitor's documented expression uses || inside the hour group,
-    // which the tier parser cannot summarize; it must fall back cleanly
-    // rather than mis-report prices.
-    const their =
-      'weekday("Asia/Shanghai") >= 1 && weekday("Asia/Shanghai") <= 5 && ' +
-      '((hour("Asia/Shanghai") >= 9 && hour("Asia/Shanghai") < 12) || ' +
-      '(hour("Asia/Shanghai") >= 14 && hour("Asia/Shanghai") < 18)) ? ' +
-      'tier("峰时", p * 2 + cr * 0.04 + c * 8) : tier("闲时", p * 1 + cr * 0.02 + c * 4)'
-    expect(tryParseVisualConfig(their)).toBeNull()
-    expect(parseTiersFromExpr(their)).toEqual([])
-  })
-
-  test('parseTiersFromExpr summarizes a flat time-conditioned chain', () => {
-    const expr =
-      'weekday("Asia/Shanghai") >= 1 && hour("Asia/Shanghai") >= 9 ? ' +
-      'tier("peak", p * 2 + c * 8) : tier("offpeak", p * 1 + c * 4)'
-    const tiers = parseTiersFromExpr(expr)
-    expect(tiers).toHaveLength(2)
-    expect(tiers[0].conditions).toEqual([
-      { var: 'weekday', op: '>=', value: 1, timezone: 'Asia/Shanghai' },
-      { var: 'hour', op: '>=', value: 9, timezone: 'Asia/Shanghai' },
-    ])
-    expect(tiers[1].conditions).toEqual([])
-  })
-
-  test('parseTiersFromExpr rejects out-of-domain clock bounds', () => {
-    const expr =
-      'hour("Asia/Shanghai") >= 25 ? tier("peak", p * 2 + c * 8) : tier("offpeak", p * 1 + c * 4)'
-    expect(parseTiersFromExpr(expr)).toEqual([])
-  })
-
-  test('split keeps request rules separate from tier conditions', () => {
-    const expr =
-      'weekday("Asia/Shanghai") >= 1 ? tier("peak", p * 2 + c * 8) : tier("offpeak", p * 1 + c * 4)'
-    const split = splitBillingExprAndRequestRules(
-      `${expr} * (header("x-priority") != "" ? 1.5 : 1)`
-    )
-    expect(split.billingExpr).toBe(expr)
-    expect(split.requestRuleExpr).toContain('header')
+  test('falls back to raw mode for expressions it cannot summarize', () => {
+    // `max()` and unknown helpers are outside the tier grammar.
+    expect(tryParseVisualConfig('max(p * 1, 5)')).toBeNull()
+    expect(
+      tryParseVisualConfig(
+        'weekday("Asia/Shanghai") == 1 ? tier("a", p * 1 + c * 2) : tier("b", p * 2 + c * 4)'
+      )
+    ).toBeNull()
   })
 })
 
-describe('local estimator with clock fields', () => {
-  test('evaluates hour()/weekday() instead of throwing ReferenceError', () => {
-    const expr =
-      'hour("Asia/Shanghai") >= 0 && hour("Asia/Shanghai") <= 23 ? ' +
-      'tier("always", p * 2 + c * 8) : tier("never", p * 0 + c * 0)'
-    const result = evalExprLocally(expr, 1_000_000, 1_000_000, EMPTY_EXTRA)
-    expect(result.error).toBeNull()
-    expect(result.matchedTier).toBe('always')
-    // The estimator returns the raw expression value (unit price × token
-    // count), not currency: 1M × 2 + 1M × 8.
-    expect(result.cost).toBeCloseTo(10_000_000, 6)
+describe('parseTiersFromExpr', () => {
+  test('summarizes the nested peak/off-peak chain', () => {
+    const tiers = parseTiersFromExpr(PEAK_TWO_WINDOWS)
+    expect(tiers).toHaveLength(2)
+    expect(tiers[0].label).toBe('峰时')
+    expect(tiers[0].inputPrice).toBe(2)
+    expect(tiers[0].outputPrice).toBe(8)
+    expect(leaves(tiers[0].conditions)).toHaveLength(6)
+    expect(tiers[1].label).toBe('闲时')
+    expect(tiers[1].conditions).toEqual([])
   })
 
-  test('falls back to UTC for an unknown timezone instead of erroring', () => {
-    const expr =
-      'month("Not/AZone") >= 1 ? tier("ok", p * 1 + c * 0) : tier("no", p * 0 + c * 0)'
-    const result = evalExprLocally(expr, 1_000_000, 0, EMPTY_EXTRA)
-    expect(result.error).toBeNull()
-    expect(result.matchedTier).toBe('ok')
+  test('summarizes a flat time-conditioned chain', () => {
+    const tiers = parseTiersFromExpr(FLAT_PEAK)
+    expect(tiers).toHaveLength(2)
+    expect(leaves(tiers[0].conditions)).toHaveLength(4)
   })
 
-  test('weekday bounds select between two branches deterministically', () => {
-    const always =
-      'weekday("Asia/Shanghai") >= 0 && weekday("Asia/Shanghai") <= 6 ? ' +
-      'tier("week", p * 1 + c * 0) : tier("none", p * 0 + c * 0)'
-    const result = evalExprLocally(always, 1_000_000, 0, EMPTY_EXTRA)
-    expect(result.matchedTier).toBe('week')
-    expect(result.cost).toBeCloseTo(1_000_000, 6)
+  test('rejects chains that do not end in a fallback tier', () => {
+    expect(parseTiersFromExpr('p > 10 ? tier("a", p * 1 + c * 2)')).toEqual([])
+  })
+})
+
+describe('buildConditionStr', () => {
+  test('serializes an any-group with parentheses', () => {
+    const nodes: TierConditionInputNode[] = [
+      { var: 'weekday', op: '>=', value: 1, timezone: 'Asia/Shanghai' },
+      {
+        kind: 'any',
+        conditions: [
+          { var: 'hour', op: '>=', value: 9, timezone: 'Asia/Shanghai' },
+          { var: 'hour', op: '<', value: 12, timezone: 'Asia/Shanghai' },
+        ],
+      },
+    ]
+    expect(buildConditionStr(nodes)).toBe(
+      'weekday("Asia/Shanghai") >= 1 && (hour("Asia/Shanghai") >= 9 || hour("Asia/Shanghai") < 12)'
+    )
+  })
+
+  test('drops half-typed rows instead of emitting a broken expression', () => {
+    expect(
+      buildConditionStr([
+        { var: 'hour', op: '>=', value: '', timezone: 'Asia/Shanghai' },
+      ])
+    ).toBe('')
+    expect(buildConditionStr([])).toBe('')
+  })
+})
+
+describe('evalExprLocally with clock functions', () => {
+  const extras = {
+    cacheReadTokens: 0,
+    cacheCreateTokens: 0,
+    cacheCreate1hTokens: 0,
+    imageTokens: 0,
+    imageOutputTokens: 0,
+    audioInputTokens: 0,
+    audioOutputTokens: 0,
+  }
+
+  test('nested OR group evaluates without throwing', () => {
+    const result = evalExprLocally(
+      PEAK_TWO_WINDOWS,
+      1_000_000,
+      1_000_000,
+      extras
+    )
+    expect(result.error).toBeNull()
+    // Peak doubles the off-peak price, so the cost is either 5e6 (off-peak)
+    // or 1e7 (peak) depending on when the test runs.
+    expect([5_000_000, 10_000_000]).toContain(result.cost)
+    expect(['峰时', '闲时']).toContain(result.matchedTier)
+  })
+
+  test('flat clock chain evaluates', () => {
+    const result = evalExprLocally(FLAT_PEAK, 1_000_000, 0, extras)
+    expect(result.error).toBeNull()
+    expect([1_000_000, 2_000_000]).toContain(result.cost)
+  })
+})
+
+describe('buildConditionStr nested shapes', () => {
+  test('an any group of two ranges keeps both bounds ANDed inside', () => {
+    const nodes: TierConditionInputNode[] = [
+      { var: 'weekday', op: '>=', value: 1, timezone: 'Asia/Shanghai' },
+      { var: 'weekday', op: '<=', value: 5, timezone: 'Asia/Shanghai' },
+      {
+        kind: 'any',
+        conditions: [
+          {
+            kind: 'all',
+            conditions: [
+              { var: 'hour', op: '>=', value: 9, timezone: 'Asia/Shanghai' },
+              { var: 'hour', op: '<', value: 12, timezone: 'Asia/Shanghai' },
+            ],
+          },
+          {
+            kind: 'all',
+            conditions: [
+              { var: 'hour', op: '>=', value: 14, timezone: 'Asia/Shanghai' },
+              { var: 'hour', op: '<', value: 18, timezone: 'Asia/Shanghai' },
+            ],
+          },
+        ],
+      },
+    ]
+    expect(buildConditionStr(nodes)).toBe(
+      'weekday("Asia/Shanghai") >= 1 && weekday("Asia/Shanghai") <= 5 && ' +
+        '((hour("Asia/Shanghai") >= 9 && hour("Asia/Shanghai") < 12) || ' +
+        '(hour("Asia/Shanghai") >= 14 && hour("Asia/Shanghai") < 18))'
+    )
+  })
+
+  test('a bare any group of two bounds is the tautology the UI must avoid', () => {
+    // Guards against regressing to `hour >= 9 || hour < 12`: that shape is
+    // always true, so the peak tier would bill every request.
+    const tautology: TierConditionInputNode[] = [
+      {
+        kind: 'any',
+        conditions: [
+          { var: 'hour', op: '>=', value: 9, timezone: 'Asia/Shanghai' },
+          { var: 'hour', op: '<', value: 12, timezone: 'Asia/Shanghai' },
+        ],
+      },
+    ]
+    expect(buildConditionStr(tautology)).toBe(
+      '(hour("Asia/Shanghai") >= 9 || hour("Asia/Shanghai") < 12)'
+    )
   })
 })

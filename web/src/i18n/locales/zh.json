@@ -6475,6 +6475,17 @@
     "Saturday": "周六",
     "Sunday": "周日",
     "Enter a valid condition value.": "请输入合法的条件值。",
-    "Each tier supports up to {{count}} conditions, all of which must match. The last tier without conditions is the fallback.": "每个阶梯最多支持 {{count}} 个条件，需全部满足。最后一个无条件阶梯作为兜底。"
+    "Each tier supports up to {{count}} conditions, all of which must match. The last tier without conditions is the fallback.": "每个阶梯最多支持 {{count}} 个条件，需全部满足。最后一个无条件阶梯作为兜底。",
+    "Any condition": "任一条件满足",
+    "All conditions": "全部条件满足",
+    "Add condition group": "添加条件组",
+    "Group OR": "合并为「或」",
+    "Every condition in this group must match": "组内所有条件都需满足",
+    "Any one condition in this group may match": "组内任一条件满足即可",
+    "This group is empty and is ignored.": "该组为空，将被忽略。",
+    "Remove group": "删除条件组",
+    "from": "从",
+    "to": "至",
+    "Each tier supports up to {{count}} conditions. Conditions inside a group are joined with AND or OR; the last tier without conditions is the fallback.": "每个阶梯最多支持 {{count}} 个条件。条件组内可用「全部满足」或「任一满足」组合；最后一个无条件阶梯作为兜底。"
   }
 }

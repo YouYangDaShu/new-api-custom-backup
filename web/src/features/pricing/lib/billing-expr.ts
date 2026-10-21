@@ -282,9 +282,39 @@ export type TierCondition = {
   timezone?: string
 }
 
+/**
+ * Nested boolean group inside a tier condition.
+ *
+ * `all` serializes to `a && b`, `any` to `(a || b)`. Groups nest, so a single
+ * tier can express "weekdays, in either of two hour windows" without splitting
+ * the price into two duplicate tiers.
+ */
+export type TierConditionGroup = {
+  kind: 'all' | 'any'
+  conditions: TierConditionNode[]
+}
+
+export type TierConditionNode = TierCondition | TierConditionGroup
+
+export function isTierConditionGroup(
+  node: TierConditionNode
+): node is TierConditionGroup {
+  return 'kind' in node
+}
+
+/** Count the comparison leaves under a node tree. */
+export function countTierConditions(nodes: TierConditionNode[]): number {
+  return nodes.reduce(
+    (total, node) =>
+      total +
+      (isTierConditionGroup(node) ? countTierConditions(node.conditions) : 1),
+    0
+  )
+}
+
 export type ParsedTier = {
   label: string
-  conditions: TierCondition[]
+  conditions: TierConditionNode[]
   [field: string]: unknown
 }
 
@@ -339,72 +369,260 @@ function parseTierBody(bodyStr: string): Record<string, number> | null {
   return tier
 }
 
+// ---------------------------------------------------------------------------
+// Tier condition expression: tokenizer + recursive-descent parser
+// ---------------------------------------------------------------------------
+//
+// Tier conditions used to be a flat `a && b && c` list matched by a regex.
+// Peak/off-peak pricing needs `weekday(...) && (hour(...) >= 9 && hour(...) < 12
+// || hour(...) >= 14 && hour(...) < 18)`, which a flat regex cannot represent
+// without silently dropping the parenthesised half. This parser builds the
+// nested tree instead, and `buildTierConditionExpr` serializes it back, so the
+// visual editor round-trips exactly what the engine evaluates.
+
+type ConditionToken =
+  | { type: 'compare'; text: string; condition: TierCondition }
+  | { type: 'and' }
+  | { type: 'or' }
+  | { type: 'lparen' }
+  | { type: 'rparen' }
+
+const TIER_COMPARE_RE =
+  /^(?:(p|c|len)\s*(<|<=|>|>=)\s*([\d.eE+-]+)|(hour|minute|weekday|month|day)\("([^"]+)"\)\s*(<|<=|>|>=)\s*([\d.eE+-]+))/
+
+function tokenizeTierConditionExpr(text: string): ConditionToken[] | null {
+  const tokens: ConditionToken[] = []
+  let index = 0
+  while (index < text.length) {
+    const rest = text.slice(index)
+    const whitespace = rest.match(/^\s+/)
+    if (whitespace) {
+      index += whitespace[0].length
+      continue
+    }
+    if (rest.startsWith('&&')) {
+      tokens.push({ type: 'and' })
+      index += 2
+      continue
+    }
+    if (rest.startsWith('||')) {
+      tokens.push({ type: 'or' })
+      index += 2
+      continue
+    }
+    if (rest.startsWith('(')) {
+      tokens.push({ type: 'lparen' })
+      index += 1
+      continue
+    }
+    if (rest.startsWith(')')) {
+      tokens.push({ type: 'rparen' })
+      index += 1
+      continue
+    }
+    const m = rest.match(TIER_COMPARE_RE)
+    if (!m) return null
+    let condition: TierCondition
+    if (m[1]) {
+      const value = Number(m[3])
+      if (!Number.isFinite(value)) return null
+      condition = {
+        var: m[1] as TierTokenVar,
+        op: m[2] as TierCondition['op'],
+        value,
+      }
+    } else {
+      const timeFunc = m[4] as TierTimeFunc
+      const value = Number(m[7])
+      if (!isTierTimeValueInRange(timeFunc, value)) return null
+      condition = {
+        var: timeFunc,
+        op: m[6] as TierCondition['op'],
+        value,
+        timezone: m[5],
+      }
+    }
+    tokens.push({ type: 'compare', text: m[0], condition })
+    index += m[0].length
+  }
+  return tokens
+}
+
+/**
+ * Parse a tier condition expression into a nested tree.
+ *
+ * Grammar (|| binds looser than &&):
+ *   or   := and ( '||' and )*
+ *   and  := unary ( '&&' unary )*
+ *   unary:= '(' or ')' | comparison
+ *
+ * Returns null on anything it cannot represent, so callers keep falling back
+ * to "special expression" instead of showing a wrong price table.
+ */
+export function parseTierConditionExpr(
+  text: string
+): TierConditionNode[] | null {
+  const trimmed = (text || '').trim()
+  if (!trimmed) return []
+  const tokens = tokenizeTierConditionExpr(trimmed)
+  if (!tokens || tokens.length === 0) return null
+
+  let cursor = 0
+  const peek = () => tokens[cursor]
+  const next = () => tokens[cursor++]
+
+  const parseOr = (): TierConditionNode[] | null => {
+    const first = parseAnd()
+    if (!first) return null
+    const branches: TierConditionNode[][] = [first]
+    while (peek()?.type === 'or') {
+      next()
+      const branch = parseAnd()
+      if (!branch) return null
+      branches.push(branch)
+    }
+    if (branches.length === 1) return first
+    return [
+      {
+        kind: 'any',
+        conditions: branches.map((branch) =>
+          branch.length === 1 ? branch[0] : { kind: 'all', conditions: branch }
+        ),
+      },
+    ]
+  }
+
+  const parseAnd = (): TierConditionNode[] | null => {
+    const first = parseUnary()
+    if (!first) return null
+    const nodes: TierConditionNode[] = [first]
+    while (peek()?.type === 'and') {
+      next()
+      const node = parseUnary()
+      if (!node) return null
+      nodes.push(node)
+    }
+    return nodes
+  }
+
+  const parseUnary = (): TierConditionNode | null => {
+    const token = peek()
+    if (!token) return null
+    if (token.type === 'lparen') {
+      next()
+      const inner = parseOr()
+      if (!inner) return null
+      if (peek()?.type !== 'rparen') return null
+      next()
+      if (inner.length === 1) return inner[0]
+      return { kind: 'all', conditions: inner }
+    }
+    if (token.type === 'compare') {
+      next()
+      return token.condition
+    }
+    return null
+  }
+
+  const tree = parseOr()
+  if (!tree || cursor !== tokens.length) return null
+  return tree
+}
+
+function tierConditionLeafExpr(condition: TierCondition): string | null {
+  if (isTierTimeFunc(condition.var)) {
+    const tz = (condition.timezone || '').trim()
+    if (!tz) return null
+    if (!isTierTimeValueInRange(condition.var, condition.value)) return null
+    return `${condition.var}(${JSON.stringify(tz)}) ${condition.op} ${condition.value}`
+  }
+  return `${condition.var} ${condition.op} ${condition.value}`
+}
+
+function serializeTierConditionNodes(
+  nodes: TierConditionNode[],
+  joiner: ' && ' | ' || '
+): string {
+  const parts = nodes
+    .map((node) => {
+      if (isTierConditionGroup(node)) {
+        const inner = serializeTierConditionNodes(
+          node.conditions,
+          node.kind === 'any' ? ' || ' : ' && '
+        )
+        if (!inner) return ''
+        return `(${inner})`
+      }
+      return tierConditionLeafExpr(node) || ''
+    })
+    .filter(Boolean)
+  return parts.join(joiner)
+}
+
+/**
+ * Serialize a condition tree back to the engine's expression syntax.
+ *
+ * `any` groups always get parentheses so `&&` in a sibling condition cannot
+ * swallow them, and the output re-parses to the same tree.
+ */
+export function buildTierConditionExpr(nodes: TierConditionNode[]): string {
+  return serializeTierConditionNodes(nodes, ' && ')
+}
+
+function parseSingleTierCall(text: string): ParsedTier | null {
+  const m = text.trim().match(/^tier\("([^"]*)",\s*([\s\S]+)\)$/)
+  if (!m) return null
+  const prices = parseTierBody(m[2])
+  if (!prices) return null
+  return { ...prices, label: m[1], conditions: [] }
+}
+
 export function parseTiersFromExpr(exprStr: string): ParsedTier[] {
   if (!exprStr) return []
   try {
     const versioned = stripExprVersion(exprStr.trim())
     const body = unwrapOuterParens(versioned.body)
-    const condItem =
-      `(?:(?:p|c|len)\\s*(?:<|<=|>|>=)\\s*[\\d.eE+]+` +
-      `|(?:hour|minute|weekday|month|day)\\("[^"]+"\\)\\s*(?:<|<=|>|>=)\\s*[\\d.eE+]+)`
-    const condGroup = `(${condItem}(?:\\s*&&\\s*${condItem})*)`
-    const tierRe = new RegExp(
-      `(?:${condGroup}\\s*\\?\\s*)?tier\\("([^"]*)",\\s*([^)]+)\\)`,
-      'g'
-    )
     const tiers: ParsedTier[] = []
-    let end = 0
-    let m
-    while ((m = tierRe.exec(body)) !== null) {
-      // Only summarize an entire linear tier chain. Extracting a price from
-      // inside max(), an unknown condition, or a trailing multiplier lies
-      // about what the expression actually charges.
-      if (body.slice(end, m.index).trim() !== (end === 0 ? '' : ':')) return []
-      if (tiers.length > 0 && tiers.at(-1)?.conditions.length === 0) return []
-      const condStr = m[1] || ''
-      const conditions: TierCondition[] = []
-      if (condStr) {
-        for (const cp of condStr.split(/\s*&&\s*/)) {
-          const cm = cp.trim().match(/^(p|c|len)\s*(<|<=|>|>=)\s*([\d.eE+]+)$/)
-          if (cm) {
-            if (!Number.isFinite(Number(cm[3]))) return []
-            conditions.push({
-              var: cm[1] as TierTokenVar,
-              op: cm[2] as TierCondition['op'],
-              value: Number(cm[3]),
-            })
-            continue
-          }
-          const tm = cp
-            .trim()
-            .match(
-              /^(hour|minute|weekday|month|day)\("([^"]+)"\)\s*(<|<=|>|>=)\s*([\d.eE+]+)$/
-            )
-          if (!tm) return []
-          const timeFunc = tm[1] as TierTimeFunc
-          const bound = Number(tm[4])
-          if (!isTierTimeValueInRange(timeFunc, bound)) return []
-          conditions.push({
-            var: timeFunc,
-            op: tm[3] as TierCondition['op'],
-            value: bound,
-            timezone: tm[2],
-          })
-        }
+    let rest = body
+
+    // Walk the linear ternary chain the engine emits:
+    //   cond1 ? tier(a) : cond2 ? tier(b) : tier(c)
+    // Each condition may be a nested &&/|| tree, so slicing at top-level
+    // `?` / `:` keeps parenthesised groups intact.
+    for (let guard = 0; guard <= 32; guard += 1) {
+      const question = findTopLevelCharacter(rest, '?')
+      if (question < 0) {
+        const tail = parseSingleTierCall(rest)
+        if (!tail) return []
+        tiers.push(tail)
+        break
       }
-      const prices = parseTierBody(m[3])
-      if (!prices) return []
-      tiers.push({ ...prices, label: m[2], conditions })
-      end = tierRe.lastIndex
+      const colon = findTernaryColon(rest, question)
+      if (colon < 0) return []
+      const tier = parseSingleTierCall(rest.slice(question + 1, colon))
+      if (!tier) return []
+      const conditions = parseTierConditionExpr(rest.slice(0, question))
+      if (!conditions || conditions.length === 0) return []
+      tiers.push({ ...tier, conditions })
+      rest = rest.slice(colon + 1)
     }
-    if (body.slice(end).trim() || tiers.at(-1)?.conditions.length) return []
+
+    // The engine always ends on an unconditional fallback, and a conditional
+    // tier with no conditions would be dead code; anything else is a shape we
+    // do not understand and must not summarize as a price table.
+    if (tiers.length === 0) return []
+    const last = tiers.at(-1)
+    if (!last || last.conditions.length !== 0) return []
+    for (const tier of tiers.slice(0, -1)) {
+      if (tier.conditions.length === 0) return []
+    }
     return tiers
   } catch {
     return []
   }
 }
 
-function findTaskTopLevelCharacter(
+export function findTopLevelCharacter(
   expression: string,
   target: string,
   start = 0
@@ -442,7 +660,7 @@ function findTaskTopLevelCharacter(
   return -1
 }
 
-function findTaskTernaryColon(
+export function findTernaryColon(
   expression: string,
   questionIndex: number
 ): number {
@@ -581,7 +799,7 @@ function parseTaskTierCall(
   const trimmed = expression.trim()
   if (!trimmed.startsWith('tier(') || !trimmed.endsWith(')')) return null
   const inner = trimmed.slice(5, -1)
-  const commaIndex = findTaskTopLevelCharacter(inner, ',')
+  const commaIndex = findTopLevelCharacter(inner, ',')
   if (commaIndex < 0) return null
 
   let label: string
@@ -654,14 +872,14 @@ export function parseTaskTiersFromExpr(
     const tiers: ParsedTaskTier[] = []
     let remaining = versioned
     while (remaining) {
-      const questionIndex = findTaskTopLevelCharacter(remaining, '?')
+      const questionIndex = findTopLevelCharacter(remaining, '?')
       if (questionIndex < 0) {
         const tier = parseTaskTierCall(remaining, [], schema)
         if (!tier) return []
         tiers.push(tier)
         break
       }
-      const colonIndex = findTaskTernaryColon(remaining, questionIndex)
+      const colonIndex = findTernaryColon(remaining, questionIndex)
       if (colonIndex < 0) return []
       const conditions = parseTaskConditions(
         remaining.slice(0, questionIndex).trim(),

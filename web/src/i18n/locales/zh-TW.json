@@ -6368,6 +6368,17 @@
     "Saturday": "週六",
     "Sunday": "週日",
     "Enter a valid condition value.": "請輸入合法的條件值。",
-    "Each tier supports up to {{count}} conditions, all of which must match. The last tier without conditions is the fallback.": "每個階梯最多支援 {{count}} 個條件，需全部滿足。最後一個無條件階梯作為兜底。"
+    "Each tier supports up to {{count}} conditions, all of which must match. The last tier without conditions is the fallback.": "每個階梯最多支援 {{count}} 個條件，需全部滿足。最後一個無條件階梯作為兜底。",
+    "Any condition": "任一條件滿足",
+    "All conditions": "全部條件滿足",
+    "Add condition group": "新增條件組",
+    "Group OR": "合併為「或」",
+    "Every condition in this group must match": "組內所有條件都需滿足",
+    "Any one condition in this group may match": "組內任一條件滿足即可",
+    "This group is empty and is ignored.": "該組為空，將被忽略。",
+    "Remove group": "刪除條件組",
+    "from": "從",
+    "to": "至",
+    "Each tier supports up to {{count}} conditions. Conditions inside a group are joined with AND or OR; the last tier without conditions is the fallback.": "每個階梯最多支援 {{count}} 個條件。條件組內可用「全部滿足」或「任一滿足」組合；最後一個無條件階梯作為兜底。"
   }
 }
