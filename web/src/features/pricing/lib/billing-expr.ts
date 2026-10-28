@@ -302,6 +302,115 @@ export function isTierConditionGroup(
   return 'kind' in node
 }
 
+const WEEKDAY_INDEX = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
+const TIME_PART_FORMATTERS = new Map<string, Intl.DateTimeFormat>()
+
+/**
+ * Read the clock fields an expression can reference, in the zone it names.
+ *
+ * `weekday` follows Go's `time.Weekday`, where Sunday is 0, so a weekend guard
+ * written as `weekday(...) < 1 || weekday(...) > 5` means the same thing here
+ * as it does in the billing engine. An unknown zone falls back to UTC rather
+ * than throwing: a price summary must still render.
+ */
+export function readClockParts(
+  timezone: string,
+  now: Date
+): Record<TierTimeFunc, number> {
+  try {
+    let formatter = TIME_PART_FORMATTERS.get(timezone)
+    if (!formatter) {
+      formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: timezone,
+        hourCycle: 'h23',
+        hour: 'numeric',
+        minute: 'numeric',
+        weekday: 'short',
+        month: 'numeric',
+        day: 'numeric',
+      })
+      TIME_PART_FORMATTERS.set(timezone, formatter)
+    }
+    const parts = Object.fromEntries(
+      formatter.formatToParts(now).map((part) => [part.type, part.value])
+    )
+    const weekday = WEEKDAY_INDEX.indexOf(parts.weekday)
+    const hour = Number(parts.hour)
+    const minute = Number(parts.minute)
+    const month = Number(parts.month)
+    const day = Number(parts.day)
+    if (
+      weekday < 0 ||
+      !Number.isFinite(hour) ||
+      !Number.isFinite(minute) ||
+      !Number.isFinite(month) ||
+      !Number.isFinite(day)
+    ) {
+      throw new RangeError('unreadable clock parts')
+    }
+    return { hour, minute, weekday, month, day }
+  } catch {
+    return {
+      hour: now.getUTCHours(),
+      minute: now.getUTCMinutes(),
+      weekday: now.getUTCDay(),
+      month: now.getUTCMonth() + 1,
+      day: now.getUTCDate(),
+    }
+  }
+}
+
+const TIER_COMPARATORS: Record<
+  TierCondition['op'],
+  (left: number, right: number) => boolean
+> = {
+  '<': (left, right) => left < right,
+  '<=': (left, right) => left <= right,
+  '>': (left, right) => left > right,
+  '>=': (left, right) => left >= right,
+}
+
+/**
+ * Decide a condition tree against a wall clock.
+ *
+ * Returns `null` when the tree references a request fact (`p`, `c`, `len`):
+ * those are only known per request, so a caller must not treat the answer as
+ * a match. `null` propagates through the whole tree instead of being read as
+ * `false`, so a mixed guard can never be reported as satisfied.
+ */
+export function evaluateTierConditionAt(
+  node: TierConditionNode,
+  now: Date
+): boolean | null {
+  if (isTierConditionGroup(node)) {
+    const results = node.conditions.map((child) =>
+      evaluateTierConditionAt(child, now)
+    )
+    if (node.kind === 'any') {
+      if (results.some((result) => result === true)) return true
+      if (results.some((result) => result === null)) return null
+      return false
+    }
+    if (results.some((result) => result === false)) return false
+    if (results.some((result) => result === null)) return null
+    return true
+  }
+  if (!isTierTimeFunc(node.var)) return null
+  const timezone = (node.timezone || '').trim()
+  if (!timezone) return null
+  const value = readClockParts(timezone, now)[node.var]
+  return TIER_COMPARATORS[node.op](value, node.value)
+}
+
+/** True when every leaf of the tree reads only the clock. */
+export function isTimeOnlyCondition(nodes: TierConditionNode[]): boolean {
+  return nodes.every((node) => {
+    if (isTierConditionGroup(node)) return isTimeOnlyCondition(node.conditions)
+    return isTierTimeFunc(node.var) && Boolean((node.timezone || '').trim())
+  })
+}
+
 /** Count the comparison leaves under a node tree. */
 export function countTierConditions(nodes: TierConditionNode[]): number {
   return nodes.reduce(

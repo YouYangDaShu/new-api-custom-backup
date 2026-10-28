@@ -27,6 +27,8 @@ import type {
 } from '../types'
 import {
   BILLING_PRICING_VARS,
+  evaluateTierConditionAt,
+  isTimeOnlyCondition,
   parseTaskTiersFromExpr,
   parseTiersFromExpr,
   splitBillingExprAndRequestRules,
@@ -50,6 +52,8 @@ export type DynamicPriceOptions = {
   usdExchangeRate?: number
   groupRatioMultiplier?: number
   usageSchema?: BillingUsageSchema
+  /** Clock used to pick the tier a time-conditional model is charging now. */
+  now?: Date
 }
 
 export type DynamicPriceLabelKind = 'i18n' | 'schema'
@@ -89,6 +93,8 @@ export type DynamicPricingSummary = {
   primaryEntries: DynamicPriceEntry[]
   secondaryEntries: DynamicPriceEntry[]
   isTaskUsage: boolean
+  /** True when the advertised tier was selected by the wall clock. */
+  isTimePricing?: boolean
 }
 
 export function getTaskUsageQuantityUnitLabelKey(
@@ -235,6 +241,40 @@ export function getDynamicPricingTiers(
   return parseTiersFromExpr(billingExpr)
 }
 
+/**
+ * Pick the tier a time-conditional model is charging at `now`.
+ *
+ * The chain is read in expression order and the first tier whose guard holds
+ * wins, which is exactly what the billing engine does for one request. Tiers
+ * are returned untouched when the chain is not clock-driven — a `len` or `p`
+ * guard only becomes true or false for a specific request, so no wall clock
+ * can decide it and the caller keeps advertising the first tier.
+ *
+ * Returns `null` when the clock cannot select a tier.
+ */
+export function getCurrentTimePricingTier(
+  tiers: DynamicPricingTier[],
+  now: Date
+): DynamicPricingTier | null {
+  if (tiers.length === 0) return null
+  let sawTimeGuard = false
+  for (const tier of tiers) {
+    const conditions = (tier as ParsedTier).conditions
+    if (!Array.isArray(conditions) || conditions.length === 0) {
+      // The unconditional fallback only applies once every earlier guard has
+      // been decided, so it is the answer only if a clock guard was read.
+      return sawTimeGuard ? tier : null
+    }
+    if (!isTimeOnlyCondition(conditions)) return null
+    sawTimeGuard = true
+    const matches = conditions.every(
+      (condition) => evaluateTierConditionAt(condition, now) === true
+    )
+    if (matches) return tier
+  }
+  return null
+}
+
 export function hasDynamicRequestRules(model: PricingModel): boolean {
   if (!isDynamicPricingModel(model)) return false
   const { requestRuleExpr } = splitBillingExprAndRequestRules(
@@ -318,14 +358,19 @@ export function getDynamicPricingSummary(
 
   const tiers = getDynamicPricingTiers(model)
   const isTaskUsage = isTaskUsagePricingModel(model)
-  // The reference price is the fallback tier — the last one without
-  // conditions. For peak/off-peak models that is the off-peak rate, which is
-  // the base price; using `tiers[0]` would advertise the peak rate instead.
-  const fallbackTier =
-    [...tiers].reverse().find((item) => item.conditions.length === 0) ?? null
+  // A peak/off-peak model charges one of its tiers right now, so advertise the
+  // tier the clock selects — the same branch the billing engine would take for
+  // a request at this moment. Length-tiered and plain tiered models have no
+  // clock guard, so `getCurrentTimePricingTier` returns null and the first tier
+  // stays the reference price: the expression author puts the base tier there
+  // (short-context rate, off-peak rate), and picking the unconditional fallback
+  // instead would advertise long-context or peak rates as the base price.
+  const timeTier = isTaskUsage
+    ? null
+    : getCurrentTimePricingTier(tiers, options.now ?? new Date())
   const tier = isTaskUsage
     ? (tiers.at(-1) ?? null)
-    : (fallbackTier ?? tiers[0] ?? null)
+    : (timeTier ?? tiers[0] ?? null)
   let entries = getDynamicPriceEntries(tier, {
     ...options,
     usageSchema: model.billing_usage_schema,
@@ -379,6 +424,7 @@ export function getDynamicPricingSummary(
       ? entries.filter((entry) => entry.unit === 'request')
       : entries.filter((entry) => !PRIMARY_DYNAMIC_FIELDS.has(entry.field)),
     isTaskUsage,
+    isTimePricing: timeTier !== null,
   }
 }
 

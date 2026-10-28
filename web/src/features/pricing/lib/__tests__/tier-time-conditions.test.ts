@@ -21,9 +21,11 @@ import { describe, expect, test } from 'vitest'
 import {
   buildTierConditionExpr,
   countTierConditions,
+  evaluateTierConditionAt,
   isTierConditionGroup,
   parseTierConditionExpr,
   parseTiersFromExpr,
+  readClockParts,
   type TierCondition,
   type TierConditionGroup,
 } from '../billing-expr'
@@ -294,12 +296,84 @@ describe('buildConditionStr nested shapes', () => {
   })
 })
 
-describe('base price comes from the fallback tier', () => {
-  // Peak/off-peak models must advertise the off-peak rate as the base price.
-  // Picking the first tier would advertise the peak rate and make the model
-  // look like it always charges double.
+describe('base price comes from the first tier', () => {
+  // The base price must be the tier the expression author put first. For
+  // peak/off-peak models that is the off-peak rate (the peak window is the
+  // exception); for length-tiered models it is the short-context rate.
+  //
+  // 2026-10-28 03:00 Shanghai is off-peak, so the clock selects the leading
+  // 闲时 branch and the assertion stays deterministic.
+  const offPeak = new Date('2026-10-27T19:00:00Z')
   const model = {
     id: 1,
+    model_name: 'deepseek-v4.1-flash',
+    quota_type: 0,
+    model_ratio: 37.5,
+    completion_ratio: 1,
+    model_price: 0,
+    billing_mode: 'tiered_expr',
+    billing_expr:
+      '(weekday("Asia/Shanghai") < 1 || weekday("Asia/Shanghai") > 5) || ' +
+      '(hour("Asia/Shanghai") < 9 || ' +
+      '(hour("Asia/Shanghai") >= 12 && hour("Asia/Shanghai") < 14) || ' +
+      'hour("Asia/Shanghai") >= 18) ' +
+      '? tier("闲时", p * 1 + c * 4 + cr * 0.02) ' +
+      ': tier("峰时", p * 2 + c * 8 + cr * 0.04)',
+    enable_groups: ['default'],
+  } as never
+
+  test('summary tier is the first tier, not the unconditional fallback', () => {
+    const summary = getDynamicPricingSummary(model, {
+      tokenUnit: 'M',
+      now: offPeak,
+    })
+    expect(summary?.tierCount).toBe(2)
+    expect(summary?.tier?.label).toBe('闲时')
+    expect(summary?.primaryEntries.map((entry) => entry.value)).toEqual([1, 4])
+  })
+
+  test('still reports the full spread across tiers', () => {
+    const summary = getDynamicPricingSummary(model, {
+      tokenUnit: 'M',
+      now: offPeak,
+    })
+    expect(summary?.primaryEntries[0]?.formattedRange).toBe('$1 – $2')
+    expect(summary?.tierLabels).toEqual(['闲时', '峰时'])
+  })
+})
+
+describe('length-tiered models advertise the short-context rate', () => {
+  const model = {
+    id: 2,
+    model_name: 'gpt-5.6-sol',
+    quota_type: 0,
+    model_ratio: 1,
+    completion_ratio: 1,
+    model_price: 0,
+    billing_mode: 'tiered_expr',
+    billing_expr:
+      'len <= 272000 ? tier("standard", p * 5 + c * 30 + cr * 0.5) ' +
+      ': tier("long_context", p * 10 + c * 45 + cr * 1)',
+    enable_groups: ['default'],
+  } as never
+
+  test('base price is the short-context tier, not the long-context fallback', () => {
+    const summary = getDynamicPricingSummary(model, { tokenUnit: 'M' })
+    expect(summary?.tierCount).toBe(2)
+    expect(summary?.tier?.label).toBe('standard')
+    expect(summary?.primaryEntries.map((entry) => entry.value)).toEqual([5, 30])
+    expect(summary?.primaryEntries[0]?.formattedRange).toBe('$5 – $10')
+  })
+})
+
+describe('peak/off-peak models advertise the tier the clock selects', () => {
+  // 2026-10-28 is a Wednesday, so 03:00 Shanghai is off-peak and 10:00 is peak.
+  const offPeak = new Date('2026-10-27T19:00:00Z')
+  const peak = new Date('2026-10-28T02:00:00Z')
+  const weekend = new Date('2026-10-31T02:00:00Z')
+
+  const model = {
+    id: 3,
     model_name: 'deepseek-v4.1-flash',
     quota_type: 0,
     model_ratio: 37.5,
@@ -315,16 +389,116 @@ describe('base price comes from the fallback tier', () => {
     enable_groups: ['default'],
   } as never
 
-  test('summary tier is the unconditional fallback, not the first tier', () => {
-    const summary = getDynamicPricingSummary(model, { tokenUnit: 'M' })
-    expect(summary?.tierCount).toBe(2)
+  test('off-peak hours advertise the off-peak rate', () => {
+    const summary = getDynamicPricingSummary(model, {
+      tokenUnit: 'M',
+      now: offPeak,
+    })
     expect(summary?.tier?.label).toBe('闲时')
     expect(summary?.primaryEntries.map((entry) => entry.value)).toEqual([1, 4])
+    expect(summary?.isTimePricing).toBe(true)
   })
 
-  test('still reports the full spread across tiers', () => {
-    const summary = getDynamicPricingSummary(model, { tokenUnit: 'M' })
-    expect(summary?.primaryEntries[0]?.formattedRange).toBe('$1 – $2')
+  test('peak hours advertise the peak rate', () => {
+    const summary = getDynamicPricingSummary(model, {
+      tokenUnit: 'M',
+      now: peak,
+    })
+    expect(summary?.tier?.label).toBe('峰时')
+    expect(summary?.primaryEntries.map((entry) => entry.value)).toEqual([2, 8])
+  })
+
+  test('weekends are off-peak all day', () => {
+    const summary = getDynamicPricingSummary(model, {
+      tokenUnit: 'M',
+      now: weekend,
+    })
+    expect(summary?.tier?.label).toBe('闲时')
+  })
+
+  test('the spread still covers both tiers', () => {
+    const summary = getDynamicPricingSummary(model, {
+      tokenUnit: 'M',
+      now: peak,
+    })
     expect(summary?.tierLabels).toEqual(['峰时', '闲时'])
+    expect(summary?.primaryEntries[0]?.formattedRange).toBe('$1 – $2')
+  })
+})
+
+describe('length-tiered models are not clock-driven', () => {
+  const model = {
+    id: 4,
+    model_name: 'gpt-6-astra',
+    quota_type: 0,
+    model_ratio: 1,
+    completion_ratio: 1,
+    model_price: 0,
+    billing_mode: 'tiered_expr',
+    billing_expr:
+      'len < 272000 ? tier("base", p * 10 + c * 50 + cr * 1) ' +
+      ': tier("tier_2", p * 20 + c * 100 + cr * 2)',
+    enable_groups: ['default'],
+  } as never
+
+  test('a len guard keeps the first tier regardless of the clock', () => {
+    const summary = getDynamicPricingSummary(model, {
+      tokenUnit: 'M',
+      now: new Date('2026-10-28T02:00:00Z'),
+    })
+    expect(summary?.tier?.label).toBe('base')
+    expect(summary?.primaryEntries.map((entry) => entry.value)).toEqual([
+      10, 50,
+    ])
+    expect(summary?.isTimePricing).toBe(false)
+  })
+})
+
+describe('a mixed time and token guard cannot be decided by a clock', () => {
+  // `hour(...) >= 9 && p > 1000` needs the request to resolve `p`, so the
+  // summary must not claim the peak tier is in force.
+  const model = {
+    id: 5,
+    model_name: 'mixed-guard',
+    quota_type: 0,
+    model_ratio: 1,
+    completion_ratio: 1,
+    model_price: 0,
+    billing_mode: 'tiered_expr',
+    billing_expr:
+      'hour("Asia/Shanghai") >= 9 && p > 1000 ? tier("peak", p * 2) ' +
+      ': tier("base", p * 1)',
+    enable_groups: ['default'],
+  } as never
+
+  test('falls back to the first tier and reports no time pricing', () => {
+    const summary = getDynamicPricingSummary(model, {
+      tokenUnit: 'M',
+      now: new Date('2026-10-28T02:00:00Z'),
+    })
+    expect(summary?.isTimePricing).toBe(false)
+    expect(summary?.tier?.label).toBe('peak')
+  })
+})
+
+describe('clock evaluation matches the billing engine', () => {
+  test('weekday follows Go semantics with Sunday as 0', () => {
+    // 2026-11-01 is a Sunday.
+    const sunday = new Date('2026-11-01T04:00:00Z')
+    const conditions = parseTierConditionExpr(
+      'weekday("Asia/Shanghai") < 1 || weekday("Asia/Shanghai") > 5'
+    )
+    expect(conditions).not.toBeNull()
+    expect(
+      conditions?.every(
+        (condition) => evaluateTierConditionAt(condition, sunday) === true
+      )
+    ).toBe(true)
+  })
+
+  test('a zone that Intl rejects falls back to UTC instead of throwing', () => {
+    expect(() => readClockParts('Not/AZone', new Date())).not.toThrow()
+    const parts = readClockParts('Not/AZone', new Date('2026-10-28T02:00:00Z'))
+    expect(parts.hour).toBe(2)
   })
 })
